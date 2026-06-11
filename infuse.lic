@@ -13,9 +13,12 @@ Infuse!
 
 	The script always uses the quiss'fyn rune, and always attempts to fully unlock the scroll. 
 	
-    You must first define your infuse sack, where all infuse components & scrolls will be stored:
+    You must first define your infuse and scroll sack (which can be the same):
 	
 		;vars set infusesack=<container name>
+        # for runestones and runestone-making tools
+        ;vars set scrollsack=<container name>
+        # for the scrolls
 		
 	Other assumptions:
 		- You have silvers in your local bank
@@ -32,18 +35,21 @@ Infuse!
 		;infuse infuse
 			- Fully infuse an unlocked scroll in your right hand. This does not check whether the scroll has been unlocked.
     
-		;infuse scroll rune <rune name>
+		;infuse rune <rune name>
 			- Creates the rune of your choice
-		
+	
+    NotAramund's note:        
 	I adapted Ashraam's infuse.lic to create this script. I had the following goals in mind:
 		- Create a no-fuss way to fully unlock scrolls for my Thaumaturgy Tome
 		- Separate out the pieces of that process in case someone needs them individually
 		
+    Fizzleworth's note:    
 	I updated Ashraam's and NotAramund's script with the following fixes:
         - Fixed palimpsests not working
         - Fixed runestone making not working
-        - Put finished scroll in an scrollsack (set with ;vars)
+        - Put finished scroll in a scrollsack (set with ;vars)
         - Removed "infuse_scroll" and replaced with "infuse"
+    #TODO: During the actual infusing of mana, if you run out of mana, sometime the link with the scroll will expire and the script will erroneously think it is fully infused  
 	
 =end
 
