@@ -1,0 +1,8 @@
+#combatear
+
+module Combatear
+
+multifput "put runestaff in my rain", "ready weapon"
+multifput "remove my gold earring", "put earring in my rain", "get silver earring from my rain", "wear my earring"
+
+end #End of module

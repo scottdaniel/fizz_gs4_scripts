@@ -1,0 +1,8 @@
+#restear
+
+module Restear
+
+multifput "remove my silver earring", "put earring in my rain", "get gold earring from my rain", "wear my earring"
+multifput "store weapon", "get carm runestaff from my rain"
+
+end #End of module

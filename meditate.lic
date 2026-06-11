@@ -1,0 +1,8 @@
+#meditate
+
+module Meditate
+
+fput 'store weapon'
+fput 'meditate'
+
+end #End of module
