@@ -197,6 +197,12 @@ def infuse
 	end
 end
 
+# Checks spells are unlocked and how charged they are
+def check_charge
+	find_rune("odeir'cos")
+	fput "wave left at my #{GameObj.right_hand}"
+	fput "put right in my #{UserVars.scrollsack}"
+
 # Check that you're holding a scroll in your right hand & set scroll_id
 def check_for_scroll
 	if !GameObj.right_hand || !(GameObj.right_hand.noun =~ /scroll|parchment|palimpsest|paper|papyrus|vellum/)
@@ -233,8 +239,8 @@ if Script.current.vars.length == 0
 	check_for_scroll
 	unlock_spells
 	infuse
-	fput "put right in my #{UserVars.scrollsack}"
-	
+	check_charge
+
 elsif script.vars[1] == 'unlock'
 	check_for_scroll
 	unlock_spells
@@ -242,15 +248,14 @@ elsif script.vars[1] == 'unlock'
 elsif script.vars[1] == 'infuse'
 	check_for_scroll
 	infuse
+	check_charge
 
 elsif script.vars[1] == 'rune'
 	make_rune(Script.current.vars[2])
 
 elsif script.vars[1] == 'check'
 	check_for_scroll
-	find_rune("odeir'cos")
-	fput "wave left at my #{GameObj.right_hand}"
-	fput "put right in my #{UserVars.scrollsack}"
+	check_charge
 
 elsif script.vars[1] == 'help'
 	respond "First, set your <infusesack> and <scrollsack> (can be the same): "
