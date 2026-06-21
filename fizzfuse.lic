@@ -199,9 +199,11 @@ end
 
 # Checks spells are unlocked and how charged they are
 def check_charge
+	fput "put left in my #{UserVars.infusesack}"
 	find_rune("odeir'cos")
 	fput "wave left at my #{GameObj.right_hand}"
 	fput "put right in my #{UserVars.scrollsack}"
+end
 
 # Check that you're holding a scroll in your right hand & set scroll_id
 def check_for_scroll
