@@ -1,0 +1,13 @@
+#sellgem
+
+#for those pesky gems that won't sell with eloot sell
+
+module Sellgem
+
+Script.run("go2", "gemshop")
+multifput "remove my rain", "sell my rain", "wear my rain"
+Script.run("go2", "bank")
+fput "deposit all"
+Script.run("go2", "town")
+
+end #End of module
