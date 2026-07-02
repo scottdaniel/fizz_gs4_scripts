@@ -1,8 +1,8 @@
 #combatear
-
+#so called because I used to switch earrings (logic for aura bonus)
+#basically just gets items ready for combat
 module Combatear
 
 multifput "put runestaff in my rain", "ready weapon"
-multifput "remove my gold earring", "put earring in my rain", "get silver earring from my rain", "wear my earring"
 
 end #End of module

@@ -1,0 +1,20 @@
+#fizzprep_sever.lic
+
+module Fizzprep_sever
+
+fput "stow all"
+fput "ready weapon"
+Script.run("qverb", "rub gold coin")
+Script.run("qverb", "rub small statue")
+Script.run("qverb", "rub moonstone cube")
+
+# check if runestaff is ensorcelled, if not, prep and evoke
+res = dothistimeout "l at my #{GameObj.right_hand}", 2, Regexp.union(
+      /An ethereal necrotic film covers the/
+    )
+if res !~ /An ethereal necrotic film covers the/
+    fput "prep 735"
+    fput "evoke #{GameObj.right_hand}"
+    end
+
+end #End of module
