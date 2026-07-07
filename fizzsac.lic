@@ -1,21 +1,85 @@
 =begin
-This script was designed to help detect whether a target is ready for Sorcerer Sacrifice.
+      author: Fizzleworth, Ashraam
+        name: fizzsac
+        game: gemstone
+        tags: sorcerer, sacrifice, shadow essence, combat
+    requires: Lich > 5.14.2
+     version: 0.6
+        note: Written with assistance from Claude (Anthropic).
 
-	The script is best run with Bigshot and requires Lich version: 5.14.2 or newer.
+  This script was designed to help detect whether a target is ready for Sorcerer Sacrifice.
+
 	If you have less than maximum shadow essence, the script will check the target for eligibility.
 	If you have maximum shadow essence, it will cast the spell you set as your script variable.
-	
-	Example execution: ;sacrifice_decide <targetid> 719
-	Example bigshot line: script sacrifice_decide target 719
-		*Generally it takes x3 executions in bigshot to reliably sacrifice a full health target.
+	Mana upkeep via "sacrifice mana" is handled separately by the companion background
+	script sacrifice_mana.lic -- run that alongside this one during a hunt.
+
+	Can be run two ways:
+	  - From Bigshot, passing an explicit target and spell: ;fizzsac <#targetid> 719
+	  - Manually during a hunt, passing just the spell id: ;fizzsac 719
+	    Target resolution order: an explicit #id you passed, then your formal
+	    /target lock (GameObj.target) if you have one, then the first living
+	    NPC in the room. If none of those find anything, the room is
+	    considered empty and the script does nothing. Your own minor demon
+	    (matched via IGNORE_NPCS, currently "verlok") is never picked as a
+	    fallback target -- update that regex if you resummon a different
+	    demon type.
+
+	Set DEBUG = true/false at the top of the script to toggle the extra
+	status messages (room-empty, appraisal) it prints along the way.
+
+	incant() casts via Spell#force_incant instead of raw "release"/"incant"
+	fput commands. Lich's Spell#cast internally queues through a shared
+	lock (@@cast_lock) so only one script releases/prepares/casts a spell
+	at a time across the whole session -- the same mechanism Bigshot's own
+	spell commands (e.g. tether) use. Sending raw release/incant fput
+	directly bypasses that queue entirely and can cancel whatever Bigshot
+	is mid-cast on, which is what was causing Bigshot to keep recasting
+	Tenebrous Tether (706) over and over during a hunt.
+
+	A single invocation now loops the essence-check -> appraise/incant cycle
+	on its own (up to MAX_ATTEMPTS times), instead of doing one step and
+	exiting. Previously it took ~3 separate manual invocations to walk a
+	target from full health down through the appraisal states to an actual
+	sacrifice; now one ;fizzsac call keeps going until the target is
+	dead/gone or MAX_ATTEMPTS is hit.
+
+	Example bigshot line: script fizzsac target 719
 		- Already have 5 shadow essence - casts 719 at target.
 		- Under 5 shadow essence and target at full health - Casts 711.
 		- Under 5 shadow essence and target appraises as "susceptible to manipulation" - Casts 706 for sacrifice bonus, then performs sacrifice.
 		- Under 5 shadow essence and target appraises as "enticingly frail" - sacrifices target.
 =end
 
-target = script.vars[1].to_s
-spell_id = script.vars[2].to_s
+DEBUG = true
+
+IGNORE_NPCS = /verlok/i   # your own minor demon -- never a valid target
+
+def debug(msg)
+	echo "[DBG] #{msg}" if DEBUG
+end
+
+args = script.vars[1..-1].to_a.compact.map(&:to_s).reject(&:empty?)
+
+explicit_target = args.find { |a| a.start_with?("#") }
+spell_id = args.find { |a| a =~ /^\d+$/ }
+
+if explicit_target
+	target = explicit_target
+elsif GameObj.target and GameObj.target.name !~ IGNORE_NPCS
+	target = "##{GameObj.target.id}"
+else
+	# No formal /target lock -- fall back to the first living NPC in the room,
+	# since most hunting doesn't use an explicit lock at all.
+	npc = GameObj.npcs.find { |n| n.status !~ /dead|gone/i and n.name !~ IGNORE_NPCS }
+	target = npc ? "##{npc.id}" : nil
+end
+
+unless spell_id
+	echo "Usage: ;fizzsac <spell_id>  (uses your currently selected target)"
+	echo "       ;fizzsac <#targetid> <spell_id>  (explicit target, e.g. from Bigshot)"
+	exit
+end
 
 def sacrifice(target)
 	waitrt?
@@ -38,9 +102,26 @@ def pain(target)
 	Spell[711].cast("#{target}")
 end
 
+def incant(spell_id)
+	spell = Spell[spell_id]
+
+	unless spell.affordable?
+		debug("Skipping incant #{spell_id} -- not affordable (mana/spirit/stamina).")
+		return
+	end
+
+	waitrt?
+	waitcastrt?
+	result = spell.force_incant
+	debug("Incant #{spell_id} result: #{result}")
+	result
+end
+
 def appraise(target)
 
 	status = Lich::Util.issue_command("appraise #{target}", /^The .+? is \w+ in size/, include_end: false, quiet: true, silent: true).last
+
+	debug("Appraise #{target}: #{status}")
 
 	case status
 	when /enticingly frail/
@@ -53,24 +134,34 @@ def appraise(target)
 	
 end
 
+MAX_ATTEMPTS = 10
+
 ############################################
 # Main
 ############################################
 
-echo "Finding: #{target}"
+if target.nil?
+	debug("Not doing anything because room is empty")
+else
+	echo "Finding: #{target}"
 
-shadow_essence = Resources.shadow_essence
+	search = target.delete_prefix("#")
 
-search = target.delete_prefix("#")
-find = GameObj.npcs.find { |n| n.id == search }
+	MAX_ATTEMPTS.times do |attempt|
+		find = GameObj.npcs.find { |n| n.id == search }
+		break if find.nil? or find.status =~ /dead|gone/
 
-if shadow_essence.to_i < 5 and find.id and find.status !~ /dead|gone/
-	appraise("##{find.id}")
-elsif find.id and find.status !~ /dead|gone/ and spell_id == "717"
-	waitcastrt?
-	waitrt?
-	fput "release"
-	fput "incant 717" if mana > 17
-elsif find.id and find.status !~ /dead|gone/
-	Spell[spell_id].cast("##{find.id}")
+		shadow_essence = Resources.shadow_essence
+		debug("Attempt #{attempt + 1}/#{MAX_ATTEMPTS}: ##{find.id}, shadow essence #{shadow_essence.to_i}/5")
+
+		if shadow_essence.to_i < 5
+			appraise("##{find.id}")
+		else
+			incant(spell_id)
+		end
+
+		waitrt?
+		waitcastrt?
+		sleep 0.5
+	end
 end

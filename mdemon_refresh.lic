@@ -1,0 +1,114 @@
+=begin
+      author: Fizzleworth
+        name: mdemon_refresh
+        game: gemstone
+        tags: sorcerer, demon, minor summoning
+    requires: Lich > 5.14.2
+     version: 0.2
+        note: Written with assistance from Claude (Anthropic).
+
+  Keeps a Sorcerer's Minor Summoning (725) demon refreshed.
+
+  Watches the Minor Summoning spell duration. When it drops below the configured
+  buffer, it stows whatever's in your left hand (if anything), rummages a vakra
+  runestone out of your kit, rubs it to refresh the demon, puts the runestone
+  away, then gets your original left-hand item back.
+
+  If no vakra runestone is found in your kit, the script needs fizzfuse to make a
+  new one -- which will pull you away from the hunt (bank + alchemist trip). How
+  that's handled is controlled by AUTO_FUSE_RUNESTONE below:
+    true  - automatically runs fizzfuse to fuse a new vakra runestone.
+    false - pauses and waits for you to type "nod" before fusing, so it never
+            interrupts a hunt without your say-so.
+
+  Usage:  ;mdemon_refresh
+  Stop:   ;kill mdemon_refresh
+=end
+
+module MdemonRefresh
+  # === config (edit to taste) ===================================================
+  MINOR_SUMMONING_SPELL   = "Minor Summoning"
+  REFRESH_THRESHOLD_MINUTES = 10
+  CHECK_INTERVAL_SECONDS  = 15
+  AUTO_FUSE_RUNESTONE     = false
+
+  # === helpers ===================================================================
+  def self.rummage_and_rub
+    held_item_id = checkleft ? GameObj.left_hand.id : nil
+
+    if held_item_id
+      fput "stow left"
+      waitrt?
+    end
+
+    result = Lich::Util.issue_command(
+      "rumm in my kit for runestone vakra",
+      /drawn on it|can't seem to locate/,
+      include_end: false, quiet: true, silent: true
+    ).last.to_s
+
+    return :missing if result =~ /can't seem to locate/
+
+    waitrt?
+    fput "rub my runestone"
+    waitrt?
+    fput "put runestone in my kit"
+    :ok
+  ensure
+    if held_item_id
+      fput "get ##{held_item_id}"
+      waitrt?
+    end
+  end
+
+  def self.wait_for_nod
+    echo "Type 'nod' when you're ready to let fizzfuse fuse a new vakra runestone."
+    loop do
+      line = get
+      break if line =~ /^You nod/i
+    end
+  end
+
+  def self.attempt_refresh
+    status = rummage_and_rub
+    return :ok if status == :ok
+
+    if AUTO_FUSE_RUNESTONE
+      echo "No vakra runestone in kit -- auto-fusing a new one (this will pull you away from the hunt)."
+    else
+      echo "No vakra runestone in kit -- fusing one via fizzfuse will pull you away from the hunt."
+      wait_for_nod
+    end
+
+    Script.run("fizzfuse", "rune vakra")
+    rummage_and_rub
+  end
+
+  # === main ======================================================================
+  def self.run
+    echo "MdemonRefresh started! Watching Minor Summoning (refresh buffer: #{REFRESH_THRESHOLD_MINUTES} min)."
+    echo "Auto-fuse runestone: #{AUTO_FUSE_RUNESTONE}"
+    echo "Stop with ;kill mdemon_refresh"
+
+    loop do
+      if Effects::Spells.active?(MINOR_SUMMONING_SPELL)
+        remaining = Effects::Spells.time_left(MINOR_SUMMONING_SPELL)
+
+        if remaining < REFRESH_THRESHOLD_MINUTES
+          echo "Minor Summoning has #{remaining.round(1)} minutes left, refreshing demon."
+          result = attempt_refresh
+
+          if result == :ok
+            echo "Demon refreshed."
+          else
+            echo "Could not refresh demon -- still no vakra runestone available."
+          end
+        end
+      end
+
+      sleep CHECK_INTERVAL_SECONDS
+    end
+  end
+end
+
+MdemonRefresh.run

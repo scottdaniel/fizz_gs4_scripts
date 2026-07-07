@@ -1,0 +1,141 @@
+=begin
+      author: Fizzleworth, Ashraam
+        name: sacrifice_mana
+        game: gemstone
+        tags: sorcerer, sacrifice, mana
+    requires: Lich > 5.14.2
+     version: 0.6
+        note: Written with assistance from Claude (Anthropic).
+
+  Keeps a Sorcerer's mana topped off during a hunt via "sacrifice mana".
+
+  Watches your mana. When it drops below the configured threshold and
+  Sacrifice (Mana) specifically isn't on cooldown, it does "sacrifice mana"
+  to refill. Each sacrifice ability -- Sacrifice (Mana), (Channel), (Infest),
+  (Shift), (Fate) -- has its own independent cooldown, so this only checks
+  for the "Mana" one; it won't be blocked by, say, Sacrifice (Channel) being
+  on cooldown from animate_refresher.lic running alongside it.
+
+  "sacrifice mana" itself spends shadow essence -- Infomon only updates its
+  essence tracking once it parses the game's confirmation message, so
+  sacrifice_mana() waits for that line before returning. Otherwise the
+  essence check right after would still read the pre-sacrifice value.
+  (That wait uses issue_command without quiet:true, so the confirmation
+  text still displays normally -- quiet:true would silently swallow it
+  from your screen entirely, not just from Lich's own echo.)
+
+  room_target ignores your own minor demon (matched via IGNORE_NPCS,
+  currently "verlok") so wander/fizzsac never target your own pet as a
+  harvest target. Update that regex if you resummon a different demon type.
+
+  After a successful "sacrifice mana", it tries to top shadow essence back
+  up to full (5) by:
+    1) pausing Bigshot (via Lich's Script.pause/unpause -- no changes to
+       bigshot.lic itself)
+    2) running wander.lic (no args) until it finds and targets a new enemy
+    3) running fizzsac against that target to try to harvest essence
+    4) repeating steps 2-3 (up to MAX_HARVEST_ROUNDS times) until shadow
+       essence reads 5/5, or giving up if nothing targetable turns up
+    5) unpausing Bigshot
+
+  While this harvest cycle runs, Bigshot -- and its normal combat/defense
+  handling -- is paused the entire time, not just for the initial mana sac.
+  That's intentional (avoids Bigshot's hunting loop stepping on wander's
+  movement or fizzsac's casting), but it does mean you're relying on
+  wander/fizzsac alone for however long the cycle takes, with no Bigshot
+  safety net if the new enemy gets aggressive.
+
+  Meant to run alongside fizzsac.lic during a hunt.
+
+  Usage:  ;sacrifice_mana
+  Stop:   ;kill sacrifice_mana
+=end
+
+module SacrificeMana
+  # === config (edit to taste) ===================================================
+  MANA_THRESHOLD        = 50
+  CHECK_INTERVAL_SECONDS = 10
+  FIZZSAC_SPELL_ID       = "719"   # spell fizzsac is told to use when harvesting after a mana sac
+  BIGSHOT_SCRIPT_NAME    = "bigshot"
+  ESSENCE_MAX            = 5
+  MAX_HARVEST_ROUNDS     = 5      # give up wander+fizzsac cycling after this many rounds
+  IGNORE_NPCS            = /verlok/i   # your own minor demon -- never a valid harvest target
+
+  # === helpers ===================================================================
+  def self.sacrifice_on_cooldown?
+    Effects::Cooldowns.to_h.keys.any? { |k| k.to_s =~ /sacrifice\s*\(\s*mana\s*\)/i }
+  end
+
+  def self.with_bigshot_paused
+    paused_it = Script.running?(BIGSHOT_SCRIPT_NAME) && !Script.paused?(BIGSHOT_SCRIPT_NAME) && Script.pause(BIGSHOT_SCRIPT_NAME)
+    echo "Paused #{BIGSHOT_SCRIPT_NAME}." if paused_it
+    yield
+  ensure
+    if paused_it
+      Script.unpause(BIGSHOT_SCRIPT_NAME)
+      echo "Unpaused #{BIGSHOT_SCRIPT_NAME}."
+    end
+  end
+
+  def self.sacrifice_mana
+    waitrt?
+    waitcastrt?
+    Lich::Util.issue_command(
+      "sacrifice mana",
+      /mana surge into you!|overwhelm you with shadow essence/,
+      include_end: false, silent: true
+    )
+    sleep 0.2
+    waitrt?
+  end
+
+  def self.room_target
+    return "##{GameObj.target.id}" if GameObj.target and GameObj.target.name !~ IGNORE_NPCS
+
+    npc = GameObj.npcs.find { |n| n.status !~ /dead|gone/i and n.name !~ IGNORE_NPCS }
+    npc ? "##{npc.id}" : nil
+  end
+
+  def self.harvest_until_full
+    MAX_HARVEST_ROUNDS.times do |round|
+      if Resources.shadow_essence.to_i >= ESSENCE_MAX
+        echo "Shadow essence full (#{ESSENCE_MAX}/#{ESSENCE_MAX})."
+        return
+      end
+
+      echo "Harvest round #{round + 1}/#{MAX_HARVEST_ROUNDS}: wandering for a new target."
+      Script.run("wander")
+
+      target = room_target
+      unless target
+        echo "Wander found nothing targetable -- stopping harvest cycle."
+        return
+      end
+
+      echo "Target #{target} found, running fizzsac to harvest essence."
+      Script.run("fizzsac", "#{target} #{FIZZSAC_SPELL_ID}")
+    end
+
+    echo "Gave up harvesting after #{MAX_HARVEST_ROUNDS} rounds (essence: #{Resources.shadow_essence.to_i}/#{ESSENCE_MAX})."
+  end
+
+  # === main ======================================================================
+  def self.run
+    echo "SacrificeMana started! Watching mana (threshold: #{MANA_THRESHOLD})."
+    echo "Stop with ;kill sacrifice_mana"
+
+    loop do
+      if mana < MANA_THRESHOLD and !sacrifice_on_cooldown?
+        echo "Mana below #{MANA_THRESHOLD}, sacrificing mana to top off."
+        with_bigshot_paused do
+          sacrifice_mana
+          harvest_until_full
+        end
+      end
+
+      sleep CHECK_INTERVAL_SECONDS
+    end
+  end
+end
+
+SacrificeMana.run
