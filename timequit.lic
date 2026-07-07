@@ -1,10 +1,13 @@
 
 t=Time.now
 x = '%02d' % t.hour
-if x.to_i == 3
+if x.to_i == 0
 	echo "Quitting in 10 seconds"
 	pause 10
 	fput "quit"
 else
 	echo "Not time to quit"
+    fput "join Serevyn"
+    fput "sit"
+    fput "rest"
 end
