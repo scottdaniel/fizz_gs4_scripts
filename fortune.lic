@@ -1,0 +1,213 @@
+# frozen_string_literal: true
+
+=begin
+  Fortune - a small flavor script for your Empath
+
+  Runs quietly in the background and has your character recite a random healing
+  quote the instant ;ecure is invoked to heal someone.
+
+  Quotes live in data/GSIV/[CharacterName]/quotes.yaml (list of :text/:author pairs).
+
+       author: Felixopedes
+         game: Gemstone
+         tags: empath, healing, flavor
+      version: 1.5.0
+     required: Lich >= 5.12.0
+
+  changelog:
+  v1.5.0 (2026-07-10)
+    - auto-create quotes.yaml with a single starter quote on first run for a
+      character that doesn't have one yet, pointing to the full set on GitHub
+  v1.4.0 (2026-07-10)
+    - add "fortune help" and "fortune list" commands
+  v1.3.0 (2026-07-10)
+    - typing "fortune N" recites the Nth quote in quotes.yaml (1-indexed)
+      instead of a random one
+  v1.2.0 (2026-07-09)
+    - typing "fortune" on its own now also triggers a recite, in addition
+      to ;ecure
+  v1.1.0 (2026-07-09)
+    - hook Script.start directly instead of polling Script.running?, since a
+      no-op ;ecure (nothing to heal) can start and finish faster than any
+      poll interval could reliably catch
+    - use the in-game RECITE verb, wrapped to 7 words per line
+  v1.0.0 (2026-07-09)
+    - initial release
+=end
+
+require 'yaml'
+require 'fileutils'
+
+module Fortune
+  QUOTES_FILE = File.join(DATA_DIR, XMLData.game, Char.name, 'quotes.yaml')
+  QUOTES_REPO_URL = 'https://github.com/scottdaniel/fizz_gs4_scripts'
+  WORDS_PER_LINE = 7
+  STARTER_QUOTES = [{ text: 'Do or do not, there is no try.', author: 'Anonymous' }].freeze
+
+  @mutex = Mutex.new
+  @pending = false
+  @pending_index = nil
+
+  # Called (from any thread) to flag that a recite is owed.
+  # @param index [Integer, nil] 1-indexed quote number, or nil for a random quote
+  def self.request!(index = nil)
+    @mutex.synchronize do
+      @pending = true
+      @pending_index = index
+    end
+  end
+
+  # Called from the script's own thread; returns the requested index (or
+  # false if nothing is pending) and resets the flag.
+  # @return [Integer, nil, false]
+  def self.requested?
+    @mutex.synchronize do
+      return false unless @pending
+
+      @pending = false
+      index = @pending_index
+      @pending_index = nil
+      index.nil? ? true : index
+    end
+  end
+
+  # @return [Array<Hash>] cached quotes loaded from {QUOTES_FILE}
+  def self.quotes
+    @quotes ||= load_quotes
+  end
+
+  # Loads the quotes file, creating a starter one for this character if none
+  # exists yet, and exiting the script if it's still empty afterward.
+  # @return [Array<Hash>]
+  def self.load_quotes
+    create_starter_file unless File.exist?(QUOTES_FILE)
+
+    list = (YAML.load_file(QUOTES_FILE) || {})[:quotes] || []
+    if list.empty?
+      respond "[Fortune] quotes.yaml has no quotes - add some yourself or grab the full set from #{QUOTES_REPO_URL} - exiting."
+      exit
+    end
+    list
+  end
+
+  # Writes a fresh quotes.yaml with one starter quote and explains where to
+  # get more, either by hand or from {QUOTES_REPO_URL}.
+  def self.create_starter_file
+    FileUtils.mkdir_p(File.dirname(QUOTES_FILE))
+    File.write(QUOTES_FILE, { quotes: STARTER_QUOTES }.to_yaml)
+
+    respond ''
+    respond "[Fortune] No quotes.yaml found - created a starter file with one quote at:"
+    respond "  #{QUOTES_FILE}"
+    respond 'Add your own quotes any time, or grab the full quotes.yaml from:'
+    respond "  #{QUOTES_REPO_URL}"
+    respond ''
+  end
+
+  # @return [Hash, nil] a random quote hash with :text and :author
+  def self.random_quote
+    quotes.sample
+  end
+
+  # @param index [Integer] 1-indexed position in {QUOTES_FILE}
+  # @return [Hash, nil] the quote at that position, or nil if out of range
+  def self.quote_at(index)
+    quote = index >= 1 ? quotes[index - 1] : nil
+    respond "[Fortune] No quote ##{index} (have #{quotes.length})." unless quote
+    quote
+  end
+
+  # Builds a "recite ...; ...; -Author" command, wrapping the quote text to
+  # {WORDS_PER_LINE} words per line (each "; " starts a new recited line).
+  # @param quote [Hash]
+  # @return [String]
+  def self.build_command(quote)
+    lines = quote[:text].split(/\s+/).each_slice(WORDS_PER_LINE).map { |chunk| chunk.join(' ') }
+    lines << "-#{quote[:author]}"
+    "recite #{lines.join('; ')}"
+  end
+
+  # Has Felix recite a quote aloud in-character.
+  # @param index [Integer, nil] 1-indexed quote number, or nil for a random quote
+  def self.recite(index = nil)
+    quote = index ? quote_at(index) : random_quote
+    return unless quote
+
+    waitrt?
+    fput(build_command(quote))
+  end
+
+  # Prints usage instructions to the local window.
+  def self.show_help
+    respond ''
+    respond '--- Fortune Help ---'
+    respond 'Recites a random healing quote (attributed to Imaera) whenever you heal with ;ecure.'
+    respond ''
+    respond 'Commands (typed directly, no leading semicolon):'
+    respond '  fortune        - recite a random quote'
+    respond '  fortune N      - recite quote #N (see: fortune list)'
+    respond '  fortune list   - list every quote with its number'
+    respond '  fortune help   - show this help'
+    respond ''
+    respond 'Also triggers automatically:'
+    respond '  ;ecure         - recites a random quote whenever you heal'
+    respond ''
+    respond "Quotes file: #{QUOTES_FILE}"
+    respond 'New here? A starter quotes.yaml is created automatically the first time'
+    respond 'this runs. Add your own quotes any time, or grab the full set from:'
+    respond "  #{QUOTES_REPO_URL}"
+  end
+
+  # Prints every quote, numbered to match {#quote_at}, to the local window.
+  def self.list_quotes
+    respond ''
+    respond "--- Fortune Quotes (#{quotes.length}) ---"
+    quotes.each_with_index { |quote, i| respond "#{i + 1}. #{quote[:text]} -#{quote[:author]}" }
+    respond ''
+  end
+end
+
+# Intercepts every ;script invocation so we notice ;ecure the instant it's
+# dispatched, rather than polling Script.running? and risking a miss when
+# ecure has nothing to heal and finishes before the next poll.
+module Fortune::ScriptStartHook
+  def start(*args)
+    Fortune.request! if Script.running?('fortune') && args.first.to_s =~ /^ecure$/i
+    super
+  end
+end
+
+class << Script
+  prepend Fortune::ScriptStartHook unless ancestors.include?(Fortune::ScriptStartHook)
+end
+
+# Lets typing "fortune" (optionally followed by a quote number, "help", or
+# "list") trigger a recite/response too, without sending it upstream to the
+# game as an unrecognized command.
+UpstreamHook.remove('fortune-trigger') if UpstreamHook.list.include?('fortune-trigger')
+UpstreamHook.add('fortune-trigger', proc { |client_string|
+  match = client_string.strip.match(/^(?:<c>)?fortune(?:\s+(help|list|\d+))?$/i)
+  if match
+    case match[1]
+    when nil
+      Fortune.request!
+    when /^help$/i
+      Fortune.show_help
+    when /^list$/i
+      Fortune.list_quotes
+    else
+      Fortune.request!(match[1].to_i)
+    end
+    nil
+  else
+    client_string
+  end
+})
+
+silence_me
+
+loop do
+  result = Fortune.requested?
+  Fortune.recite(result == true ? nil : result) if result
+  sleep 0.05
+end
