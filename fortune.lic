@@ -11,10 +11,13 @@
        author: Felixopedes
          game: Gemstone
          tags: empath, healing, flavor
-      version: 1.5.0
+      version: 1.6.0
      required: Lich >= 5.12.0
 
   changelog:
+  v1.6.0 (2026-07-10)
+    - add "fortune add <text>; <author>" to append a quote to quotes.yaml
+      without leaving the game
   v1.5.0 (2026-07-10)
     - auto-create quotes.yaml with a single starter quote on first run for a
       character that doesn't have one yet, pointing to the full set on GitHub
@@ -144,10 +147,11 @@ module Fortune
     respond 'Recites a random healing quote (attributed to Imaera) whenever you heal with ;ecure.'
     respond ''
     respond 'Commands (typed directly, no leading semicolon):'
-    respond '  fortune        - recite a random quote'
-    respond '  fortune N      - recite quote #N (see: fortune list)'
-    respond '  fortune list   - list every quote with its number'
-    respond '  fortune help   - show this help'
+    respond '  fortune                    - recite a random quote'
+    respond '  fortune N                  - recite quote #N (see: fortune list)'
+    respond '  fortune list               - list every quote with its number'
+    respond '  fortune add <text>; <author> - add a new quote (author defaults to Imaera)'
+    respond '  fortune help               - show this help'
     respond ''
     respond 'Also triggers automatically:'
     respond '  ;ecure         - recites a random quote whenever you heal'
@@ -165,6 +169,30 @@ module Fortune
     quotes.each_with_index { |quote, i| respond "#{i + 1}. #{quote[:text]} -#{quote[:author]}" }
     respond ''
   end
+
+  # Appends a quote to {QUOTES_FILE} from "<text>; <author>" input.
+  # Author defaults to Imaera if omitted.
+  # @param raw [String] everything typed after "fortune add "
+  def self.add_quote(raw)
+    text, author = raw.to_s.split(';', 2)
+    text = text.to_s.strip
+    author = author.to_s.strip
+    author = 'Imaera' if author.empty?
+
+    if text.empty?
+      respond '[Fortune] Usage: fortune add <quote text>; <author>'
+      return
+    end
+
+    quotes << { text: text, author: author }
+    save_quotes
+    respond "[Fortune] Added quote ##{quotes.length}: #{text} -#{author}"
+  end
+
+  # Persists the current in-memory {#quotes} list back to {QUOTES_FILE}.
+  def self.save_quotes
+    File.write(QUOTES_FILE, { quotes: quotes }.to_yaml)
+  end
 end
 
 # Intercepts every ;script invocation so we notice ;ecure the instant it's
@@ -181,22 +209,27 @@ class << Script
   prepend Fortune::ScriptStartHook unless ancestors.include?(Fortune::ScriptStartHook)
 end
 
-# Lets typing "fortune" (optionally followed by a quote number, "help", or
-# "list") trigger a recite/response too, without sending it upstream to the
-# game as an unrecognized command.
+# Lets typing "fortune" (optionally followed by a quote number, "help",
+# "list", or "add <text>; <author>") trigger a recite/response too, without
+# sending it upstream to the game as an unrecognized command.
 UpstreamHook.remove('fortune-trigger') if UpstreamHook.list.include?('fortune-trigger')
 UpstreamHook.add('fortune-trigger', proc { |client_string|
-  match = client_string.strip.match(/^(?:<c>)?fortune(?:\s+(help|list|\d+))?$/i)
+  match = client_string.strip.match(/^(?:<c>)?fortune(?:\s+(.*))?$/i)
   if match
-    case match[1]
-    when nil
+    arg = match[1]
+    case arg
+    when nil, ''
       Fortune.request!
     when /^help$/i
       Fortune.show_help
     when /^list$/i
       Fortune.list_quotes
+    when /^add\s+(.+)$/im
+      Fortune.add_quote($1)
+    when /^\d+$/
+      Fortune.request!(arg.to_i)
     else
-      Fortune.request!(match[1].to_i)
+      respond "[Fortune] Unknown command '#{arg}'. Try: fortune help"
     end
     nil
   else
