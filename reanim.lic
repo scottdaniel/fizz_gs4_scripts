@@ -1,0 +1,119 @@
+=begin
+      author: Fizzleworth, Ashraam
+        name: reanim
+        game: gemstone
+        tags: necromancer, reanimate, animate dead, combat
+    requires: Lich > 5.14.2
+     version: 0.2
+        note: Written with assistance from Claude (Anthropic).
+
+  Kills a target with repeated Pain (711), then reanimates the corpse with
+  Animate Dead (730) and sets the new animate to work.
+
+  Can be run two ways:
+    - From Bigshot, passing an explicit target: ;reanim <#targetid>
+    - Manually during a hunt: ;reanim
+      Target resolution order: an explicit #id you passed, then your formal
+      /target lock (GameObj.target) if you have one, then the first living
+      NPC in the room. Your own minor demon (matched via IGNORE_NPCS,
+      currently "verlok") is never picked as a target. If nothing resolves,
+      the room is considered empty and the script does nothing.
+
+  Sequence:
+    1) Cast Pain (711) on the target repeatedly (up to MAX_PAIN_ATTEMPTS
+       times) until it's dead or gone.
+    2) Appraise the corpse (logged under DEBUG) -- suitability wording is
+       informational only, not a gate; reanimation is attempted either way.
+       This step never fires until the target's status is confirmed
+       dead/gone (with a short pause after the last Pain cast to avoid
+       reading a stale pre-death status), so it won't appraise a live NPC.
+    3) Prep and cast Animate Dead (730) on the corpse.
+    4) "tell anim follow", "tell anim attack", and "tell verlok to drop
+       claid" so the new animate has a weapon to fight with.
+
+  Both 711 and 730 are cast via Spell#cast, which queues through Lich's
+  shared cast lock instead of raw release/incant fput -- the same fix
+  applied to fizzsac.lic to avoid racing Bigshot's own spell casts.
+
+  Set DEBUG = true/false at the top of the script to toggle status messages.
+
+  Usage:  ;reanim
+  Stop:   n/a (single pass, exits when done)
+=end
+
+DEBUG = true
+
+IGNORE_NPCS = /verlok/i   # your own minor demon -- never a valid target
+
+PAIN_SPELL          = 711
+ANIMATE_SPELL       = 730
+MAX_PAIN_ATTEMPTS   = 15
+
+def debug(msg)
+	echo "[DBG] #{msg}" if DEBUG
+end
+
+args = script.vars[1..-1].to_a.compact.map(&:to_s).reject(&:empty?)
+
+explicit_target = args.find { |a| a.start_with?("#") }
+
+if explicit_target
+	target = explicit_target
+elsif GameObj.target and GameObj.target.name !~ IGNORE_NPCS
+	target = "##{GameObj.target.id}"
+else
+	npc = GameObj.npcs.find { |n| n.status !~ /dead|gone/i and n.name !~ IGNORE_NPCS }
+	target = npc ? "##{npc.id}" : nil
+end
+
+if target.nil?
+	debug("Not doing anything because room is empty")
+else
+	search = target.delete_prefix("#")
+
+	MAX_PAIN_ATTEMPTS.times do |attempt|
+		find = GameObj.npcs.find { |n| n.id == search }
+		break if find.nil? or find.status =~ /dead|gone/
+
+		unless Spell[PAIN_SPELL].affordable?
+			debug("Not enough resources to cast #{PAIN_SPELL}, stopping.")
+			break
+		end
+
+		waitrt?
+		waitcastrt?
+		result = Spell[PAIN_SPELL].cast("##{find.id}")
+		debug("Attempt #{attempt + 1}/#{MAX_PAIN_ATTEMPTS}: cast #{PAIN_SPELL} on ##{find.id} -> #{result}")
+	end
+
+	waitrt?
+	sleep 0.5
+	find = GameObj.npcs.find { |n| n.id == search }
+
+	if find.nil?
+		debug("Target is gone, nothing to reanimate.")
+	elsif find.status !~ /dead|gone/
+		debug("Target still alive after #{MAX_PAIN_ATTEMPTS} attempts, giving up.")
+	else
+		status = Lich::Util.issue_command("appraise ##{find.id}", /suitable for animation/i, include_end: false, silent: true).last
+		debug("Appraise ##{find.id}: #{status}")
+
+		unless Spell[ANIMATE_SPELL].affordable?
+			debug("Not enough resources to cast #{ANIMATE_SPELL}.")
+			exit
+		end
+
+		waitrt?
+		waitcastrt?
+		result = Spell[ANIMATE_SPELL].cast("##{find.id}")
+		debug("Cast #{ANIMATE_SPELL} on ##{find.id} -> #{result}")
+
+		waitrt?
+		waitcastrt?
+		fput "tell anim follow"
+		sleep 0.3
+		fput "tell anim attack"
+		sleep 0.3
+		fput "tell verlok to drop claid"
+	end
+end
