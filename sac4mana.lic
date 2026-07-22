@@ -1,10 +1,10 @@
 =begin
       author: Fizzleworth, Ashraam
-        name: sacrifice_mana
+        name: sac4mana
         game: gemstone
         tags: sorcerer, sacrifice, mana
     requires: Lich > 5.14.2
-     version: 0.6
+     version: 0.9
         note: Written with assistance from Claude (Anthropic).
 
   Keeps a Sorcerer's mana topped off during a hunt via "sacrifice mana".
@@ -33,10 +33,15 @@
     1) pausing Bigshot (via Lich's Script.pause/unpause -- no changes to
        bigshot.lic itself)
     2) running wander.lic (no args) until it finds and targets a new enemy
-    3) running fizzsac against that target to try to harvest essence
-    4) repeating steps 2-3 (up to MAX_HARVEST_ROUNDS times) until shadow
-       essence reads 5/5, or giving up if nothing targetable turns up
-    5) unpausing Bigshot
+    3) appraising that target -- if it says the creature "is too easy for
+       the likes of you", it's skipped (not worth the essence) and step 2
+       repeats (up to MAX_WANDER_SKIPS times) until a worthwhile target
+       turns up
+    4) running fizzsac against that target to try to harvest essence
+    5) repeating steps 2-4 (up to MAX_HARVEST_ROUNDS times) until shadow
+       essence reads 5/5, or giving up if nothing targetable/worthwhile
+       turns up
+    6) unpausing Bigshot
 
   While this harvest cycle runs, Bigshot -- and its normal combat/defense
   handling -- is paused the entire time, not just for the initial mana sac.
@@ -47,11 +52,11 @@
 
   Meant to run alongside fizzsac.lic during a hunt.
 
-  Usage:  ;sacrifice_mana
-  Stop:   ;kill sacrifice_mana
+  Usage:  ;sac4mana
+  Stop:   ;kill sac4mana
 =end
 
-module SacrificeMana
+module Sac4Mana
   # === config (edit to taste) ===================================================
   MANA_THRESHOLD        = 50
   CHECK_INTERVAL_SECONDS = 10
@@ -59,7 +64,9 @@ module SacrificeMana
   BIGSHOT_SCRIPT_NAME    = "bigshot"
   ESSENCE_MAX            = 5
   MAX_HARVEST_ROUNDS     = 5      # give up wander+fizzsac cycling after this many rounds
+  MAX_WANDER_SKIPS       = 5      # give up skipping "too easy" targets after this many wander attempts
   IGNORE_NPCS            = /verlok/i   # your own minor demon -- never a valid harvest target
+  TOO_EASY_REGEX         = /too easy for the likes of you/i
 
   # === helpers ===================================================================
   def self.sacrifice_on_cooldown?
@@ -96,6 +103,40 @@ module SacrificeMana
     npc ? "##{npc.id}" : nil
   end
 
+  def self.too_easy?(target)
+    lines = Lich::Util.issue_command(
+      "appraise #{target}",
+      /^The .+? is \w+ in size/,
+      include_end: false, silent: true
+    )
+
+    if lines.any? { |line| line =~ TOO_EASY_REGEX }
+      echo "#{target} is too easy for the likes of you."
+      true
+    else
+      echo "#{target} is sacrifice worthy."
+      false
+    end
+  end
+
+  def self.find_worthy_target
+    MAX_WANDER_SKIPS.times do
+      Script.run("wander")
+
+      target = room_target
+      return nil unless target
+
+      if too_easy?(target)
+        echo "Wandering for something else."
+        next
+      end
+
+      return target
+    end
+
+    nil
+  end
+
   def self.harvest_until_full
     MAX_HARVEST_ROUNDS.times do |round|
       if Resources.shadow_essence.to_i >= ESSENCE_MAX
@@ -103,12 +144,11 @@ module SacrificeMana
         return
       end
 
-      echo "Harvest round #{round + 1}/#{MAX_HARVEST_ROUNDS}: wandering for a new target."
-      Script.run("wander")
+      echo "Harvest round #{round + 1}/#{MAX_HARVEST_ROUNDS}: wandering for a worthy target."
+      target = find_worthy_target
 
-      target = room_target
       unless target
-        echo "Wander found nothing targetable -- stopping harvest cycle."
+        echo "Wander found nothing targetable/worthy -- stopping harvest cycle."
         return
       end
 
@@ -121,8 +161,8 @@ module SacrificeMana
 
   # === main ======================================================================
   def self.run
-    echo "SacrificeMana started! Watching mana (threshold: #{MANA_THRESHOLD})."
-    echo "Stop with ;kill sacrifice_mana"
+    echo "Sac4Mana started! Watching mana (threshold: #{MANA_THRESHOLD})."
+    echo "Stop with ;kill sac4mana"
 
     loop do
       if mana < MANA_THRESHOLD and !sacrifice_on_cooldown?
@@ -138,4 +178,4 @@ module SacrificeMana
   end
 end
 
-SacrificeMana.run
+Sac4Mana.run

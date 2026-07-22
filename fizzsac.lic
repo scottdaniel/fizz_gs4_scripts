@@ -4,7 +4,7 @@
         game: gemstone
         tags: sorcerer, sacrifice, shadow essence, combat
     requires: Lich > 5.14.2
-     version: 0.6
+     version: 0.7
         note: Written with assistance from Claude (Anthropic).
 
   This script was designed to help detect whether a target is ready for Sorcerer Sacrifice.
@@ -12,7 +12,7 @@
 	If you have less than maximum shadow essence, the script will check the target for eligibility.
 	If you have maximum shadow essence, it will cast the spell you set as your script variable.
 	Mana upkeep via "sacrifice mana" is handled separately by the companion background
-	script sacrifice_mana.lic -- run that alongside this one during a hunt.
+	script sac4mana.lic -- run that alongside this one during a hunt.
 
 	Can be run two ways:
 	  - From Bigshot, passing an explicit target and spell: ;fizzsac <#targetid> 719
