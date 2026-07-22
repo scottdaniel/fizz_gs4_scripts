@@ -1,0 +1,273 @@
+=begin
+      author: Fizzlesticks
+        name: playsongs
+        game: gemstone
+        tags: bard, tambourine, performance
+
+  Background script that keeps Fizzlesticks playing an instrument.
+
+  Gets the instrument from the backpack, plays it, then watches for the
+  game's "performance ended" messages. When one shows up, it pauses briefly
+  and plays again.
+
+  Each song cycle (from "you lift your instrument and begin..." to one of
+  the "song ended" messages) is timed, and any PLAY skill rank-ups noticed
+  along the way are counted. Every 5 completed songs it also runs PLAY
+  SKILL directly, since rank-up messages can land in between songs where
+  nothing is watching for them. Stats are tracked per instrument in a
+  small YAML file at data/<game>/<character>/playsongs_stats.yaml.
+
+  Usage:  ;playsongs                (defaults to tambourine, played soft)
+          ;playsongs lute           (play a different instrument instead)
+          ;playsongs tambourine fast   (style: soft (default), fast, or slow)
+
+  Commands (typed directly, no leading semicolon -- work even while the
+  script is already running in the background):
+          playsongs stats           - print stats for every instrument
+                                       tracked so far
+          playsongs pause           - stop starting new songs after the
+                                       current one finishes
+          playsongs resume          - resume after a pause
+          playsongs help            - show this help
+
+  Stop:   ;kill playsongs
+=end
+
+require 'yaml'
+require 'fileutils'
+
+module Playsongs
+
+  INSTRUMENT = (Script.current.vars[1] || "tambourine").downcase
+
+  STYLES = %w[soft fast slow]
+  requested_style = (Script.current.vars[2] || "soft").downcase
+  unless STYLES.include?(requested_style)
+    echo "Unknown style '#{requested_style}', defaulting to soft. Valid styles: #{STYLES.join(', ')}."
+    requested_style = "soft"
+  end
+  STYLE = requested_style
+
+  START_REGEX = /You lift your \S+ and begin to tap out a beat\./
+
+  RANKUP_REGEX = /You feel a sense of accomplishment as you continue practicing your \S+!/
+
+  # "your \S+" instead of the instrument name so this still matches regardless
+  # of what's being played; "you"/"You" scopes it to your own performance so
+  # it won't trigger off other bards finishing theirs.
+  STOP_REGEX = Regexp.union(
+    /As the last whispered note fades from the stilled air, you slowly smile and put your hand over your \S+, bowing with a flourish\./,
+    /The music moves slower and slower until finally, with a last hovering beat, it fades away\. You look up from your \S+ and smile\./,
+    /The air suddenly stills as you halt your whirling rhythm as suddenly as you began, silencing your \S+\./,
+    /You complete the last beat with a flourish, lowering your \S+\./
+  )
+
+  RESTART_PAUSE_SECONDS = 3
+  PAUSE_POLL_SECONDS = 1
+  SKILL_CHECK_INTERVAL = 5   # run PLAY SKILL every this many completed songs
+
+  STATS_FILE = File.join(DATA_DIR, XMLData.game, Char.name, 'playsongs_stats.yaml')
+
+  @paused = false
+  @pause_mutex = Mutex.new
+  @song_count = 0
+
+  def self.pause!
+    @pause_mutex.synchronize { @paused = true }
+  end
+
+  def self.resume!
+    @pause_mutex.synchronize { @paused = false }
+  end
+
+  def self.paused?
+    @pause_mutex.synchronize { @paused }
+  end
+
+  def self.load_stats
+    return {} unless File.exist?(STATS_FILE)
+
+    YAML.load_file(STATS_FILE) || {}
+  end
+
+  def self.save_stats(stats)
+    FileUtils.mkdir_p(File.dirname(STATS_FILE))
+    File.write(STATS_FILE, stats.to_yaml)
+  end
+
+  def self.record_song(duration_seconds, rank_ups)
+    stats = load_stats
+    entry = stats[INSTRUMENT] ||= { 'songs_played' => 0, 'rank_ups' => 0, 'total_seconds' => 0 }
+    entry['songs_played'] += 1
+    entry['rank_ups'] += rank_ups
+    entry['total_seconds'] += duration_seconds.round
+    entry['last_played'] = Time.now.to_s
+    save_stats(stats)
+    entry
+  end
+
+  # Prints every instrument's tracked stats to the local window.
+  def self.show_stats
+    stats = load_stats
+
+    respond ''
+    respond '--- Playsongs Stats ---'
+    if stats.empty?
+      respond 'No stats recorded yet.'
+    else
+      stats.each do |instrument, entry|
+        songs = entry['songs_played'].to_i
+        seconds = entry['total_seconds'].to_i
+        avg = songs > 0 ? (seconds / songs.to_f).round(1) : 0
+        respond "#{instrument}: #{songs} songs, #{entry['rank_ups'].to_i} rank-ups, #{seconds}s played (avg #{avg}s/song), last played #{entry['last_played'] || 'never'}"
+      end
+    end
+    respond ''
+  end
+
+  # Prints available commands to the local window.
+  def self.show_help
+    respond ''
+    respond '--- Playsongs Help ---'
+    respond "Keeps playing #{INSTRUMENT} (#{STYLE} style) in a loop, timing each song and counting rank-ups."
+    respond "Also runs PLAY SKILL every #{SKILL_CHECK_INTERVAL} completed songs."
+    respond ''
+    respond 'Commands (typed directly, no leading semicolon):'
+    respond '  playsongs stats    - print stats for every instrument tracked so far'
+    respond '  playsongs pause    - stop starting new songs after the current one finishes'
+    respond '  playsongs resume   - resume after a pause'
+    respond '  playsongs help     - show this help'
+    respond ''
+    respond 'Stop the script entirely with: ;kill playsongs'
+    respond ''
+  end
+
+  # Every SKILL_CHECK_INTERVAL completed songs, runs PLAY SKILL so the
+  # game's own authoritative skill report shows up -- rank-up messages
+  # (RANKUP_REGEX) can land outside the window play_and_track is actively
+  # watching (e.g. between songs), so this catches progress those miss.
+  def self.maybe_check_skill(song_count)
+    return unless (song_count % SKILL_CHECK_INTERVAL).zero?
+
+    echo "Periodic PLAY SKILL check (every #{SKILL_CHECK_INTERVAL} songs) --"
+    fput "play skill"
+  end
+
+  # No "from my backpack" -- the game sometimes auto-stows the instrument
+  # into whatever container has room (e.g. when both hands are needed for
+  # something else), not necessarily the backpack, so this needs to find it
+  # wherever it landed.
+  def self.get_instrument
+    fput "get my #{INSTRUMENT}"
+  end
+
+  # INSTRUMENT belongs in the left hand so the right hand stays free for a
+  # weapon. Fixes wherever it currently is: GETs it if it's not in hand at
+  # all, or swaps hands if it landed in the right hand (other scripts love
+  # to put things away, not always into the same hand).
+  # @return [Boolean] true if it was already correctly in the left hand
+  def self.ensure_in_left_hand
+    fput "glance"
+
+    if checkleft(INSTRUMENT)
+      true
+    elsif checkright(INSTRUMENT)
+      echo "#{INSTRUMENT} is in my right hand -- swapping so my right hand is free for a weapon."
+      fput "swap"
+      false
+    else
+      get_instrument
+      false
+    end
+  end
+
+  # Sends the play command, watches the response for the song actually
+  # starting and any rank-up messages along the way, then waits for one of
+  # the "song ended" messages. Records the completed cycle to STATS_FILE.
+  def self.play_and_track
+    started_at = Time.now
+    rank_ups = 0
+
+    fput "play my #{INSTRUMENT} #{STYLE}"
+
+    loop do
+      line = get
+      started_at = Time.now if line =~ START_REGEX
+      rank_ups += 1 if line =~ RANKUP_REGEX
+      break if line =~ STOP_REGEX
+    end
+
+    duration = Time.now - started_at
+    entry = record_song(duration, rank_ups)
+    echo "Song complete in #{duration.round}s (rank-ups: #{rank_ups}). #{INSTRUMENT} totals: #{entry['songs_played']} songs, #{entry['rank_ups']} rank-ups, #{entry['total_seconds']}s played."
+  end
+
+  echo "Playsongs started -- instrument: #{INSTRUMENT}, style: #{STYLE}"
+
+  # Lets typing "playsongs <command>" (no leading semicolon) control the
+  # running script without being sent upstream as a game command.
+  # Registered as a plain UpstreamHook (not tied to this script's own loop)
+  # so it still works while playsongs is already running in the background
+  # -- ";playsongs stats" would just hit Lich's "already running" guard
+  # instead.
+  COMMANDS = %w[stats help pause resume]
+
+  UpstreamHook.remove('playsongs-trigger') if UpstreamHook.list.include?('playsongs-trigger')
+  UpstreamHook.add('playsongs-trigger', proc { |client_string|
+    match = client_string.strip.match(/^(?:<c>)?playsongs\s+(\S+)$/i)
+    if match
+      word = match[1].downcase
+      # allow abbreviations/typos like "res" or "resum" as long as they're an
+      # unambiguous prefix of one of the real commands
+      command = COMMANDS.find { |c| word.length >= 3 && c.start_with?(word) }
+      case command
+      when 'stats'
+        Playsongs.show_stats
+      when 'help'
+        Playsongs.show_help
+      when 'pause'
+        Playsongs.pause!
+        respond '[Playsongs] Pausing after the current song finishes. Resume with: playsongs resume'
+      when 'resume'
+        Playsongs.resume!
+        # Other scripts (loot, banking, etc.) love to stow things -- or put
+        # them in the wrong hand -- while this is paused, so don't assume
+        # the instrument is still correctly in hand; check right away
+        # instead of waiting on the main loop's own check.
+        if Playsongs.ensure_in_left_hand
+          respond "[Playsongs] Resumed -- already holding #{Playsongs::INSTRUMENT} in my left hand, playing again shortly."
+        else
+          respond "[Playsongs] Resumed -- fixing #{Playsongs::INSTRUMENT}'s hand, playing again shortly."
+        end
+      else
+        respond "[Playsongs] Unknown command '#{word}'. Try: playsongs help"
+      end
+      nil
+    else
+      client_string
+    end
+  })
+
+  if ensure_in_left_hand
+    echo "Already holding #{INSTRUMENT} in my left hand, skipping get."
+  end
+
+  loop do
+    if paused?
+      sleep PAUSE_POLL_SECONDS
+      next
+    end
+
+    # The game sometimes auto-stows the instrument between songs (e.g. hands
+    # needed for something else), which also fires the same "song ended"
+    # messages this script watches for -- so always confirm it's still
+    # correctly in the left hand before trying to play again instead of
+    # assuming the last song ended because it actually finished.
+    ensure_in_left_hand
+    play_and_track
+    @song_count += 1
+    maybe_check_skill(@song_count)
+    sleep RESTART_PAUSE_SECONDS
+  end
+
+end #End of module
