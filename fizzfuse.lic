@@ -4,7 +4,7 @@
         game: gemstone
         tags: scroll infusion, infuse, unlock, runestone, scroll
     requires: Lich > 5.4.0
-     version: 0.3
+     version: 0.4
 
 
 Infuse!
@@ -49,8 +49,9 @@ Infuse!
         - Fixed runestone making not working
         - Put finished scroll in a scrollsack (set with ;vars)
         - Removed "infuse_scroll" and replaced with "infuse"
-    #TODO: During the actual infusing of mana, if you run out of mana, sometime the link with the scroll will expire and the script will erroneously think it is fully infused  
-	
+        - Stop cleanly if too injured to cast the link spell (714) instead of hanging
+        - Detect when the link to the scroll slips mid-infuse and relink automatically
+
 =end
 
 # Globals
@@ -70,7 +71,12 @@ def make_rune (rune_name)
 		orderlist = orderlist.each.find{|item| item.include? "#{item_name}"}
 		ordernum = orderlist.scan(/\d+/).first
 		fput "order #{ordernum}"
-		fput "buy"
+		buy_result = dothistimeout "buy", 3, /Sold for|need a free hand/
+		if buy_result =~ /need a free hand/
+			fput "stow left"
+			buy_result = dothistimeout "buy", 3, /Sold for|need a free hand/
+		end
+		buy_result
 	end
 	
 	# Withdraw money
@@ -169,18 +175,60 @@ def unlock_spells
 	fput "put left in my #{UserVars.infusesack}"
 end
 
+# Cast the link (Scroll Infusion, 714) spell on the scroll in your right hand.
+#
+# Waits for enough mana first so Spell#cast's own energy check can't silently
+# no-op the cast (it just echoes 'cast: not enough mana' and returns false).
+#
+# Returns true if the link was made, or false if you're too injured to cast it.
+def link_scroll(infusescroll)
+	wait_until { mana >= Spell[714].mana_cost }
+	link_result = Spell[714].cast(infusescroll)
+	if link_result.to_s.include? "You can't make that dextrous of a move!"
+		echo "You are too injured to link to the scroll!"
+		return false
+	elsif link_result == false
+		echo "Failed to link to the scroll!"
+		return false
+	end
+	waitcastrt?
+	true
+end
+
+# Wait for mana to regen, watching for the link to the scroll slipping in the meantime.
+#
+# The "You feel your link to the ... slip." message can arrive asynchronously
+# at any point (e.g. during waitcastrt?, before this is even called), and
+# dothistimeout's Script.current.clear would otherwise silently discard it
+# before the next infuse attempt ever sees it. So every iteration - even if
+# mana is already high enough to return immediately - must drain and check
+# whatever's currently buffered before deciding we're done waiting.
+#
+# Returns true once mana regens, or false if the link slipped and we couldn't relink.
+def wait_for_mana(infusescroll, threshold = 20)
+	loop do
+		while (line = get?)
+			if line =~ /You feel your link to the .* slip\./
+				echo "Lost the link to the scroll, relinking..."
+				return false unless link_scroll(infusescroll)
+			end
+		end
+		return true if mana > threshold
+		sleep 0.1
+	end
+end
+
 # Fully infuse all unlocked spells on the scroll in your right hand
 def infuse
 	find_rune("ag'loenar")
 	infusescroll = "#" + GameObj.right_hand.id
-	Spell[714].cast(infusescroll)
-	waitcastrt?
-	
+	exit unless link_scroll(infusescroll)
+
 	loop do
-		wait_until { mana > 20 }
+		break unless wait_for_mana(infusescroll)
 		infuse_line = dothistimeout "infuse my #{GameObj.right_hand}", 1, /glows dimly for a moment|mana dissipates|You are not prepared to infuse that/
 		waitcastrt?
-		
+
 		if (infuse_line.include? 'grows cold') || (infuse_line.include? 'not prepared to infuse')
 			echo "Scroll locked!!"
 			break
