@@ -17,6 +17,10 @@
   nothing is watching for them. Stats are tracked per instrument in a
   small YAML file at data/<game>/<character>/playsongs_stats.yaml.
 
+  Auto-pauses (no command needed) for as long as ;eloot sell is running
+  (not eloot alone), and resumes once it finishes -- see EXCLUSIVE_SCRIPTS
+  to add others.
+
   Usage:  ;playsongs                (defaults to tambourine, played soft)
           ;playsongs lute           (play a different instrument instead)
           ;playsongs tambourine fast   (style: soft (default), fast, or slow)
@@ -66,11 +70,22 @@ module Playsongs
   PAUSE_POLL_SECONDS = 1
   SKILL_CHECK_INTERVAL = 5   # run PLAY SKILL every this many completed songs
 
+  # Scripts that need your hands/attention -- playsongs auto-pauses (same as
+  # a manual "playsongs pause") for as long as a running script matches one
+  # of these, and auto-resumes once it finishes, no command needed either
+  # way. arg_pattern nil means any invocation of that script name matches;
+  # otherwise at least one of the script's args must match the pattern.
+  EXCLUSIVE_SCRIPTS = [
+    { name: 'eloot', arg_pattern: /sell/i } # only "eloot sell", not eloot alone
+  ]
+
   STATS_FILE = File.join(DATA_DIR, XMLData.game, Char.name, 'playsongs_stats.yaml')
 
   @paused = false
   @pause_mutex = Mutex.new
   @song_count = 0
+  @blocking_script = nil
+  @was_paused = false
 
   def self.pause!
     @pause_mutex.synchronize { @paused = true }
@@ -82,6 +97,20 @@ module Playsongs
 
   def self.paused?
     @pause_mutex.synchronize { @paused }
+  end
+
+  # @return [String, nil] "name arg1 arg2..." for the first running script
+  #   matching an EXCLUSIVE_SCRIPTS entry, or nil if none match
+  def self.blocking_script
+    running = Script.list
+    EXCLUSIVE_SCRIPTS.each do |spec|
+      match = running.find do |s|
+        s.name == spec[:name] &&
+          (spec[:arg_pattern].nil? || s.vars.any? { |v| v.to_s =~ spec[:arg_pattern] })
+      end
+      return [match.name, *match.vars].join(' ') if match
+    end
+    nil
   end
 
   def self.load_stats
@@ -131,6 +160,7 @@ module Playsongs
     respond '--- Playsongs Help ---'
     respond "Keeps playing #{INSTRUMENT} (#{STYLE} style) in a loop, timing each song and counting rank-ups."
     respond "Also runs PLAY SKILL every #{SKILL_CHECK_INTERVAL} completed songs."
+    respond "Auto-pauses while eloot sell is running (not eloot alone), no command needed."
     respond ''
     respond 'Commands (typed directly, no leading semicolon):'
     respond '  playsongs stats    - print stats for every instrument tracked so far'
@@ -229,16 +259,14 @@ module Playsongs
         Playsongs.pause!
         respond '[Playsongs] Pausing after the current song finishes. Resume with: playsongs resume'
       when 'resume'
+        # Just flips the flag -- fput (and anything that calls it, like
+        # ensure_in_left_hand) requires Script.current, which is nil from
+        # this UpstreamHook callback since it runs on Lich's input thread,
+        # not the script's own thread. The main loop (running on the
+        # script's actual thread) picks up the cleared flag within
+        # PAUSE_POLL_SECONDS, prints its own "playing again in Ns" countdown,
+        # and does the hand check/fix and play from there instead.
         Playsongs.resume!
-        # Other scripts (loot, banking, etc.) love to stow things -- or put
-        # them in the wrong hand -- while this is paused, so don't assume
-        # the instrument is still correctly in hand; check right away
-        # instead of waiting on the main loop's own check.
-        if Playsongs.ensure_in_left_hand
-          respond "[Playsongs] Resumed -- already holding #{Playsongs::INSTRUMENT} in my left hand, playing again shortly."
-        else
-          respond "[Playsongs] Resumed -- fixing #{Playsongs::INSTRUMENT}'s hand, playing again shortly."
-        end
       else
         respond "[Playsongs] Unknown command '#{word}'. Try: playsongs help"
       end
@@ -253,9 +281,27 @@ module Playsongs
   end
 
   loop do
-    if paused?
+    blocker = blocking_script
+    if blocker
+      if @blocking_script != blocker
+        echo "Pausing while #{blocker} is running."
+        @blocking_script = blocker
+      end
       sleep PAUSE_POLL_SECONDS
       next
+    elsif @blocking_script
+      echo "#{@blocking_script} finished -- resuming."
+      @blocking_script = nil
+    end
+
+    if paused?
+      @was_paused = true
+      sleep PAUSE_POLL_SECONDS
+      next
+    elsif @was_paused
+      @was_paused = false
+      echo "Resumed -- playing #{INSTRUMENT} again in #{RESTART_PAUSE_SECONDS} seconds..."
+      sleep RESTART_PAUSE_SECONDS
     end
 
     # The game sometimes auto-stows the instrument between songs (e.g. hands
