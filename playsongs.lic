@@ -135,6 +135,20 @@ module Playsongs
     entry
   end
 
+  # @param total_seconds [Integer]
+  # @return [String] "1h 23m 45s" (omitting leading zero units, but always
+  #   showing seconds)
+  def self.format_duration(total_seconds)
+    hours, remainder = total_seconds.divmod(3600)
+    minutes, seconds = remainder.divmod(60)
+
+    parts = []
+    parts << "#{hours}h" if hours > 0
+    parts << "#{minutes}m" if hours > 0 || minutes > 0
+    parts << "#{seconds}s"
+    parts.join(' ')
+  end
+
   # Prints every instrument's tracked stats to the local window.
   def self.show_stats
     stats = load_stats
@@ -148,7 +162,7 @@ module Playsongs
         songs = entry['songs_played'].to_i
         seconds = entry['total_seconds'].to_i
         avg = songs > 0 ? (seconds / songs.to_f).round(1) : 0
-        respond "#{instrument}: #{songs} songs, #{entry['rank_ups'].to_i} rank-ups, #{seconds}s played (avg #{avg}s/song), last played #{entry['last_played'] || 'never'}"
+        respond "#{instrument}: #{songs} songs, #{entry['rank_ups'].to_i} rank-ups, #{format_duration(seconds)} played (avg #{avg}s/song), last played #{entry['last_played'] || 'never'}"
       end
     end
     respond ''
@@ -229,7 +243,7 @@ module Playsongs
 
     duration = Time.now - started_at
     entry = record_song(duration, rank_ups)
-    echo "Song complete in #{duration.round}s (rank-ups: #{rank_ups}). #{INSTRUMENT} totals: #{entry['songs_played']} songs, #{entry['rank_ups']} rank-ups, #{entry['total_seconds']}s played."
+    echo "Song complete in #{duration.round}s (rank-ups: #{rank_ups}). #{INSTRUMENT} totals: #{entry['songs_played']} songs, #{entry['rank_ups']} rank-ups, #{format_duration(entry['total_seconds'])} played."
   end
 
   echo "Playsongs started -- instrument: #{INSTRUMENT}, style: #{STYLE}"
