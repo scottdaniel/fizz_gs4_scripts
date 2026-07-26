@@ -17,6 +17,11 @@
   nothing is watching for them. Stats are tracked per instrument in a
   small YAML file at data/<game>/<character>/playsongs_stats.yaml.
 
+  A song that ends in under 300 seconds (MIN_SONG_SECONDS) is treated as
+  aborted -- e.g. interrupted before it could finish naturally -- and isn't
+  counted toward songs_played/total_seconds, though any rank-ups noticed
+  during it still are.
+
   Auto-pauses (no command needed) for as long as ;eloot sell is running
   (not eloot alone), and resumes once it finishes -- see EXCLUSIVE_SCRIPTS
   to add others.
@@ -69,6 +74,7 @@ module Playsongs
   RESTART_PAUSE_SECONDS = 3
   PAUSE_POLL_SECONDS = 1
   SKILL_CHECK_INTERVAL = 5   # run PLAY SKILL every this many completed songs
+  MIN_SONG_SECONDS = 300     # shorter than this counts as an aborted song, not a real one
 
   # Scripts that need your hands/attention -- playsongs auto-pauses (same as
   # a manual "playsongs pause") for as long as a running script matches one
@@ -131,6 +137,19 @@ module Playsongs
     entry['rank_ups'] += rank_ups
     entry['total_seconds'] += duration_seconds.round
     entry['last_played'] = Time.now.to_s
+    save_stats(stats)
+    entry
+  end
+
+  # Rank-ups are a real skill event even if the song itself gets aborted
+  # early, so they're still worth keeping -- just without touching
+  # songs_played/total_seconds for a song that didn't really happen.
+  def self.record_rank_ups_only(rank_ups)
+    return if rank_ups.zero?
+
+    stats = load_stats
+    entry = stats[INSTRUMENT] ||= { 'songs_played' => 0, 'rank_ups' => 0, 'total_seconds' => 0 }
+    entry['rank_ups'] += rank_ups
     save_stats(stats)
     entry
   end
@@ -242,8 +261,14 @@ module Playsongs
     end
 
     duration = Time.now - started_at
-    entry = record_song(duration, rank_ups)
-    echo "Song complete in #{duration.round}s (rank-ups: #{rank_ups}). #{INSTRUMENT} totals: #{entry['songs_played']} songs, #{entry['rank_ups']} rank-ups, #{format_duration(entry['total_seconds'])} played."
+
+    if duration < MIN_SONG_SECONDS
+      record_rank_ups_only(rank_ups)
+      echo "Song aborted after #{duration.round}s (under #{MIN_SONG_SECONDS}s) -- not counted toward song stats."
+    else
+      entry = record_song(duration, rank_ups)
+      echo "Song complete in #{duration.round}s (rank-ups: #{rank_ups}). #{INSTRUMENT} totals: #{entry['songs_played']} songs, #{entry['rank_ups']} rank-ups, #{format_duration(entry['total_seconds'])} played."
+    end
   end
 
   echo "Playsongs started -- instrument: #{INSTRUMENT}, style: #{STYLE}"
