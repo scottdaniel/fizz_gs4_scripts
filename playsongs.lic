@@ -267,8 +267,12 @@ module Playsongs
       echo "Song aborted after #{duration.round}s (under #{MIN_SONG_SECONDS}s) -- not counted toward song stats."
     else
       entry = record_song(duration, rank_ups)
-      summary = "Song complete in #{duration.round}s (rank-ups: #{rank_ups}). #{INSTRUMENT} totals: #{entry['songs_played']} songs, #{entry['rank_ups']} rank-ups, #{format_duration(entry['total_seconds'])} played."
-      echo Lich::Messaging.monsterbold(summary)
+      summary = "[Playsongs] Song complete in #{duration.round}s (rank-ups: #{rank_ups}). #{INSTRUMENT} totals: #{entry['songs_played']} songs, #{entry['rank_ups']} rank-ups, #{format_duration(entry['total_seconds'])} played."
+      # echo/respond force <output class="mono"/> and HTML-escape <, > --
+      # which mangles pushBold/popBold into inert text. Lich::Messaging.msg
+      # goes through _respond instead (no mono-wrap/escaping), so the color
+      # tags actually survive to the client.
+      Lich::Messaging.msg("bold", summary)
     end
   end
 
