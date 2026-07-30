@@ -1,0 +1,224 @@
+=begin
+
+  undead_bounty.lic
+
+  Automates the "reroll until it's undead" bounty loop:
+    1. Go to the Adventurer's Guild and ask the bounty master for a new
+       kill/dangerous bounty (`ask taskmaster for bounty <type>`).
+    2. Figure out which town the assignment sent you to (Bounty.current.town),
+       find that town's guard room by map tag, and `ask <guard> for bounty`
+       to learn which creature you've been assigned.
+    3. Check whether that creature is undead (via the same gameobj-data
+       type lookup ;ebestiary uses).
+       - If it IS undead, stop so you can take over.
+       - If it is NOT undead, go back to the guild, `ask taskmaster for
+         removal` (twice, to confirm), and loop.
+
+  This works across any town without per-town configuration: the bounty
+  master is always named "Taskmaster" (except aboard Sailor's Grief, which
+  isn't handled here), and the guard's room is found generically via the
+  map database's 'advguard'/'advguard2' tags nearest the assigned town -
+  the same technique ebounty.lic uses. The guard's title also varies by
+  town (guard, sergeant, sentry, tavernkeeper, purser, etc.), so that's
+  matched with a broad pattern instead of a fixed word.
+
+    author: you
+      game: Gemstone
+      tags: bounty, adventurer's guild, undead
+
+  usage:
+    ;undead_bounty kill        - loop requesting "kill" (culling) bounties
+    ;undead_bounty dangerous   - loop requesting "dangerous" bounties
+
+=end
+
+module UndeadBounty
+  BOUNTY_TYPES = %w[kill dangerous].freeze
+  BOUNTY_MASTER_NAME = 'taskmaster'.freeze
+  GUARD_NAME_PATTERN = /(?:guard|sergeant|guardsman|sentry|tavernkeeper|alchemist|purser)/i.freeze
+
+  def self.find_npc(pattern)
+    (GameObj.npcs.to_a + GameObj.room_desc.to_a).find { |n| n.status != 'dead' && n.name =~ pattern }
+  end
+
+  # tries the current room only; returns nil (does not exit) if not found,
+  # so callers can move on and try another room
+  def self.find_npc_in_room(pattern, retries: 6, delay: 0.25)
+    retries.times do
+      npc = find_npc(pattern)
+      return npc if npc
+
+      sleep delay
+    end
+    nil
+  end
+
+  def self.wait_for_npc(pattern, label)
+    npc = find_npc_in_room(pattern, retries: 10)
+    if npc.nil?
+      respond "UndeadBounty: couldn't find #{label} in this room, stopping."
+      exit
+    end
+    npc
+  end
+
+  def self.wait_for_bounty
+    30.times do |i|
+      task = Bounty.current
+      return task if task && yield(task)
+
+      sleep 0.25
+    end
+    nil
+  end
+
+  # find the town's guard room(s) generically: any room tagged 'advguard' (or
+  # 'advguard2') whose nearest 'town'-tagged room matches the given town
+  # name, sorted closest-to-current-position first. Some towns have more
+  # than one (e.g. Wehnimer's Landing has the gate guard AND a guard inside
+  # Helga's Tavern), so callers should try each in turn.
+  def self.resolve_guard_rooms(town_name)
+    return [] if town_name.to_s.empty?
+
+    town_room = Room.list.find { |r| r.tags.include?('town') && r.location.to_s.include?(town_name) }
+    return [] unless town_room
+
+    candidates = Room.list.find_all do |r|
+      r.tags.any? { |t| t =~ /^advguard/ } && r.find_nearest_by_tag('town') == town_room.id
+    end
+    return [] if candidates.empty?
+
+    candidates.map(&:id).sort_by { |id| Room.current.path_to(id)&.length || Float::INFINITY }
+  end
+
+  def self.go_to_advguild
+    Script.run('go2', 'advguild')
+    waitrt?
+  end
+
+  def self.boost_bounty
+    if Effects::Buffs.active?('Bounty Boost')
+      respond 'UndeadBounty: Bounty Boost already active, skipping "boost bounty".'
+      return
+    end
+
+    result = dothistimeout('boost bounty', 5, /You do not have any Bounty Boosts to redeem\.|You have activated a Bounty Boost\./)
+    waitrt?
+
+    if result =~ /You do not have any Bounty Boosts to redeem/
+      respond "UndeadBounty: #{result}"
+      exit
+    end
+
+    # the Buffs dialog data lags a bit behind the chat confirmation, so give
+    # it a few seconds to catch up before treating it as a real failure
+    active = false
+    12.times do
+      active = Effects::Buffs.active?('Bounty Boost')
+      break if active
+
+      sleep 0.5
+    end
+
+    unless active
+      respond 'UndeadBounty: Bounty Boost does not appear to be active after "boost bounty", stopping.'
+      exit
+    end
+  end
+
+  def self.ask_master_for_bounty(bounty_type)
+    go_to_advguild
+    boost_bounty
+    fput "ask #{BOUNTY_MASTER_NAME} for bounty #{bounty_type}"
+    waitrt?
+
+    task = wait_for_bounty(&:assigned?)
+    unless task
+      respond 'UndeadBounty: never got a new assignment from the bounty master, stopping.'
+      exit
+    end
+    task
+  end
+
+  def self.ask_master_for_removal
+    go_to_advguild
+    2.times do
+      fput "ask #{BOUNTY_MASTER_NAME} for removal"
+      waitrt?
+    end
+  end
+
+  def self.ask_guard_for_bounty(assignment)
+    room_ids = resolve_guard_rooms(assignment.town)
+    if room_ids.empty?
+      respond "UndeadBounty: couldn't find a guard room for '#{assignment.town}', falling back to the nearest advguard tag."
+      room_ids = ['advguard']
+    end
+
+    npc = nil
+    room_ids.each do |room_id|
+      Script.run('go2', room_id.to_s)
+      waitrt?
+      npc = find_npc_in_room(GUARD_NAME_PATTERN)
+      break if npc
+
+      respond "UndeadBounty: no guard found at room #{room_id}, trying the next location..."
+    end
+
+    unless npc
+      respond "UndeadBounty: couldn't find the town guard at any known location for '#{assignment.town}', stopping."
+      exit
+    end
+
+    fput "ask #{npc.noun} for bounty"
+    waitrt?
+
+    task = wait_for_bounty(&:ready?)
+    unless task
+      respond "UndeadBounty: guard never gave a creature assignment, stopping."
+      exit
+    end
+    task
+  end
+
+  # same technique ;ebestiary uses: build a throwaway GameObj and read its
+  # type string out of data/gameobj-data.xml
+  def self.creature_undead?(creature_name)
+    return false if creature_name.to_s.empty?
+
+    noun = creature_name.split(' ').last
+    fakeobj = GameObj.new(666_999, noun, creature_name)
+    fakeobj.type.to_s.split(',').include?('undead')
+  end
+
+  def self.run(bounty_type)
+    loop do
+      assignment = ask_master_for_bounty(bounty_type)
+      task = ask_guard_for_bounty(assignment)
+
+      unless task.creature
+        respond "UndeadBounty: could not determine the bounty creature from the guard's response, stopping."
+        return
+      end
+
+      creature = task.creature
+      respond "UndeadBounty: assigned #{task.number || '?'} x #{creature} in/near #{task.location}."
+
+      if creature_undead?(creature)
+        respond "UndeadBounty: #{creature} is UNDEAD - stopping, take it from here."
+        return
+      end
+
+      respond "UndeadBounty: #{creature} is not undead, requesting removal and rerolling..."
+      ask_master_for_removal
+    end
+  end
+end
+
+bounty_type = (script.vars[0] || 'kill').downcase
+unless UndeadBounty::BOUNTY_TYPES.include?(bounty_type)
+  respond "UndeadBounty: unknown bounty type '#{bounty_type}', expected one of: #{UndeadBounty::BOUNTY_TYPES.join(', ')}"
+  exit
+end
+
+UndeadBounty.run(bounty_type)
