@@ -11,11 +11,14 @@
   and plays again.
 
   Each song cycle (from "you lift your instrument and begin..." to one of
-  the "song ended" messages) is timed, and any PLAY skill rank-ups noticed
-  along the way are counted. Every 5 completed songs it also runs PLAY
-  SKILL directly, since rank-up messages can land in between songs where
-  nothing is watching for them. Stats are tracked per instrument in a
-  small YAML file at data/<game>/<character>/playsongs_stats.yaml.
+  the "song ended" messages) is timed, and any PLAY skill rank-up messages
+  noticed along the way are counted -- but that's only a rough live count
+  (the game doesn't seem to print one for every point gained). Every 5
+  completed songs it also runs PLAY SKILL directly and saves the actual
+  "Your current skill level in X instruments is Y" results, which is the
+  real authoritative number and shows up in playsongs stats. Stats are
+  tracked per instrument in a small YAML file at
+  data/<game>/<character>/playsongs_stats.yaml.
 
   A song that ends in under 300 seconds (MIN_SONG_SECONDS) is treated as
   aborted -- e.g. interrupted before it could finish naturally -- and isn't
@@ -59,7 +62,14 @@ module Playsongs
 
   START_REGEX = /You lift your \S+ and begin to tap out a beat\./
 
+  # Only matches this one flavor message -- the game apparently has others
+  # (or doesn't print one for every point gained), so this undercounts real
+  # skill gain. Treat it as a rough live indicator, not authoritative; the
+  # periodic PLAY SKILL check (SKILL_LEVEL_REGEX/maybe_check_skill) is the
+  # real source of truth and gets stored/shown in playsongs stats.
   RANKUP_REGEX = /You feel a sense of accomplishment as you continue practicing your \S+!/
+
+  SKILL_LEVEL_REGEX = /Your current skill level in (.+?) instruments is (\w+)\.?/i
 
   # "your \S+" instead of the instrument name so this still matches regardless
   # of what's being played; "you"/"You" scopes it to your own performance so
@@ -184,7 +194,13 @@ module Playsongs
         songs = entry['songs_played'].to_i
         seconds = entry['total_seconds'].to_i
         avg = songs > 0 ? (seconds / songs.to_f).round(1) : 0
-        respond "#{instrument}: #{songs} songs, #{entry['rank_ups'].to_i} rank-ups, #{format_duration(seconds)} played (avg #{avg}s/song), last played #{entry['last_played'] || 'never'}"
+        respond "#{instrument}: #{songs} songs, #{entry['rank_ups'].to_i} rank-ups (rough count), #{format_duration(seconds)} played (avg #{avg}s/song), last played #{entry['last_played'] || 'never'}"
+
+        levels = entry['skill_levels']
+        if levels && !levels.empty?
+          levels_str = levels.map { |category, level| "#{category}: #{level}" }.join(', ')
+          respond "  PLAY SKILL (as of #{entry['skill_checked_at']}): #{levels_str}"
+        end
       end
     end
     respond ''
@@ -195,7 +211,7 @@ module Playsongs
     respond ''
     respond '--- Playsongs Help ---'
     respond "Keeps playing #{INSTRUMENT} (#{STYLE} style) in a loop, timing each song and counting rank-ups."
-    respond "Also runs PLAY SKILL every #{SKILL_CHECK_INTERVAL} completed songs."
+    respond "Also runs PLAY SKILL every #{SKILL_CHECK_INTERVAL} completed songs and saves the real skill level (rank-ups shown elsewhere are just a rough live count)."
     respond "Auto-pauses while eloot sell is running (not eloot alone), no command needed."
     respond ''
     respond 'Commands (typed directly, no leading semicolon):'
@@ -208,15 +224,30 @@ module Playsongs
     respond ''
   end
 
-  # Every SKILL_CHECK_INTERVAL completed songs, runs PLAY SKILL so the
-  # game's own authoritative skill report shows up -- rank-up messages
-  # (RANKUP_REGEX) can land outside the window play_and_track is actively
-  # watching (e.g. between songs), so this catches progress those miss.
+  def self.save_skill_levels(levels)
+    return if levels.empty?
+
+    stats = load_stats
+    entry = stats[INSTRUMENT] ||= { 'songs_played' => 0, 'rank_ups' => 0, 'total_seconds' => 0 }
+    entry['skill_levels'] = levels
+    entry['skill_checked_at'] = Time.now.to_s
+    save_stats(stats)
+  end
+
+  # Every SKILL_CHECK_INTERVAL completed songs, runs PLAY SKILL and captures
+  # its response (e.g. "Your current skill level in percussion instruments
+  # is Apprentice.") -- this is the game's own authoritative skill report,
+  # unlike the rough RANKUP_REGEX counter, and gets saved for playsongs
+  # stats to display.
   def self.maybe_check_skill(song_count)
     return unless (song_count % SKILL_CHECK_INTERVAL).zero?
 
     echo "Periodic PLAY SKILL check (every #{SKILL_CHECK_INTERVAL} songs) --"
-    fput "play skill"
+    lines = Lich::Util.issue_command("play skill", SKILL_LEVEL_REGEX, /<prompt/, include_end: false, silent: true)
+
+    levels = {}
+    Array(lines).each { |line| levels[$1.downcase] = $2 if line =~ SKILL_LEVEL_REGEX }
+    save_skill_levels(levels)
   end
 
   # No "from my backpack" -- the game sometimes auto-stows the instrument
