@@ -114,7 +114,10 @@ module Playsongs
         s.name == spec[:name] &&
           (spec[:arg_pattern].nil? || s.vars.any? { |v| v.to_s =~ spec[:arg_pattern] })
       end
-      return [match.name, *match.vars].join(' ') if match
+      # vars[0] is the whole args string joined back together (e.g. "sell"),
+      # and vars[1..] are the individual tokens -- using the full vars array
+      # here double-counts a single-word arg ("eloot sell sell").
+      return [match.name, *match.vars[1..]].join(' ') if match
     end
     nil
   end
@@ -256,7 +259,10 @@ module Playsongs
     loop do
       line = get
       started_at = Time.now if line =~ START_REGEX
-      rank_ups += 1 if line =~ RANKUP_REGEX
+      if line =~ RANKUP_REGEX
+        rank_ups += 1
+        Lich::Messaging.msg("bold", "[Playsongs] Rank up! #{line.strip}")
+      end
       break if line =~ STOP_REGEX
     end
 
