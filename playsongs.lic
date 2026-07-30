@@ -12,12 +12,14 @@
 
   Each song cycle (from "you lift your instrument and begin..." to one of
   the "song ended" messages) is timed, and any PLAY skill rank-up messages
-  noticed along the way are counted -- but that's only a rough live count
-  (the game doesn't seem to print one for every point gained). Every 5
-  completed songs it also runs PLAY SKILL directly and saves the actual
-  "Your current skill level in X instruments is Y" results, which is the
-  real authoritative number and shows up in playsongs stats. Stats are
-  tracked per instrument in a small YAML file at
+  noticed along the way are counted. Per gswiki.play.net/Instrument_learning
+  that message fires once per rank out of 20 total, each taking exponentially
+  longer than the last (rank 5 ~3h48m, rank 10 ~18h12m, rank 15 ~50h, rank
+  20/Adept ~115h18m) -- so a low count over a few hours is expected, not a
+  sign of missed messages. Every 5 completed songs it also runs PLAY SKILL
+  directly and saves the actual "Your current skill level in X instruments
+  is Y" results as a second confirmation, shown in playsongs stats. Stats
+  are tracked per instrument in a small YAML file at
   data/<game>/<character>/playsongs_stats.yaml.
 
   A song that ends in under 300 seconds (MIN_SONG_SECONDS) is treated as
@@ -62,11 +64,14 @@ module Playsongs
 
   START_REGEX = /You lift your \S+ and begin to tap out a beat\./
 
-  # Only matches this one flavor message -- the game apparently has others
-  # (or doesn't print one for every point gained), so this undercounts real
-  # skill gain. Treat it as a rough live indicator, not authoritative; the
-  # periodic PLAY SKILL check (SKILL_LEVEL_REGEX/maybe_check_skill) is the
-  # real source of truth and gets stored/shown in playsongs stats.
+  # Per https://gswiki.play.net/Instrument_learning, this message fires once
+  # per rank (not per skill tick), and there are only 20 ranks total, with
+  # each one taking exponentially longer than the last (rank 5 ~3h48m,
+  # rank 10 ~18h12m, rank 15 ~50h, rank 20/Adept ~115h18m). So a low count
+  # over a few hours is expected, not a sign this is missing messages --
+  # it just won't fire often. Kept in sync with the periodic PLAY SKILL
+  # check (SKILL_LEVEL_REGEX/maybe_check_skill) as a second confirmation of
+  # the same authoritative tier, shown in playsongs stats.
   RANKUP_REGEX = /You feel a sense of accomplishment as you continue practicing your \S+!/
 
   SKILL_LEVEL_REGEX = /Your current skill level in (.+?) instruments is (\w+)\.?/i
@@ -194,7 +199,7 @@ module Playsongs
         songs = entry['songs_played'].to_i
         seconds = entry['total_seconds'].to_i
         avg = songs > 0 ? (seconds / songs.to_f).round(1) : 0
-        respond "#{instrument}: #{songs} songs, #{entry['rank_ups'].to_i} rank-ups (rough count), #{format_duration(seconds)} played (avg #{avg}s/song), last played #{entry['last_played'] || 'never'}"
+        respond "#{instrument}: #{songs} songs, #{entry['rank_ups'].to_i} rank-ups, #{format_duration(seconds)} played (avg #{avg}s/song), last played #{entry['last_played'] || 'never'}"
 
         levels = entry['skill_levels']
         if levels && !levels.empty?
@@ -211,7 +216,7 @@ module Playsongs
     respond ''
     respond '--- Playsongs Help ---'
     respond "Keeps playing #{INSTRUMENT} (#{STYLE} style) in a loop, timing each song and counting rank-ups."
-    respond "Also runs PLAY SKILL every #{SKILL_CHECK_INTERVAL} completed songs and saves the real skill level (rank-ups shown elsewhere are just a rough live count)."
+    respond "Also runs PLAY SKILL every #{SKILL_CHECK_INTERVAL} completed songs and saves the real skill level as a second confirmation of the rank-up count."
     respond "Auto-pauses while eloot sell is running (not eloot alone), no command needed."
     respond ''
     respond 'Commands (typed directly, no leading semicolon):'
