@@ -27,8 +27,18 @@
       tags: bounty, adventurer's guild, undead
 
   usage:
-    ;undead_bounty kill        - loop requesting "kill" (culling) bounties
-    ;undead_bounty dangerous   - loop requesting "dangerous" bounties
+    ;undead_bounty kill                  - loop requesting "kill" (culling) bounties,
+                                            stop on any undead assignment
+    ;undead_bounty dangerous             - same, but for "dangerous" bounties
+    ;undead_bounty kill tomb wight       - stop only when the assigned creature is
+                                            undead AND matches "tomb wight" (partial,
+                                            case-insensitive)
+    ;undead_bounty dangerous nedum       - e.g. matches "nedum vereri"
+
+  The creature name (if given) is checked against the same undead creature
+  list ;ebestiary/gameobj-data.xml uses before the script ever leaves the
+  guild - if nothing undead matches, it errors out immediately instead of
+  burning a Bounty Boost.
 
 =end
 
@@ -191,7 +201,38 @@ module UndeadBounty
     fakeobj.type.to_s.split(',').include?('undead')
   end
 
-  def self.run(bounty_type)
+  # the undead 'name' pattern is one big regex: ^(?:adjective prefixes)?(name1|name2|...)$
+  # pull the literal creature names out of the middle group so we can search
+  # them, rather than re-parsing data/gameobj-data.xml ourselves.
+  def self.known_undead_creatures
+    return @known_undead_creatures if defined?(@known_undead_creatures)
+
+    GameObj.load_data if GameObj.type_data.nil? || GameObj.type_data.empty?
+    pattern = GameObj.type_data.dig('undead', :name)
+    source = pattern&.source.to_s
+
+    boundary = source.index(')?(')
+    body = boundary ? source[(boundary + 3)..-1] : source
+    body = body.sub(/\)\$\z/, '')
+
+    @known_undead_creatures = body.split('|').map { |n| n.delete('\\') }.reject(&:empty?)
+  end
+
+  # partial, case-insensitive search against the known undead creature list
+  def self.find_undead_matches(query)
+    return [] if query.to_s.strip.empty?
+
+    q = query.strip.downcase
+    known_undead_creatures.select { |name| name.downcase.include?(q) }
+  end
+
+  def self.creature_matches_filter?(creature_name, filter)
+    return true if filter.to_s.strip.empty?
+
+    creature_name.to_s.downcase.include?(filter.strip.downcase)
+  end
+
+  def self.run(bounty_type, creature_filter = nil)
     loop do
       assignment = ask_master_for_bounty(bounty_type)
       task = ask_guard_for_bounty(assignment)
@@ -204,12 +245,12 @@ module UndeadBounty
       creature = task.creature
       respond "UndeadBounty: assigned #{task.number || '?'} x #{creature} in/near #{task.location}."
 
-      if creature_undead?(creature)
-        respond "UndeadBounty: #{creature} is UNDEAD - stopping, take it from here."
+      if creature_undead?(creature) && creature_matches_filter?(creature, creature_filter)
+        respond "UndeadBounty: #{creature} is UNDEAD#{" and matches '#{creature_filter}'" if creature_filter} - stopping, take it from here."
         return
       end
 
-      respond "UndeadBounty: #{creature} is not undead, requesting removal and rerolling..."
+      respond "UndeadBounty: #{creature} doesn't qualify, requesting removal and rerolling..."
       ask_master_for_removal
     end
   end
@@ -221,4 +262,16 @@ unless UndeadBounty::BOUNTY_TYPES.include?(bounty_type)
   exit
 end
 
-UndeadBounty.run(bounty_type)
+creature_filter = script.vars[1..-1].to_a.join(' ').strip
+creature_filter = nil if creature_filter.empty?
+
+if creature_filter
+  matches = UndeadBounty.find_undead_matches(creature_filter)
+  if matches.empty?
+    respond "UndeadBounty: no known undead creature matches '#{creature_filter}', stopping."
+    exit
+  end
+  respond "UndeadBounty: targeting creatures matching '#{creature_filter}' (e.g. #{matches.first(5).join(', ')})#{' and others' if matches.length > 5}"
+end
+
+UndeadBounty.run(bounty_type, creature_filter)
