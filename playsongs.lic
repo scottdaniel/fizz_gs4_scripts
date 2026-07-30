@@ -91,6 +91,61 @@ module Playsongs
   SKILL_CHECK_INTERVAL = 5   # run PLAY SKILL every this many completed songs
   MIN_SONG_SECONDS = 300     # shorter than this counts as an aborted song, not a real one
 
+  # [rank, cumulative seconds] checkpoints from
+  # https://gswiki.play.net/Instrument_learning -- (0, 0) added as a
+  # starting point so there's a full curve to interpolate/extrapolate
+  # against, not just the four wiki data points.
+  MILESTONES = [[0, 0], [5, 13_680], [10, 65_520], [15, 180_000], [20, 415_080]].freeze
+
+  TIER_RANGES = { 'novice' => 1..5, 'apprentice' => 6..13, 'journeyman' => 14..19, 'adept' => 20..20 }.freeze
+
+  # Very rough instrument -> PLAY SKILL category guesses, just enough to
+  # cross-reference the estimate below against the real tier from
+  # maybe_check_skill. Add more as needed.
+  CATEGORY_HINTS = {
+    'percussion' => %w[tambourine drum bongo cymbal],
+    'woodwind' => %w[flute whistle fife piccolo],
+    'stringed' => %w[lute harp mandolin fiddle guitar lyre],
+    'brass' => %w[horn trumpet trombone]
+  }.freeze
+
+  # @return [Float] estimated rank (0-20) for total seconds played, via
+  #   linear interpolation between MILESTONES, clamped at 20
+  def self.estimated_rank(seconds)
+    return 20.0 if seconds >= MILESTONES.last[1]
+
+    MILESTONES.each_cons(2) do |(r1, s1), (r2, s2)|
+      next unless seconds.between?(s1, s2)
+
+      return r1 + (seconds - s1).to_f / (s2 - s1) * (r2 - r1)
+    end
+    0.0
+  end
+
+  # @return [Integer] estimated cumulative seconds needed to reach a rank
+  def self.time_for_rank(rank)
+    return MILESTONES.last[1] if rank >= MILESTONES.last[0]
+
+    MILESTONES.each_cons(2) do |(r1, s1), (r2, s2)|
+      next unless rank.between?(r1, r2)
+
+      return (s1 + (rank - r1).to_f / (r2 - r1) * (s2 - s1)).round
+    end
+    0
+  end
+
+  # @return [String, nil] tier name ("novice", "apprentice", ...) for an
+  #   estimated (possibly fractional) rank
+  def self.tier_for_rank(rank)
+    TIER_RANGES.find { |_tier, range| range.cover?(rank.round) }&.first
+  end
+
+  # @param instrument_name [String]
+  # @return [String, nil] best-guess PLAY SKILL category name for it
+  def self.category_for(instrument_name)
+    CATEGORY_HINTS.find { |_category, names| names.any? { |n| instrument_name.include?(n) } }&.first
+  end
+
   # Scripts that need your hands/attention -- playsongs auto-pauses (same as
   # a manual "playsongs pause") for as long as a running script matches one
   # of these, and auto-resumes once it finishes, no command needed either
@@ -205,6 +260,28 @@ module Playsongs
         if levels && !levels.empty?
           levels_str = levels.map { |category, level| "#{category}: #{level}" }.join(', ')
           respond "  PLAY SKILL (as of #{entry['skill_checked_at']}): #{levels_str}"
+        end
+
+        # Just for fun -- https://gswiki.play.net/Instrument_learning-based
+        # estimate of rank from tracked hours alone, cross-checked against
+        # the real tier from the PLAY SKILL check above. seconds here only
+        # covers time this script tracked, so it'll almost always look like
+        # you're "ahead of schedule" -- that gap is prior manual practice
+        # and/or aborted songs this script never counted, not extra-fast
+        # learning.
+        est_rank = estimated_rank(seconds)
+        respond "  Estimate from tracked time alone: rank ~#{est_rank.round(1)} (#{tier_for_rank(est_rank)})"
+
+        category = category_for(instrument)
+        actual_tier = levels && category ? levels[category] : nil
+        if actual_tier && TIER_RANGES[actual_tier.downcase]
+          expected_seconds = time_for_rank(TIER_RANGES[actual_tier.downcase].first)
+          diff = expected_seconds - seconds
+          if diff > 0
+            respond "  That's #{format_duration(diff)} less than the estimate for reaching #{actual_tier} (~#{format_duration(expected_seconds)}) -- there was likely some practice time and aborted songs not tracked here."
+          else
+            respond "  Right on pace (or ahead) of the estimate for reaching #{actual_tier}."
+          end
         end
       end
     end
