@@ -5,7 +5,7 @@
 module Sellgem
 
 Script.run("go2", "gemshop")
-multifput "remove my rain", "sell my rain", "wear my rain"
+multifput "remove my cloak", "sell my cloak", "wear my cloak"
 Script.run("go2", "bank")
 fput "deposit all"
 Script.run("go2", "town")

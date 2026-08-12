@@ -3,6 +3,6 @@
 #basically just gets items ready for combat
 module Combatear
 
-multifput "put runestaff in my rain", "ready weapon"
+multifput "put runestaff in my cloak", "ready weapon"
 
 end #End of module

@@ -2,11 +2,16 @@
 
 module Fizzprep_sever
 
-fput "stow all"
-fput "ready weapon"
+# rub stuff
+multifput "store weapon", "stow all"
 Script.run("qverb", "rub gold coin")
+pause 3
 Script.run("qverb", "rub small statue")
+pause 3
 Script.run("qverb", "rub moonstone cube")
+pause 3
+
+fput "ready weapon"
 
 # check if runestaff is ensorcelled, if not, prep and evoke
 res = dothistimeout "l at my #{GameObj.right_hand}", 2, Regexp.union(
