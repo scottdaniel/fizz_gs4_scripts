@@ -158,27 +158,54 @@ module UndeadBounty
     end
   end
 
-  def self.ask_guard_for_bounty(assignment)
-    room_ids = resolve_guard_rooms(assignment.town)
-    if room_ids.empty?
-      respond "UndeadBounty: couldn't find a guard room for '#{assignment.town}', falling back to the nearest advguard tag."
-      room_ids = ['advguard']
-    end
+  # remembers which guard room actually had the guard, per town, so later
+  # loop iterations don't have to re-check every candidate room every time
+  def self.guard_room_cache
+    @guard_room_cache ||= {}
+  end
 
+  def self.ask_guard_for_bounty(assignment)
+    town = assignment.town
     npc = nil
-    room_ids.each do |room_id|
-      Script.run('go2', room_id.to_s)
+    found_room = nil
+    cached_room = guard_room_cache[town]
+
+    if cached_room
+      Script.run('go2', cached_room.to_s)
       waitrt?
       npc = find_npc_in_room(GUARD_NAME_PATTERN)
-      break if npc
-
-      respond "UndeadBounty: no guard found at room #{room_id}, trying the next location..."
+      found_room = cached_room if npc
     end
 
     unless npc
-      respond "UndeadBounty: couldn't find the town guard at any known location for '#{assignment.town}', stopping."
+      room_ids = resolve_guard_rooms(town)
+      if room_ids.empty?
+        respond "UndeadBounty: couldn't find a guard room for '#{town}', falling back to the nearest advguard tag."
+        room_ids = ['advguard']
+      end
+
+      room_ids.each do |room_id|
+        next if room_id == cached_room # already tried above
+
+        Script.run('go2', room_id.to_s)
+        waitrt?
+        npc = find_npc_in_room(GUARD_NAME_PATTERN)
+        if npc
+          found_room = room_id
+          break
+        end
+
+        respond "UndeadBounty: no guard found at room #{room_id}, trying the next location..."
+      end
+    end
+
+    unless npc
+      respond "UndeadBounty: couldn't find the town guard at any known location for '#{town}', stopping."
       exit
     end
+
+    # only cache real room ids, not the 'advguard' tag fallback
+    guard_room_cache[town] = found_room if found_room.is_a?(Integer)
 
     fput "ask #{npc.noun} for bounty"
     waitrt?
@@ -256,13 +283,15 @@ module UndeadBounty
   end
 end
 
-bounty_type = (script.vars[0] || 'kill').downcase
+## script.vars[0] is the entire raw argument string; the individual
+## space-split tokens start at script.vars[1].
+bounty_type = (script.vars[1] || 'kill').downcase
 unless UndeadBounty::BOUNTY_TYPES.include?(bounty_type)
   respond "UndeadBounty: unknown bounty type '#{bounty_type}', expected one of: #{UndeadBounty::BOUNTY_TYPES.join(', ')}"
   exit
 end
 
-creature_filter = script.vars[1..-1].to_a.join(' ').strip
+creature_filter = script.vars[2..-1].to_a.join(' ').strip
 creature_filter = nil if creature_filter.empty?
 
 if creature_filter
