@@ -22,10 +22,12 @@
   are tracked per instrument in a small YAML file at
   data/<game>/<character>/playsongs_stats.yaml.
 
-  A song that ends in under 300 seconds (MIN_SONG_SECONDS) is treated as
-  aborted -- e.g. interrupted before it could finish naturally -- and isn't
-  counted toward songs_played/total_seconds, though any rank-ups noticed
-  during it still are.
+  A song that ends in under 285 seconds (MIN_SONG_SECONDS minus a
+  SONG_LENGTH_TOLERANCE grace period) is treated as aborted -- e.g.
+  interrupted before it could finish naturally -- and isn't counted toward
+  songs_played/total_seconds, though any rank-ups noticed during it still
+  are. The grace period exists because a genuine completion can land a
+  few seconds under the ~300s target.
 
   Auto-pauses (no command needed) for as long as ;eloot sell is running
   (not eloot alone), and resumes once it finishes -- see EXCLUSIVE_SCRIPTS
@@ -89,7 +91,10 @@ module Playsongs
   RESTART_PAUSE_SECONDS = 3
   PAUSE_POLL_SECONDS = 1
   SKILL_CHECK_INTERVAL = 5   # run PLAY SKILL every this many completed songs
-  MIN_SONG_SECONDS = 300     # shorter than this counts as an aborted song, not a real one
+  MIN_SONG_SECONDS = 300     # ~5 min per gswiki.play.net/Instrument_learning -- a real song's target length
+  SONG_LENGTH_TOLERANCE = 15 # grace period below MIN_SONG_SECONDS -- timing/detection can land a few
+                              # seconds early on a genuine completion (e.g. 299s), which shouldn't get
+                              # treated the same as an actually-interrupted song
 
   # [rank, cumulative seconds] checkpoints from
   # https://gswiki.play.net/Instrument_learning -- (0, 0) added as a
@@ -384,7 +389,7 @@ module Playsongs
     # print e.g. "300s ... under 300s" for a song that was really 299.6s.
     duration = (Time.now - started_at).round
 
-    if duration < MIN_SONG_SECONDS
+    if duration < MIN_SONG_SECONDS - SONG_LENGTH_TOLERANCE
       record_rank_ups_only(rank_ups)
       echo "Song aborted after #{duration}s (under #{MIN_SONG_SECONDS}s) -- not counted toward song stats."
     else
