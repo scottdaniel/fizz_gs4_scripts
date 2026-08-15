@@ -14,9 +14,14 @@
      author: Tysong (horibu on PC), original Nylis
        name: tdusk
        tags: duskruin, arena, dusk ruin, tdusk
-    version: 1.26.14
+    version: 1.26.15
 
     changelog:
+        1.26.15 (2026-08-15)
+            fizzdusk fork: fix group_size miscount -- checkpcs counts every PC in the
+            room (bystanders included), not just your own group, which could send solo
+            runs to the team entrance (26387) instead of 23780 after finishing. Now
+            uses Lich::Gemstone::Group.members when actually grouped.
         1.26.14 (2026-08-15)
             fizzdusk fork: run restear.lic right after waggling to get the runestaff
             back in hand for resting boosts, see UserVars.tdusk[:restear_me]
@@ -1366,10 +1371,10 @@ loop {
     }
     _respond("#{fam_window_begin}DR-Starting Arena\r\n#{fam_window_end}")
     UserVars.tdusk[:praycurrent] = 0
-    if checkpcs.count.nil?
-      group_size = 1
+    if checkgrouped
+      group_size = Lich::Gemstone::Group.members.count + 1
     else
-      group_size = checkpcs.count + 1
+      group_size = 1
     end
 
     if Stats.prof =~ /Wizard/ && UserVars.tdusk[:opener515]
