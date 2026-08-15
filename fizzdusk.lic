@@ -14,9 +14,11 @@
      author: Tysong (horibu on PC), original Nylis
        name: tdusk
        tags: duskruin, arena, dusk ruin, tdusk
-    version: 1.26.8
+    version: 1.26.9
 
     changelog:
+        1.26.9 (2026-08-15)
+            fizzdusk fork: locker_check now defaults to TRUE
         1.26.8 (2026-08-15)
             fizzdusk fork: opt-in pawnshop/gemshop appraisal of winnings after each run,
             moving anything worth locker_limit (default 25000) or more into the locker
@@ -120,7 +122,7 @@ UserVars.tdusk[:opener240]      = false     if UserVars.tdusk[:opener240].nil?
 UserVars.tdusk[:girdstore]      = true      if UserVars.tdusk[:girdstore].nil?
 UserVars.tdusk[:reentry]        = true      if UserVars.tdusk[:reentry].nil?
 UserVars.tdusk[:encumbrance_limit] = 50     if UserVars.tdusk[:encumbrance_limit].nil?
-UserVars.tdusk[:locker_check]   = false     if UserVars.tdusk[:locker_check].nil?
+UserVars.tdusk[:locker_check]   = true      if UserVars.tdusk[:locker_check].nil?
 UserVars.tdusk[:locker_limit]   = 25000     if UserVars.tdusk[:locker_limit].nil?
 UserVars.tdusk[:using_bigshot]  = false
 
@@ -1256,8 +1258,8 @@ if variable[1].downcase == "help"
 
     Whether to appraise winnings at the pawnshop/gemshop after each run and move anything
     worth locker_limit or more into the locker (room 15948) instead of keeping it in your
-    lootsack. Default is set to FALSE. (Current: #{UserVars.tdusk[:locker_check]})
-    ;e echo UserVars.tdusk[:locker_check] = true
+    lootsack. Default is set to TRUE. (Current: #{UserVars.tdusk[:locker_check]})
+    ;e echo UserVars.tdusk[:locker_check] = false
 
     Silver value at/above which an appraised item gets moved to the locker. Default is 25000. (Current: #{UserVars.tdusk[:locker_limit]})
     ;e echo UserVars.tdusk[:locker_limit] = 30000
