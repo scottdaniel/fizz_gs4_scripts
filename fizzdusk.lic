@@ -14,9 +14,12 @@
      author: Tysong (horibu on PC), original Nylis
        name: tdusk
        tags: duskruin, arena, dusk ruin, tdusk
-    version: 1.26.11
+    version: 1.26.12
 
     changelog:
+        1.26.12 (2026-08-15)
+            fizzdusk fork: run fizzprep.lic between runs (alongside waggle) to recast
+            defensive spells from scrolls, see UserVars.tdusk[:fizzprep_me]
         1.26.11 (2026-08-15)
             fizzdusk fork: locker room is now a setting (UserVars.tdusk[:locker_location],
             default 15948); clarified encumbrance_limit help text to cover both its
@@ -112,6 +115,7 @@ UserVars.tdusk                ||= {}
 UserVars.tdusk[:activescripts]  = ['stand'] if UserVars.tdusk[:activescripts].nil?
 UserVars.tdusk[:waggle_me]      = true      if UserVars.tdusk[:waggle_me].nil?
 UserVars.tdusk[:waggle_script]  = 'ewaggle' if UserVars.tdusk[:waggle_script].nil?
+UserVars.tdusk[:fizzprep_me]    = true      if UserVars.tdusk[:fizzprep_me].nil?
 UserVars.tdusk[:pause_me]       = true      if UserVars.tdusk[:pause_me].nil?
 UserVars.tdusk[:enhancive_me]   = false     if UserVars.tdusk[:enhancive_me].nil?
 UserVars.tdusk[:high_ds]        = false     if UserVars.tdusk[:high_ds].nil?
@@ -1168,6 +1172,7 @@ def loot(group_size, package_line)
     end
   end
   Script.run(UserVars.tdusk[:waggle_script]) if UserVars.tdusk[:waggle_me]
+  Script.run("fizzprep") if UserVars.tdusk[:fizzprep_me] && Script.exists?("fizzprep")
 
   if UserVars.tdusk[:pause_me]
     echo "PAUSING SCRIPT"
@@ -1211,6 +1216,9 @@ if variable[1].downcase == "help"
 
     Waggle Script to Use - Default is set to waggle (Current: #{UserVars.tdusk[:waggle_script]})
     ;e echo UserVars.tdusk[:waggle_script] = 'ewaggle'
+
+    Runs fizzprep.lic Between Runs to recast defensive spells from scrolls - Default is set to TRUE (Current: #{UserVars.tdusk[:fizzprep_me]})
+    ;e echo UserVars.tdusk[:fizzprep_me] = false
 
     Pauses Between Runs - Default is set to TRUE (Current: #{UserVars.tdusk[:pause_me]})
     ;e echo UserVars.tdusk[:pause_me] = false
