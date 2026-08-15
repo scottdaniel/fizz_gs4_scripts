@@ -18,9 +18,18 @@ Configurable durations for stackable or refreshable spells
     author: Nihiladrem (todd.estabrooks@gmail.com)
       game: gs
       tags: invoke, scroll, scrolls, hunting
-      version: 0.1.5
+      version: 0.1.7
 
     CHANGELOG:
+    0.1.7 - Stopped findscroll from mutating SpellNumsNeeded with .shift, which removed
+            the wrong spell (whatever was first in the list) whenever any scroll was
+            missing, mislabeling successfully-cast spells as skipped. Final summary now
+            separately lists spells cast, spells whose scroll wasn't found, and spells
+            that weren't needed.
+    0.1.6 - Fixed active-spell detection to use Spell.active/active? (like ewaggle.lic)
+            instead of the raw spell.active attribute, and to compare each spell's
+            remaining duration against the correct threshold for its type
+            (stackable/refreshable/one-shot) instead of always using stackto.
     0.1.5 - Fixed an issue with scrolls being stored incorrectly in vibrantscrollbag
     0.1.4 - Fixed a bug with vibrant scroll casting
     0.1.3 - Changed logic to allow all non-attack spells.
@@ -213,10 +222,25 @@ end
 
 
 ##Check list of spells for useability
+## Use Spell.active (which relies on the self-healing active? check, same as ewaggle.lic)
+## rather than the raw spell.active attribute, which can go stale.
+active_spell_times = Hash[Spell.active.map { |s| [s.num.to_s, s.timeleft] }]
+
 SpellNumsNeeded = SpellNums.find_all do |spell_num|
     spell = Spell[spell_num]
 	if debug == true; echo "Availbility: #{spell.availability}";end
-    spell && !(spell.type =~ /attack/)  && (!spell.active || spell.timeleft <= stackto_duration.to_f)
+	next false unless spell && !(spell.type =~ /attack/)
+
+	existing_duration = active_spell_times[spell.num.to_s] || 0
+	if debug == true; echo "#{spell_num} existing duration: #{existing_duration}";end
+
+	if spell.stackable?
+		existing_duration <= stackto_duration.to_f
+	elsif spell.refreshable?
+		existing_duration <= refreshto_duration.to_f
+	else
+		existing_duration.zero?
+	end
 end
 
 if SpellNumsNeeded.count.zero?
@@ -239,7 +263,6 @@ def findscroll(spell_num, scrollbag, vibrantscrollbag)
 				result = dothis "rummage in ##{vibrantscrollbag.id} spell #{spell_num}", /You rummage through .+ (and remove .+ with .+ scrawled upon it|but can't seem to locate anything with that spell on it)/
 				if result =~ /but can't seem to locate anything with that spell on it/
 					if debug == true; echo "Missing scroll for #{spell_num}";end
-					SpellNumsNeeded.shift
 					return "none"				
 				else
 					return "vibrant"
@@ -247,7 +270,6 @@ def findscroll(spell_num, scrollbag, vibrantscrollbag)
 			end
 		
 			if debug == true; echo "Missing scroll for #{spell_num}";end
-			SpellNumsNeeded.shift
 			return "none"
 			
 		elsif !(CharSettings["scrollbuff-usevibranttoggle"] == "True")
@@ -277,7 +299,6 @@ def findscroll(spell_num, scrollbag, vibrantscrollbag)
 					result = dothis "rummage in ##{scrollbag.id} spell #{spell_num}", /You rummage through .+ (and remove .+ with .+ scrawled upon it|but can't seem to locate anything with that spell on it)/
 					if result =~ /but can't seem to locate anything with that spell on it/
 						if debug == true; echo "missing scroll";end
-						SpellNumsNeeded.shift
 						scrolltype = "none"
 					end
 				end
@@ -374,26 +395,35 @@ def castscroll(spell_num, scrollid, scrollbag, vibrantscrollbag, stackto_duratio
 	end
 end
 
+spells_cast = []
+spells_not_found = []
+
 SpellNumsNeeded.each do |spell_num|
 
     spell = Spell[spell_num]
-    
+
     if spell && !(spell.type =~ /attack/)
-	
+
 		scrolltype = findscroll(spell_num, scrollbag, vibrantscrollbag)
-		
-		if checkright =~ /scroll|paper|papyrus|parchment|vellum|palimpsest/
+
+		if scrolltype == "none"
+			echo "No scroll found for #{spell_num} #{spell.name}, skipping."
+			spells_not_found << spell_num
+		elsif checkright =~ /scroll|paper|papyrus|parchment|vellum|palimpsest/
 			castscroll(spell_num, GameObj.right_hand.id, scrollbag, vibrantscrollbag, stackto_duration, refreshto_duration, scrolltype)
+			spells_cast << spell_num
         elsif checkleft =~ /scroll|paper|papyrus|parchment|vellum|palimpsest/
-			castscroll(spell_num, GameObj.left_hand.id, scrollbag, vibrantscrollbag, stackto_duration, refreshto_duration, scrolltype)	
+			castscroll(spell_num, GameObj.left_hand.id, scrollbag, vibrantscrollbag, stackto_duration, refreshto_duration, scrolltype)
+			spells_cast << spell_num
 		else
-			echo "Error: Can't find a scroll in hand, noun might not be supported."
+			echo "Error: Found a scroll for #{spell_num} but couldn't recognize it in hand, noun might not be supported."
+			spells_not_found << spell_num
 		end
 
     else
 		echo "Not a viable spell type"
 	end
-    
+
 end
 
 ##fput "close ##{scrollbag.id}"
@@ -401,5 +431,6 @@ end
 
 echofmt "SCROLL BUFFS COMPLETE",
         "",
-        "Spells fully-cast: #{SpellNumsNeeded.join(" ")}",
-        "Spells skipped or partial: #{(SpellNums - SpellNumsNeeded).join(" ")}"
+        "Spells cast: #{spells_cast.join(" ")}",
+        "Spells not found: #{spells_not_found.join(" ")}",
+        "Spells not needed: #{(SpellNums - SpellNumsNeeded).join(" ")}"
