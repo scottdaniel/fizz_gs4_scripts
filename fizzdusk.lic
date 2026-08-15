@@ -14,9 +14,13 @@
      author: Tysong (horibu on PC), original Nylis
        name: tdusk
        tags: duskruin, arena, dusk ruin, tdusk
-    version: 1.26.7
+    version: 1.26.8
 
     changelog:
+        1.26.8 (2026-08-15)
+            fizzdusk fork: opt-in pawnshop/gemshop appraisal of winnings after each run,
+            moving anything worth locker_limit (default 25000) or more into the locker
+            at room 15948 (see UserVars.tdusk[:locker_check]/[:locker_limit])
         1.26.7 (2026-08-15)
             fizzdusk fork: exit gracefully if over-encumbered (default 50%, see UserVars.tdusk[:encumbrance_limit])
         1.26.6 (2025-08-18)
@@ -116,6 +120,8 @@ UserVars.tdusk[:opener240]      = false     if UserVars.tdusk[:opener240].nil?
 UserVars.tdusk[:girdstore]      = true      if UserVars.tdusk[:girdstore].nil?
 UserVars.tdusk[:reentry]        = true      if UserVars.tdusk[:reentry].nil?
 UserVars.tdusk[:encumbrance_limit] = 50     if UserVars.tdusk[:encumbrance_limit].nil?
+UserVars.tdusk[:locker_check]   = false     if UserVars.tdusk[:locker_check].nil?
+UserVars.tdusk[:locker_limit]   = 25000     if UserVars.tdusk[:locker_limit].nil?
 UserVars.tdusk[:using_bigshot]  = false
 
 UserVars.tdusk[:activescripts].delete("duskruin_watch") if UserVars.tdusk[:activescripts].include?("duskruin_watch")
@@ -1018,6 +1024,64 @@ def attack()
   end
 end
 
+# Jewelry appraises better at the gemshop than the pawnshop, see eloot.lic Sell.appraise
+# (item.type comes from Lich's own GameObj item-data lookup, not a guess based on the name)
+
+# Pulls the item to hand, asks the current shop to appraise it, and returns it to the lootsack.
+# Returns the appraised silver value, or 0 if nothing was quoted.
+def appraise_value(item)
+  fput "get ##{item.id}"
+  waitrt?
+  line = dothistimeout("appraise ##{item.id}", 5, /[,0-9]+ (?:silver|for it if you want to sell|for this if you'd like)|not buying anything this valuable today/)
+  value = 0
+  value = $1.delete(',').to_i if line.to_s =~ /([,0-9]+) (?:silver|for it if you want to sell|for this if you'd like)/
+  fput "put ##{item.id} in my #{Vars.lootsack}"
+  value
+end
+
+# Tries the trunk first, falls back to the locker itself if the trunk is full.
+def stow_in_locker(item)
+  fput "get ##{item.id}"
+  waitrt?
+  result = dothistimeout("put ##{item.id} in my trunk", 5, /^You put|won't fit|can't fit|no room|too full|doesn't fit/i)
+  fput "put ##{item.id} in my locker" unless result.to_s =~ /^You put/i
+end
+
+# Appraises everything in the lootsack (jewelry at the gemshop, everything else at the
+# pawnshop) and moves anything worth UserVars.tdusk[:locker_limit] or more into the locker.
+def check_valuable_loot
+  return unless UserVars.tdusk[:locker_check]
+
+  fput "open my #{Vars.lootsack}"
+  sack = GameObj.inv.find { |i| i.name =~ /#{Regexp.escape(Vars.lootsack)}/i }
+  return if sack.nil? || sack.contents.to_a.empty?
+
+  jewelry, regular = sack.contents.dup.partition { |item| item.type?('jewelry') }
+
+  valuable = []
+
+  unless regular.empty?
+    start_script("go2", ["pawnshop"])
+    wait_while { running?("go2") }
+    regular.each { |item| valuable << item if appraise_value(item) >= UserVars.tdusk[:locker_limit] }
+  end
+
+  unless jewelry.empty?
+    start_script("go2", ["gemshop"])
+    wait_while { running?("go2") }
+    jewelry.each { |item| valuable << item if appraise_value(item) >= UserVars.tdusk[:locker_limit] }
+  end
+
+  return if valuable.empty?
+
+  echo "#{valuable.length} item(s) appraised at or above #{UserVars.tdusk[:locker_limit]} silver, moving to locker."
+  start_script("go2", ["15948"])
+  wait_while { running?("go2") }
+  fput "open locker"
+  fput "open my #{Vars.lootsack}"
+  valuable.each { |item| stow_in_locker(item) }
+end
+
 def loot(group_size, package_line)
   waitrt?
   fput "store all" if UserVars.tdusk[:girdstore]
@@ -1079,6 +1143,8 @@ def loot(group_size, package_line)
     start_script("go2", ["26387"]) if !checkgrouped
     wait_while { running?("go2") } if !checkgrouped
   end
+
+  check_valuable_loot
 
   if UserVars.tdusk[:enhancive_me]
     loop do
@@ -1187,6 +1253,14 @@ if variable[1].downcase == "help"
 
     Percent encumbrance at/above which the script exits instead of starting a run. Default is 50. (Current: #{UserVars.tdusk[:encumbrance_limit]})
     ;e echo UserVars.tdusk[:encumbrance_limit] = 75
+
+    Whether to appraise winnings at the pawnshop/gemshop after each run and move anything
+    worth locker_limit or more into the locker (room 15948) instead of keeping it in your
+    lootsack. Default is set to FALSE. (Current: #{UserVars.tdusk[:locker_check]})
+    ;e echo UserVars.tdusk[:locker_check] = true
+
+    Silver value at/above which an appraised item gets moved to the locker. Default is 25000. (Current: #{UserVars.tdusk[:locker_limit]})
+    ;e echo UserVars.tdusk[:locker_limit] = 30000
 
     Uses ;BIGSHOT QUICK for hunting logic. So make sure your bigshot is setup correctly.
         Hunting Tab  - quickhunt targets should be:  (?:.*)
