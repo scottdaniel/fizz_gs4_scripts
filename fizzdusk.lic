@@ -14,9 +14,12 @@
      author: Tysong (horibu on PC), original Nylis
        name: tdusk
        tags: duskruin, arena, dusk ruin, tdusk
-    version: 1.26.9
+    version: 1.26.10
 
     changelog:
+        1.26.10 (2026-08-15)
+            fizzdusk fork: only run the locker check once encumbrance hits
+            encumbrance_limit, instead of appraising loot after every run
         1.26.9 (2026-08-15)
             fizzdusk fork: locker_check now defaults to TRUE
         1.26.8 (2026-08-15)
@@ -1049,10 +1052,13 @@ def stow_in_locker(item)
   fput "put ##{item.id} in my locker" unless result.to_s =~ /^You put/i
 end
 
-# Appraises everything in the lootsack (jewelry at the gemshop, everything else at the
-# pawnshop) and moves anything worth UserVars.tdusk[:locker_limit] or more into the locker.
+# Once encumbrance hits the same limit that would otherwise block the next run, appraises
+# everything in the lootsack (jewelry at the gemshop, everything else at the pawnshop) and
+# moves anything worth UserVars.tdusk[:locker_limit] or more into the locker. Below that
+# encumbrance limit it's skipped and the script just keeps repeating arena runs.
 def check_valuable_loot
   return unless UserVars.tdusk[:locker_check]
+  return if Char.percent_encumbrance < UserVars.tdusk[:encumbrance_limit]
 
   fput "open my #{Vars.lootsack}"
   sack = GameObj.inv.find { |i| i.name =~ /#{Regexp.escape(Vars.lootsack)}/i }
@@ -1256,9 +1262,10 @@ if variable[1].downcase == "help"
     Percent encumbrance at/above which the script exits instead of starting a run. Default is 50. (Current: #{UserVars.tdusk[:encumbrance_limit]})
     ;e echo UserVars.tdusk[:encumbrance_limit] = 75
 
-    Whether to appraise winnings at the pawnshop/gemshop after each run and move anything
-    worth locker_limit or more into the locker (room 15948) instead of keeping it in your
-    lootsack. Default is set to TRUE. (Current: #{UserVars.tdusk[:locker_check]})
+    Whether to appraise winnings at the pawnshop/gemshop and move anything worth
+    locker_limit or more into the locker (room 15948) instead of keeping it in your
+    lootsack. Only runs once encumbrance hits encumbrance_limit -- below that it's
+    skipped and runs just keep repeating. Default is set to TRUE. (Current: #{UserVars.tdusk[:locker_check]})
     ;e echo UserVars.tdusk[:locker_check] = false
 
     Silver value at/above which an appraised item gets moved to the locker. Default is 25000. (Current: #{UserVars.tdusk[:locker_limit]})
