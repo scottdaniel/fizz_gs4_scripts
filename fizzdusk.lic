@@ -14,9 +14,13 @@
      author: Tysong (horibu on PC), original Nylis
        name: tdusk
        tags: duskruin, arena, dusk ruin, tdusk
-    version: 1.26.10
+    version: 1.26.11
 
     changelog:
+        1.26.11 (2026-08-15)
+            fizzdusk fork: locker room is now a setting (UserVars.tdusk[:locker_location],
+            default 15948); clarified encumbrance_limit help text to cover both its
+            startup-exit and mid-run locker-offload behavior
         1.26.10 (2026-08-15)
             fizzdusk fork: only run the locker check once encumbrance hits
             encumbrance_limit, instead of appraising loot after every run
@@ -127,6 +131,7 @@ UserVars.tdusk[:reentry]        = true      if UserVars.tdusk[:reentry].nil?
 UserVars.tdusk[:encumbrance_limit] = 50     if UserVars.tdusk[:encumbrance_limit].nil?
 UserVars.tdusk[:locker_check]   = true      if UserVars.tdusk[:locker_check].nil?
 UserVars.tdusk[:locker_limit]   = 25000     if UserVars.tdusk[:locker_limit].nil?
+UserVars.tdusk[:locker_location] = 15948    if UserVars.tdusk[:locker_location].nil?
 UserVars.tdusk[:using_bigshot]  = false
 
 UserVars.tdusk[:activescripts].delete("duskruin_watch") if UserVars.tdusk[:activescripts].include?("duskruin_watch")
@@ -1083,7 +1088,7 @@ def check_valuable_loot
   return if valuable.empty?
 
   echo "#{valuable.length} item(s) appraised at or above #{UserVars.tdusk[:locker_limit]} silver, moving to locker."
-  start_script("go2", ["15948"])
+  start_script("go2", [UserVars.tdusk[:locker_location].to_s])
   wait_while { running?("go2") }
   fput "open locker"
   fput "open my #{Vars.lootsack}"
@@ -1259,17 +1264,23 @@ if variable[1].downcase == "help"
     Whether to attempt reentry to arena entrance if fail going in (likely due to group members not being ready). Default set to TRUE. (Current: #{UserVars.tdusk[:reentry]})
     ;e echo UserVars.tdusk[:reentry] = true
 
-    Percent encumbrance at/above which the script exits instead of starting a run. Default is 50. (Current: #{UserVars.tdusk[:encumbrance_limit]})
+    Percent encumbrance at/above which the script acts: if you're over this limit before
+    a run even starts, it exits gracefully instead of entering the arena; if you cross it
+    between runs and locker_check is on, it appraises your winnings and moves the valuable
+    ones to the locker to lighten your load instead of exiting. Default is 50. (Current: #{UserVars.tdusk[:encumbrance_limit]})
     ;e echo UserVars.tdusk[:encumbrance_limit] = 75
 
     Whether to appraise winnings at the pawnshop/gemshop and move anything worth
-    locker_limit or more into the locker (room 15948) instead of keeping it in your
-    lootsack. Only runs once encumbrance hits encumbrance_limit -- below that it's
+    locker_limit or more into the locker (room locker_location) instead of keeping it in
+    your lootsack. Only runs once encumbrance hits encumbrance_limit -- below that it's
     skipped and runs just keep repeating. Default is set to TRUE. (Current: #{UserVars.tdusk[:locker_check]})
     ;e echo UserVars.tdusk[:locker_check] = false
 
     Silver value at/above which an appraised item gets moved to the locker. Default is 25000. (Current: #{UserVars.tdusk[:locker_limit]})
     ;e echo UserVars.tdusk[:locker_limit] = 30000
+
+    Room number of the locker to use for over-limit items. Default is 15948. (Current: #{UserVars.tdusk[:locker_location]})
+    ;e echo UserVars.tdusk[:locker_location] = 15948
 
     Uses ;BIGSHOT QUICK for hunting logic. So make sure your bigshot is setup correctly.
         Hunting Tab  - quickhunt targets should be:  (?:.*)
