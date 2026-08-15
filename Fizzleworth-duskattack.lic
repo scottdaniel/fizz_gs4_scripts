@@ -1,6 +1,18 @@
 boosted_longterm = false
 no_longterm_boosts = false
 
+# Casts spell_num if affordable, otherwise prays to build resources back up.
+# Returns true if it cast, false if it prayed instead.
+def cast_or_pray(spell_num, npc)
+  if Spell[spell_num].affordable?
+    Spell[spell_num].force_incant if npc.status !~ /dead|gone/
+    true
+  else
+    fput "pray"
+    false
+  end
+end
+
 while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /animated/ }
   GameObj.targets
          .reject {|foe| foe.status =~ /dead|gone/ }
@@ -21,13 +33,10 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
     if (Array[5, 10, 15, 20, 25].include? UserVars.tdusk[:wave_number]) && Room.current.id == 24550
       waitrt?
       waitcastrt?
-      fput "pray" unless Spell[715].affordable?
-      waitrt?
-      waitcastrt?
-      if Spell[715].affordable?
-        Spell[715].force_incant
-      else
-        echo "Fizzleworth-duskattack: couldn't afford 715 on champion round #{UserVars.tdusk[:wave_number]}"
+      unless cast_or_pray(715, npc)
+        waitrt?
+        waitcastrt?
+        echo "Fizzleworth-duskattack: couldn't afford 715 on champion round #{UserVars.tdusk[:wave_number]}" unless cast_or_pray(715, npc)
       end
     end
 
@@ -53,22 +62,10 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
       waitcastrt? if npc.status !~ /dead|gone/
       if checkrt == 0 && checkcastrt == 0 && npc.status !~ /dead|gone/
         if npc.name =~ /automaton/
-          if Spell[711].affordable?
-            Spell[711].force_incant if npc.status !~ /dead|gone/
-          else
-            fput "pray"
-          end
+          cast_or_pray(711, npc)
         elsif npc.status !~ /dead|gone/
-          if Spell[702].affordable?
-            Spell[702].force_incant if npc.status !~ /dead|gone/
-          else
-            fput "pray"
-          end
-          if Spell[705].affordable?
-            Spell[705].force_incant if npc.status !~ /dead|gone/
-          else
-            fput "pray"
-          end
+          cast_or_pray(702, npc)
+          cast_or_pray(705, npc)
         end
       end
       sleep 0.1
