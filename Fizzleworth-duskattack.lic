@@ -12,13 +12,24 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
     if ( checkmana <= 20 ) && ( UserVars.tdusk[:praycurrent] < 3 )
       fput "pray mana"
       UserVars.tdusk[:praycurrent] += 1
-    elsif ( checkmana <= 20 ) && (checkspirit >= 11)
+    elsif ( checkmana <= 20 ) && (Experience.deeds > 3)
       waitrt?
       waitcastrt?
-      fput "sign of wracking"
+      fput "symbol of mana"
     end
 
-    Spell[715].force_incant if (Array[5, 10, 15, 20, 25].include? UserVars.tdusk[:wave_number]) && Spell[715].affordable? && Room.current.id == 24550
+    if (Array[5, 10, 15, 20, 25].include? UserVars.tdusk[:wave_number]) && Room.current.id == 24550
+      waitrt?
+      waitcastrt?
+      fput "pray" unless Spell[715].affordable?
+      waitrt?
+      waitcastrt?
+      if Spell[715].affordable?
+        Spell[715].force_incant
+      else
+        echo "Fizzleworth-duskattack: couldn't afford 715 on champion round #{UserVars.tdusk[:wave_number]}"
+      end
+    end
 
     #start main attack routine here
     loop do
