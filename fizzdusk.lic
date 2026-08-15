@@ -14,9 +14,13 @@
      author: Tysong (horibu on PC), original Nylis
        name: tdusk
        tags: duskruin, arena, dusk ruin, tdusk
-    version: 1.26.12
+    version: 1.26.13
 
     changelog:
+        1.26.13 (2026-08-15)
+            fizzdusk fork: move fizzprep.lic to run right before entering the arena
+            (after pause_me/maxvitals/experience waits) instead of right after the
+            previous run, since scroll-cast defensive spells don't last that long
         1.26.12 (2026-08-15)
             fizzdusk fork: run fizzprep.lic between runs (alongside waggle) to recast
             defensive spells from scrolls, see UserVars.tdusk[:fizzprep_me]
@@ -1172,7 +1176,6 @@ def loot(group_size, package_line)
     end
   end
   Script.run(UserVars.tdusk[:waggle_script]) if UserVars.tdusk[:waggle_me]
-  Script.run("fizzprep") if UserVars.tdusk[:fizzprep_me] && Script.exists?("fizzprep")
 
   if UserVars.tdusk[:pause_me]
     echo "PAUSING SCRIPT"
@@ -1188,6 +1191,10 @@ def loot(group_size, package_line)
   if UserVars.tdusk[:experience]
     sleep(1) until ((checkmind('saturated') ? 110 : percentmind) <= UserVars.tdusk[:experience])
   end
+
+  # Run fizzprep right before heading back in -- pause_me/maxvitals/experience above
+  # can wait a long time, and scroll-cast defensive spells don't last that long.
+  Script.run("fizzprep") if UserVars.tdusk[:fizzprep_me] && Script.exists?("fizzprep")
 
   sleep 1
   sleep 2 if !checkgrouped
@@ -1217,7 +1224,8 @@ if variable[1].downcase == "help"
     Waggle Script to Use - Default is set to waggle (Current: #{UserVars.tdusk[:waggle_script]})
     ;e echo UserVars.tdusk[:waggle_script] = 'ewaggle'
 
-    Runs fizzprep.lic Between Runs to recast defensive spells from scrolls - Default is set to TRUE (Current: #{UserVars.tdusk[:fizzprep_me]})
+    Runs fizzprep.lic right before entering the arena to recast defensive spells from
+    scrolls - Default is set to TRUE (Current: #{UserVars.tdusk[:fizzprep_me]})
     ;e echo UserVars.tdusk[:fizzprep_me] = false
 
     Pauses Between Runs - Default is set to TRUE (Current: #{UserVars.tdusk[:pause_me]})
@@ -1333,6 +1341,7 @@ UpstreamHook.add('tdusk_hook', tdusk_hook)
 
 fput "store all" if UserVars.tdusk[:girdstore]
 sleep(1)
+Script.run("fizzprep") if UserVars.tdusk[:fizzprep_me] && Script.exists?("fizzprep")
 fput "go entrance" if !checkgrouped
 sleep(1) until Room.current.id == 24550
 
