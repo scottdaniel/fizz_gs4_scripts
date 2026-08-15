@@ -14,9 +14,12 @@
      author: Tysong (horibu on PC), original Nylis
        name: tdusk
        tags: duskruin, arena, dusk ruin, tdusk
-    version: 1.26.13
+    version: 1.26.14
 
     changelog:
+        1.26.14 (2026-08-15)
+            fizzdusk fork: run restear.lic right after waggling to get the runestaff
+            back in hand for resting boosts, see UserVars.tdusk[:restear_me]
         1.26.13 (2026-08-15)
             fizzdusk fork: move fizzprep.lic to run right before entering the arena
             (after pause_me/maxvitals/experience waits) instead of right after the
@@ -119,6 +122,7 @@ UserVars.tdusk                ||= {}
 UserVars.tdusk[:activescripts]  = ['stand'] if UserVars.tdusk[:activescripts].nil?
 UserVars.tdusk[:waggle_me]      = true      if UserVars.tdusk[:waggle_me].nil?
 UserVars.tdusk[:waggle_script]  = 'ewaggle' if UserVars.tdusk[:waggle_script].nil?
+UserVars.tdusk[:restear_me]     = true      if UserVars.tdusk[:restear_me].nil?
 UserVars.tdusk[:fizzprep_me]    = true      if UserVars.tdusk[:fizzprep_me].nil?
 UserVars.tdusk[:pause_me]       = true      if UserVars.tdusk[:pause_me].nil?
 UserVars.tdusk[:enhancive_me]   = false     if UserVars.tdusk[:enhancive_me].nil?
@@ -1176,6 +1180,7 @@ def loot(group_size, package_line)
     end
   end
   Script.run(UserVars.tdusk[:waggle_script]) if UserVars.tdusk[:waggle_me]
+  Script.run("restear") if UserVars.tdusk[:restear_me] && Script.exists?("restear")
 
   if UserVars.tdusk[:pause_me]
     echo "PAUSING SCRIPT"
@@ -1223,6 +1228,10 @@ if variable[1].downcase == "help"
 
     Waggle Script to Use - Default is set to waggle (Current: #{UserVars.tdusk[:waggle_script]})
     ;e echo UserVars.tdusk[:waggle_script] = 'ewaggle'
+
+    Runs restear.lic right after waggling to get the runestaff back in hand for
+    resting boosts - Default is set to TRUE (Current: #{UserVars.tdusk[:restear_me]})
+    ;e echo UserVars.tdusk[:restear_me] = false
 
     Runs fizzprep.lic right before entering the arena to recast defensive spells from
     scrolls - Default is set to TRUE (Current: #{UserVars.tdusk[:fizzprep_me]})
