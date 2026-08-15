@@ -30,13 +30,13 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
       fput "symbol of mana"
     end
 
-    if (Array[5, 10, 15, 20, 25].include? UserVars.tdusk[:wave_number]) && Room.current.id == 24550
+    if npc.name =~ /champion/ && Room.current.id == 24550
       waitrt?
       waitcastrt?
       unless cast_or_pray(715, npc)
         waitrt?
         waitcastrt?
-        echo "Fizzleworth-duskattack: couldn't afford 715 on champion round #{UserVars.tdusk[:wave_number]}" unless cast_or_pray(715, npc)
+        echo "Fizzleworth-duskattack: couldn't afford 715 on #{npc.name}" unless cast_or_pray(715, npc)
       end
     end
 
