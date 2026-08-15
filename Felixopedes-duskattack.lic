@@ -1,0 +1,34 @@
+while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /animated/ }
+  GameObj.targets
+         .reject {|foe| foe.status =~ /dead|gone/ }
+         .sample
+         .tap { |npc|
+
+    put "target ##{npc.id}"
+    fput "release" if checkprep != "None"
+    if ( checkmana <= 20 ) || (checkstamina <= 10)
+      waitrt?
+      waitcastrt?
+      fput "pray"
+    end
+
+    Spell[212].force_incant if npc.status !~ /dead|gone/
+    Spell[214].force_incant if (Array[5, 10, 15, 20, 25].include? UserVars.tdusk[:wave_number]) && Spell[214].affordable? && Room.current.id == 24550
+
+    #start main attack routine here
+    loop do
+      break if Room.current.id != 24550
+      break if npc.status =~ /dead|gone/
+      waitrt? if npc.status !~ /dead|gone/
+      waitcastrt? if npc.status !~ /dead|gone/
+      if checkrt == 0 && checkcastrt == 0 && npc.status !~ /dead|gone/
+        multifput "stance off", "cman trip", "attack", "stance def" if checkstamina > 10
+        multifput "stance off", "attack", "stance def"
+      end
+      sleep 0.1
+    end
+    #end main attack routine here
+  }
+end
+Script.start("foreach", "in room; look item") if UserVars.tdusk[:wave_number] != 25
+Script.start("foreach", "in room; get item; stow item") if UserVars.tdusk[:wave_number] == 25

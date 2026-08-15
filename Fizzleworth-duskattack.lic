@@ -1,0 +1,69 @@
+boosted_longterm = false
+no_longterm_boosts = false
+
+while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /animated/ }
+  GameObj.targets
+         .reject {|foe| foe.status =~ /dead|gone/ }
+         .sample
+         .tap { |npc|
+
+    put "target ##{npc.id}"
+    fput "release" if checkprep != "None"
+    if ( checkmana <= 20 ) && ( UserVars.tdusk[:praycurrent] < 3 )
+      fput "pray mana"
+      UserVars.tdusk[:praycurrent] += 1
+    elsif ( checkmana <= 20 ) && (checkspirit >= 11)
+      waitrt?
+      waitcastrt?
+      fput "sign of wracking"
+    end
+
+    Spell[715].force_incant if (Array[5, 10, 15, 20, 25].include? UserVars.tdusk[:wave_number]) && Spell[715].affordable? && Room.current.id == 24550
+
+    #start main attack routine here
+    loop do
+      break if Room.current.id != 24550
+      break if npc.status =~ /dead|gone/
+
+      if checkmind("must rest") && !no_longterm_boosts
+        unless boosted_longterm
+          # dothistimeout returns nil after 3s if nothing matches (i.e. the
+          # boost succeeded with no error), so no separate success pattern
+          # is needed here.
+          result = dothistimeout "boost longterm", 3, /You do not have any Long-Term Experience Boosts to redeem\./
+          no_longterm_boosts = true unless result.nil?
+          boosted_longterm = true
+        end
+      else
+        boosted_longterm = false
+      end
+
+      waitrt? if npc.status !~ /dead|gone/
+      waitcastrt? if npc.status !~ /dead|gone/
+      if checkrt == 0 && checkcastrt == 0 && npc.status !~ /dead|gone/
+        if npc.name =~ /automaton/
+          if Spell[711].affordable?
+            Spell[711].force_incant if npc.status !~ /dead|gone/
+          else
+            fput "pray"
+          end
+        elsif npc.status !~ /dead|gone/
+          if Spell[702].affordable?
+            Spell[702].force_incant if npc.status !~ /dead|gone/
+          else
+            fput "pray"
+          end
+          if Spell[705].affordable?
+            Spell[705].force_incant if npc.status !~ /dead|gone/
+          else
+            fput "pray"
+          end
+        end
+      end
+      sleep 0.1
+    end
+    #end main attack routine here
+  }
+end
+Script.start("foreach", "in room; look item") if UserVars.tdusk[:wave_number] != 25
+Script.start("foreach", "in room; get item; stow item") if UserVars.tdusk[:wave_number] == 25
