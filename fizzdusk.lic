@@ -14,9 +14,11 @@
      author: Tysong (horibu on PC), original Nylis
        name: tdusk
        tags: duskruin, arena, dusk ruin, tdusk
-    version: 1.26.15
+    version: 1.26.16
 
     changelog:
+        1.26.16 (2026-08-15)
+            fizzdusk fork: trash the emptied package instead of dropping it (littering)
         1.26.15 (2026-08-15)
             fizzdusk fork: fix group_size miscount -- checkpcs counts every PC in the
             room (bystanders included), not just your own group, which could send solo
@@ -1142,11 +1144,11 @@ def loot(group_size, package_line)
     if checkright == "package" && (GameObj.right_hand.contents.empty? || GameObj.right_hand.contents.nil?)
       sleep(0.5)
       waitrt?
-      fput "drop my package"
+      fput "trash my package"
     elsif checkleft == "package" && (GameObj.left_hand.contents.empty? || GameObj.left_hand.contents.nil?)
       sleep(0.5)
       waitrt?
-      fput "drop my package"
+      fput "trash my package"
     else
       respond "package not empty"
       respond "package not empty"
