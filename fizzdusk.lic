@@ -14,9 +14,13 @@
      author: Tysong (horibu on PC), original Nylis
        name: tdusk
        tags: duskruin, arena, dusk ruin, tdusk
-    version: 1.26.16
+    version: 1.26.17
 
     changelog:
+        1.26.17 (2026-08-15)
+            fizzdusk fork: check "event entries" before every arena entry; once
+            Duskruin Entries hits 0, kill active scripts and quit the game instead
+            of trying to go back in
         1.26.16 (2026-08-15)
             fizzdusk fork: trash the emptied package instead of dropping it (littering)
         1.26.15 (2026-08-15)
@@ -1114,6 +1118,23 @@ def check_valuable_loot
   valuable.each { |item| stow_in_locker(item) }
 end
 
+# Checks remaining Duskruin entries via "event entries". If they're gone, kills
+# tdusk's active scripts and the game connection instead of trying to go back in.
+# Returns true if it's safe to keep going, false if the script should stop.
+def duskruin_entries_remain?
+  line = dothistimeout "event entries", 5, /Duskruin Entries:/
+  return true if line.nil?
+
+  entries = line[/Duskruin Entries:\s*(\d+)/, 1].to_i
+  return true if entries.positive?
+
+  echo "Out of Duskruin entries -- stopping tdusk and quitting."
+  UserVars.tdusk[:activescripts].each { |activescript| kill_script "#{activescript}" if Script.running?("#{activescript}") }
+  Script.kill("#{Char.name}-duskattack") if Script.running?("#{Char.name}-duskattack")
+  fput "quit"
+  false
+end
+
 def loot(group_size, package_line)
   waitrt?
   fput "store all" if UserVars.tdusk[:girdstore]
@@ -1188,6 +1209,8 @@ def loot(group_size, package_line)
   end
   Script.run(UserVars.tdusk[:waggle_script]) if UserVars.tdusk[:waggle_me]
   Script.run("restear") if UserVars.tdusk[:restear_me] && Script.exists?("restear")
+
+  exit unless duskruin_entries_remain?
 
   if UserVars.tdusk[:pause_me]
     echo "PAUSING SCRIPT"
@@ -1320,7 +1343,11 @@ if variable[1].downcase == "help"
         Set everything else up with how you want it.
 
     Broadcasts time to DUSKRUIN lnet channel when done. Default is true. (Current: #{UserVars.tdusk[:broadcast]})
-    ;e echo UserVars.tdusk[:broadcast] = false"
+    ;e echo UserVars.tdusk[:broadcast] = false
+
+    Checks EVENT ENTRIES before each arena entry. Once Duskruin Entries hits 0, tdusk
+    stops its active scripts and quits the game instead of trying to go back in.
+    This isn't a toggle -- it always runs."
   exit
 end
 
@@ -1354,6 +1381,8 @@ before_dying {
 }
 
 UpstreamHook.add('tdusk_hook', tdusk_hook)
+
+exit unless duskruin_entries_remain?
 
 fput "store all" if UserVars.tdusk[:girdstore]
 sleep(1)
