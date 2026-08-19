@@ -46,6 +46,7 @@ module UndeadBounty
   BOUNTY_TYPES = %w[kill dangerous].freeze
   BOUNTY_MASTER_NAME = 'taskmaster'.freeze
   GUARD_NAME_PATTERN = /(?:guard|sergeant|guardsman|sentry|tavernkeeper|alchemist|purser)/i.freeze
+  GUARD_NOT_READY_PATTERN = /is in no condition to talk to you/i.freeze
 
   def self.find_npc(pattern)
     (GameObj.npcs.to_a + GameObj.room_desc.to_a).find { |n| n.status != 'dead' && n.name =~ pattern }
@@ -80,6 +81,36 @@ module UndeadBounty
       sleep 0.25
     end
     nil
+  end
+
+  # sends a command once (no auto-resend) and watches incoming lines for up
+  # to `timeout` seconds for any of the given patterns; returns the matching
+  # pattern, or nil if none showed up in time
+  def self.fput_and_check(command, patterns, timeout: 5)
+    Script.current.clear
+    fput command
+    end_time = Time.now + timeout
+    while Time.now < end_time
+      line = get?
+      if line.nil?
+        sleep 0.1
+      elsif (pattern = patterns.find { |p| line =~ p })
+        return pattern
+      end
+    end
+    nil
+  end
+
+  # polls npc.status (mutated in place by Lich as server updates arrive)
+  # until it's no longer sleeping, or timeout is hit
+  def self.wait_for_npc_awake(npc, timeout: 120)
+    return unless npc.status.to_s =~ /sleep/i
+
+    respond 'UndeadBounty: guard is sleeping, waiting for them to wake up...'
+    end_time = Time.now + timeout
+    while Time.now < end_time && npc.status.to_s =~ /sleep/i
+      sleep 1
+    end
   end
 
   # find the town's guard room(s) generically: any room tagged 'advguard' (or
@@ -136,18 +167,36 @@ module UndeadBounty
     end
   end
 
-  def self.ask_master_for_bounty(bounty_type)
+  ALREADY_ASSIGNED_PATTERN = /already been assigned a task/i.freeze
+  TASKMASTER_BUSY_PATTERN = /kind of busy right now/i.freeze
+
+  def self.ask_master_for_bounty(bounty_type, max_attempts: 10)
     go_to_advguild
     boost_bounty
-    fput "ask #{BOUNTY_MASTER_NAME} for bounty #{bounty_type}"
-    waitrt?
 
-    task = wait_for_bounty(&:assigned?)
-    unless task
-      respond 'UndeadBounty: never got a new assignment from the bounty master, stopping.'
-      exit
+    max_attempts.times do
+      matched = fput_and_check(
+        "ask #{BOUNTY_MASTER_NAME} for bounty #{bounty_type}",
+        [ALREADY_ASSIGNED_PATTERN, TASKMASTER_BUSY_PATTERN]
+      )
+      waitrt?
+
+      if matched == ALREADY_ASSIGNED_PATTERN
+        respond 'UndeadBounty: taskmaster says a task is already assigned, requesting removal...'
+        ask_master_for_removal
+        next
+      elsif matched == TASKMASTER_BUSY_PATTERN
+        respond 'UndeadBounty: taskmaster is busy, retrying in 3 seconds...'
+        sleep 3
+        next
+      end
+
+      task = wait_for_bounty(&:assigned?)
+      return task if task
     end
-    task
+
+    respond 'UndeadBounty: never got a new assignment from the bounty master, stopping.'
+    exit
   end
 
   def self.ask_master_for_removal
@@ -207,10 +256,23 @@ module UndeadBounty
     # only cache real room ids, not the 'advguard' tag fallback
     guard_room_cache[town] = found_room if found_room.is_a?(Integer)
 
-    fput "ask #{npc.noun} for bounty"
-    waitrt?
+    task = nil
+    10.times do
+      wait_for_npc_awake(npc)
 
-    task = wait_for_bounty(&:ready?)
+      matched = fput_and_check("ask #{npc.noun} for bounty", [GUARD_NOT_READY_PATTERN])
+      waitrt?
+
+      if matched
+        respond "UndeadBounty: #{npc.noun} isn't able to talk right now, waiting and retrying..."
+        sleep 5
+        next
+      end
+
+      task = wait_for_bounty(&:ready?)
+      break if task
+    end
+
     unless task
       respond "UndeadBounty: guard never gave a creature assignment, stopping."
       exit
