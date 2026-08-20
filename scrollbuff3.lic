@@ -18,9 +18,24 @@ Configurable durations for stackable or refreshable spells
     author: Nihiladrem (todd.estabrooks@gmail.com)
       game: gs
       tags: invoke, scroll, scrolls, hunting
-      version: 0.1.7
+      version: 0.1.10
 
     CHANGELOG:
+    0.1.10 - Fixed the help/settings display always showing "Use vibrant Scrolls: No"
+             regardless of the actual toggle: it compared scrollbuff-usevibranttoggle
+             to "Yes", but the setting is stored as "True"/"False" everywhere else in
+             the script.
+    0.1.9 - Fixed infinite incant loop introduced in 0.1.8: the stacking loop compared
+            timeleft > target_duration, but a spell can never exceed its own server-
+            enforced cap, so once it reached max it looped forever (seen with 905
+            stuck at its 4h10m cap). Comparisons now use >=, and as a second safety
+            net the loop also stops if an incant doesn't actually add duration, in
+            case the real server cap differs from the spell's declared max.
+    0.1.8 - Vibrant ink scrolls grant temporary knowledge of the spell instead of
+            consuming a scroll per cast, so stackable spells cast from a vibrant
+            scroll now stack up to the spell's real maximum duration instead of
+            stopping at stackto_duration. Refreshable and one-shot spells are
+            unaffected since recasting them doesn't add duration.
     0.1.7 - Stopped findscroll from mutating SpellNumsNeeded with .shift, which removed
             the wrong spell (whatever was first in the list) whenever any scroll was
             missing, mislabeling successfully-cast spells as skipped. Final summary now
@@ -141,7 +156,7 @@ if SpellNums.nil? || SpellNums.count == 0 || SpellNums.first.start_with?("h")
 			"To list all relevant settings for this script:",
 			"Current settings:"
 			
-			if (CharSettings["scrollbuff-usevibranttoggle"] == "Yes");usevibrant="True";else;usevibrant="No";end			
+			if (CharSettings["scrollbuff-usevibranttoggle"] == "True");usevibrant="True";else;usevibrant="No";end			
 			echofmt "scrollbag: #{Vars["scrollbag"]}",
 			"Vibrantscrollbag: #{Vars["vibrantscrollbag"]}",	
 			"Use vibrant Scrolls: #{usevibrant}",	
@@ -158,7 +173,9 @@ elsif SpellNums.first.start_with?("vibrant")
 	else
 		CharSettings["scrollbuff-usevibranttoggle"] = "True"
 		echofmt "You are now set to use vibrant ink scrolls.",
-		"If a vibrant ink scroll is rummaged this script will invoke it and then prep/cast it once."
+		"If a vibrant ink scroll is rummaged this script will invoke it to absorb the spell's",
+		"knowledge, then incant stackable spells until they hit their maximum duration",
+		"(refreshable and one-shot spells are still just cast once)."
 	end
 	exit
 elsif SpellNums.first.start_with?("stackto")
@@ -182,7 +199,7 @@ elsif SpellNums.first.start_with?("refreshto")
 		echofmt "You are now set invoke stackable spells until above #{SpellNums[1]} minutes." 
 		exit		
 elsif SpellNums.first.start_with?("settings")
-	if (CharSettings["scrollbuff-usevibranttoggle"] == "Yes");usevibrant="True";else;usevibrant="No";end
+	if (CharSettings["scrollbuff-usevibranttoggle"] == "True");usevibrant="True";else;usevibrant="No";end
 
 	
 	echofmt "scrollbag: #{Vars["scrollbag"]}",
@@ -311,19 +328,28 @@ def castscroll(spell_num, scrollid, scrollbag, vibrantscrollbag, stackto_duratio
 
 	if (Spell[spell_num].stackable?)
 		if debug == true; echo "#{spell_num} is stackable";end
-		if debug == true; echo (Spell[spell_num].timeleft > stackto_duration.to_f);end
+		## Vibrant scrolls grant temporary knowledge of the spell instead of consuming
+		## a scroll per cast, so stack all the way to the spell's real max duration
+		## rather than stopping at the (scroll-conserving) stackto_duration.
+		target_duration = (scrolltype == "vibrant") ? Spell[spell_num].max_duration.to_f : stackto_duration.to_f
+		if debug == true; echo (Spell[spell_num].timeleft >= target_duration);end
 		if debug == true; echo scrolltype;end
 	
-		until ((Spell[spell_num].timeleft > stackto_duration.to_f)||(scrolltype == "none"))
+		until ((Spell[spell_num].timeleft >= target_duration)||(scrolltype == "none"))
 			if debug == true; echo "Current #{spell_num} duration: #{Spell[spell_num].timeleft}";end
-			if Spell[spell_num].timeleft > stackto_duration.to_f; echo "Spell already above stackto duration"; break; end
+			if Spell[spell_num].timeleft >= target_duration; echo "Spell already above target duration"; break; end
 			waitcastrt?
 			waitrt?							
 			result = dothis "invoke #{spell_num} from ##{scrollid}", /As you begin your invocation the ink leaps from the page and seeps into your skin.|and gesture to invoke the|That spell is not on the|Invoke from what/
 			if result =~ /and gesture to invoke the/
 				fput "cast"
 			elsif result =~ /As you begin your invocation the ink leaps from the page and seeps into your skin./
-				until (Spell[spell_num].timeleft > stackto_duration.to_f)
+				## Guard against the spell's true server-enforced cap being lower than
+				## target_duration (e.g. missing/incorrect max data): if a cast doesn't
+				## actually add duration, we've hit the real cap, so stop instead of
+				## incanting forever.
+				until (Spell[spell_num].timeleft >= target_duration)
+					previous_duration = Spell[spell_num].timeleft
 					if !(Spell[spell_num].affordable?); echo "waiting for mana...";end
 					wait_until { Spell[spell_num].affordable? }				
 					waitcastrt?
@@ -331,10 +357,15 @@ def castscroll(spell_num, scrollid, scrollbag, vibrantscrollbag, stackto_duratio
 					fput "incant #{spell_num}" if Spell[spell_num].affordable?
 					waitcastrt?
 					waitrt?									
+					if Spell[spell_num].timeleft <= previous_duration + 0.5
+						if debug == true; echo "#{spell_num} duration did not increase (#{Spell[spell_num].timeleft} min), stopping at the real cap";end
+						break
+					end
 				end
 			elsif result =~ /That spell is not on the|Invoke from what/
 				fput "put right in ##{scrollbag.id}"
 					scrolltype = findscroll(spell_num, scrollbag, vibrantscrollbag)
+					target_duration = (scrolltype == "vibrant") ? Spell[spell_num].max_duration.to_f : stackto_duration.to_f
 					if checkright =~ /scroll|paper|papyrus|parchment|vellum|palimpsest/
 						scrollid = GameObj.right_hand.id
 					elsif checkleft =~ /scroll|paper|papyrus|parchment|vellum|palimpsest/
@@ -344,6 +375,7 @@ def castscroll(spell_num, scrollid, scrollbag, vibrantscrollbag, stackto_duratio
 			waitcastrt?
 			waitrt?					
 		end
+
 		
 	elsif (Spell[spell_num].refreshable?)
 		if debug == true; echo "#{spell_num} is refreshable";end
