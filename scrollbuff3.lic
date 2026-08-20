@@ -2,7 +2,7 @@
 
 Attempts to cast non-attack spells from your collection of scrolls,
 vellums, parchments, etc. Utilizes separate containers to manage vibrant scrolls.
-Will rummage in your scrollbag for matching spell numbers, upon finding a vibrant scroll it will place,
+Will rummage in your scrollsack for matching spell numbers, upon finding a vibrant scroll it will place,
 that scroll in your vibrantscrollsack unless usage of vibrant scrolls is toggled on.
 
 Invoke/casts normal scrolls.
@@ -18,9 +18,12 @@ Configurable durations for stackable or refreshable spells
     author: Nihiladrem (todd.estabrooks@gmail.com)
       game: gs
       tags: invoke, scroll, scrolls, hunting
-      version: 0.1.10
+      version: 0.1.11
 
     CHANGELOG:
+    0.1.11 - Renamed the scrollbag/vibrantscrollbag vars to scrollsack/vibrantscrollsack
+             to match the container vars used by fizzfuse.lic. Still set with
+             ;vars set scrollsack=... and ;vars set vibrantscrollsack=...
     0.1.10 - Fixed the help/settings display always showing "Use vibrant Scrolls: No"
              regardless of the actual toggle: it compared scrollbuff-usevibranttoggle
              to "Yes", but the setting is stored as "True"/"False" everywhere else in
@@ -45,7 +48,7 @@ Configurable durations for stackable or refreshable spells
             instead of the raw spell.active attribute, and to compare each spell's
             remaining duration against the correct threshold for its type
             (stackable/refreshable/one-shot) instead of always using stackto.
-    0.1.5 - Fixed an issue with scrolls being stored incorrectly in vibrantscrollbag
+    0.1.5 - Fixed an issue with scrolls being stored incorrectly in vibrantscrollsack
     0.1.4 - Fixed a bug with vibrant scroll casting
     0.1.3 - Changed logic to allow all non-attack spells.
     0.1.2 - Changed vars to scrollbag to avoid confusion, clarified help messaging.
@@ -71,12 +74,12 @@ unless (checkright.nil?) ||  (checkleft.nil?)
     exit
 end
 
-##Check for scrollbag
-scrollbagVar = Vars["scrollbag"]
-unless scrollbagVar
+##Check for scrollsack
+scrollsackVar = Vars["scrollsack"]
+unless scrollsackVar
     echofmt "Please set your scroll container with a",
             "command like:",
-            "    ;vars set scrollbag=silver backpack",
+            "    ;vars set scrollsack=silver backpack",
             "",
             "Use only a noun and optionally a single adjective.",
             "",
@@ -85,27 +88,27 @@ unless scrollbagVar
     
     exit
 end
-scrollbag = GameObj[scrollbagVar]
-unless scrollbag
-    echofmt "Couldn't find your scrollbag \"#{scrollbagVar}\"",
+scrollsack = GameObj[scrollsackVar]
+unless scrollsack
+    echofmt "Couldn't find your scrollsack \"#{scrollsackVar}\"",
             "Fetch that and try again, would ya?"
     
     exit
 end
-##Check for vibrantscrollbag
-vibrantscrollbagVar = Vars["vibrantscrollbag"]
-unless vibrantscrollbagVar
+##Check for vibrantscrollsack
+vibrantscrollsackVar = Vars["vibrantscrollsack"]
+unless vibrantscrollsackVar
     echofmt "Please set your vibrant scroll container with a",
             "command like:",
-            "    ;vars set vibrantscrollbag=white satchel",
+            "    ;vars set vibrantscrollsack=white satchel",
             "",
             "Use only a noun and optionally a single adjective.",
             "",
             "This will only work with containers you are",
             "wearing or holding.",
 			"",
-			"Your vibrantscrollbag needs to be a different",
-			"than your scrollbag."
+			"Your vibrantscrollsack needs to be a different",
+			"than your scrollsack."
     exit
 end
 
@@ -127,12 +130,12 @@ end
 SpellNums = script.vars[1..-1]
 if SpellNums.nil? || SpellNums.count == 0 || SpellNums.first.start_with?("h")
     echofmt "Attempts to cast defensive or self-cast spells from your collection of scrolls, vellums, parchments, etc.",
-			"Will rummage in your scrollbag for matching spell numbers, upon finding a vibrant scroll it will place",
+			"Will rummage in your scrollsack for matching spell numbers, upon finding a vibrant scroll it will place",
 			"that scroll in your vibrantscrollsack unless usage of vibrant scrolls is toggled on.",
             "",
-            "Before running, you must set your scrollbag and vibrantscrollbag with a command like:",
-            "   ;vars set scrollbag=pouch",
-            "   ;vars set vibrantscrollbag=black satchel",
+            "Before running, you must set your scrollsack and vibrantscrollsack with a command like:",
+            "   ;vars set scrollsack=pouch",
+            "   ;vars set vibrantscrollsack=black satchel",
             "",
 			"You must have an empty right hand, or a non-scroll item in right hand and an empty left hand.",
             "",
@@ -145,8 +148,8 @@ if SpellNums.nil? || SpellNums.count == 0 || SpellNums.first.start_with?("h")
             "#{refreshto_duration} minutes left.  To change this setting enter:",
 			"   ;#{script.name} refreshto (minutes)",
             "",				
-			"Vibrant ink scrolls will be skipped by default and moved to your set vibrantscrollbag. If vibrant",	
-			"toggle is on, will still prefer scrolls in scrollbag before checking vibrantscrollbag.",
+			"Vibrant ink scrolls will be skipped by default and moved to your set vibrantscrollsack. If vibrant",	
+			"toggle is on, will still prefer scrolls in scrollsack before checking vibrantscrollsack.",
 			"To toggle use of vibrant ink scrolls enter: ",	
 			"   ;#{script.name} vibrant",			
             "",
@@ -157,8 +160,8 @@ if SpellNums.nil? || SpellNums.count == 0 || SpellNums.first.start_with?("h")
 			"Current settings:"
 			
 			if (CharSettings["scrollbuff-usevibranttoggle"] == "True");usevibrant="True";else;usevibrant="No";end			
-			echofmt "scrollbag: #{Vars["scrollbag"]}",
-			"Vibrantscrollbag: #{Vars["vibrantscrollbag"]}",	
+			echofmt "scrollsack: #{Vars["scrollsack"]}",
+			"Vibrantscrollsack: #{Vars["vibrantscrollsack"]}",	
 			"Use vibrant Scrolls: #{usevibrant}",	
 			"Stack spells to: #{stackto_duration} minutes",
 			"Refresh spells below: #{refreshto_duration} minutes"			
@@ -169,7 +172,7 @@ elsif SpellNums.first.start_with?("vibrant")
 	if CharSettings["scrollbuff-usevibranttoggle"] == "True"
 		CharSettings["scrollbuff-usevibranttoggle"] = "False"
 		echofmt "You are now set to NOT use vibrant ink scrolls.",
-		"If a vibrant ink scroll is rummaged this script will put the scroll in your vibrantscrollbag and rummage again."
+		"If a vibrant ink scroll is rummaged this script will put the scroll in your vibrantscrollsack and rummage again."
 	else
 		CharSettings["scrollbuff-usevibranttoggle"] = "True"
 		echofmt "You are now set to use vibrant ink scrolls.",
@@ -202,8 +205,8 @@ elsif SpellNums.first.start_with?("settings")
 	if (CharSettings["scrollbuff-usevibranttoggle"] == "True");usevibrant="True";else;usevibrant="No";end
 
 	
-	echofmt "scrollbag: #{Vars["scrollbag"]}",
-			"Vibrantscrollbag: #{Vars["vibrantscrollbag"]}",	
+	echofmt "scrollsack: #{Vars["scrollsack"]}",
+			"Vibrantscrollsack: #{Vars["vibrantscrollsack"]}",	
 			"Use vibrant Scrolls: #{usevibrant}",	
 			"Stack spells to: #{stackto_duration} minutes",
 			"Refresh spells below: #{refreshto_duration} minutes"			
@@ -212,27 +215,27 @@ elsif SpellNums.first.start_with?("settings")
 end
 
 ##Check for Vibrant Scroll Sack
-vibrantscrollbagVar = Vars["vibrantscrollbag"]
-unless (vibrantscrollbagVar || (CharSettings["scrollbuff-usevibranttoggle"] == "True"))
+vibrantscrollsackVar = Vars["vibrantscrollsack"]
+unless (vibrantscrollsackVar || (CharSettings["scrollbuff-usevibranttoggle"] == "True"))
     echofmt "You are not currently set to use vibrant ink scrolls.",
-            "You need to set a place to store vibrant ink scrolls that are rummaged from your scrollbag.",
+            "You need to set a place to store vibrant ink scrolls that are rummaged from your scrollsack.",
             "command like:",
-            "    ;vars set vibrantscrollbag=black backpack"
+            "    ;vars set vibrantscrollsack=black backpack"
     
     exit
 else
-	vibrantscrollbag = GameObj[vibrantscrollbagVar]
-	unless vibrantscrollbag
-		echofmt "Couldn't find your vibrantscrollbag \"#{vibrantscrollbag}\"",
+	vibrantscrollsack = GameObj[vibrantscrollsackVar]
+	unless vibrantscrollsack
+		echofmt "Couldn't find your vibrantscrollsack \"#{vibrantscrollsack}\"",
 				"Fetch that and try again, would ya?"
 		exit
 	end
-	if GameObj[vibrantscrollbagVar] == GameObj[scrollbagVar]
-		echofmt "Your vibrantscrollbag must be a different container than your scrollbag",
+	if GameObj[vibrantscrollsackVar] == GameObj[scrollsackVar]
+		echofmt "Your vibrantscrollsack must be a different container than your scrollsack",
 				"Change one of the other to a different container and try again. Example:",
-				"    ;vars set vibrantscrollbag=black backpack",
+				"    ;vars set vibrantscrollsack=black backpack",
 				"OR",
-				"    ;vars set scrollbag=pouch"	
+				"    ;vars set scrollsack=pouch"	
 				exit
 	end	
 end
@@ -269,15 +272,15 @@ if SpellNumsNeeded.count.zero?
 end
 
 ## Make sure scroll sacks are open
-fput "open ##{scrollbag.id}"
-fput "open ##{vibrantscrollbag.id}"
+fput "open ##{scrollsack.id}"
+fput "open ##{vibrantscrollsack.id}"
 
-def findscroll(spell_num, scrollbag, vibrantscrollbag)
-        result = dothis "rummage in ##{scrollbag.id} spell #{spell_num}", /You rummage through .+ (and remove .+ with .+ scrawled upon it|but can't seem to locate anything with that spell on it)/
+def findscroll(spell_num, scrollsack, vibrantscrollsack)
+        result = dothis "rummage in ##{scrollsack.id} spell #{spell_num}", /You rummage through .+ (and remove .+ with .+ scrawled upon it|but can't seem to locate anything with that spell on it)/
 		
         if result =~ /but can't seem to locate anything with that spell on it/
 			if CharSettings["scrollbuff-usevibranttoggle"] == "True"
-				result = dothis "rummage in ##{vibrantscrollbag.id} spell #{spell_num}", /You rummage through .+ (and remove .+ with .+ scrawled upon it|but can't seem to locate anything with that spell on it)/
+				result = dothis "rummage in ##{vibrantscrollsack.id} spell #{spell_num}", /You rummage through .+ (and remove .+ with .+ scrawled upon it|but can't seem to locate anything with that spell on it)/
 				if result =~ /but can't seem to locate anything with that spell on it/
 					if debug == true; echo "Missing scroll for #{spell_num}";end
 					return "none"				
@@ -295,7 +298,7 @@ def findscroll(spell_num, scrollbag, vibrantscrollbag)
 				if checkright =~ /scroll|paper|papyrus|parchment|vellum|palimpsest/			
 					result = dothistimeout "read ##{GameObj.right_hand.id}", 0.5, /vibrant/
 					if result =~ /vibrant/
-						fput "put right in ##{vibrantscrollbag.id}"
+						fput "put right in ##{vibrantscrollsack.id}"
 						scrolltype="vibrant"
 					else
 						scrolltype="normal"
@@ -303,7 +306,7 @@ def findscroll(spell_num, scrollbag, vibrantscrollbag)
 				elsif checkleft =~ /scroll|paper|papyrus|parchment|vellum|palimpsest/
 					result = dothistimeout "read ##{GameObj.left_hand.id}", 0.5, /vibrant/
 					if result =~ /vibrant/
-						fput "put left in ##{vibrantscrollbag.id}"
+						fput "put left in ##{vibrantscrollsack.id}"
 						scrolltype="vibrant"						
 					else
 						scrolltype="normal"
@@ -313,7 +316,7 @@ def findscroll(spell_num, scrollbag, vibrantscrollbag)
 					exit
 				end
 				if !(scrolltype == "normal")
-					result = dothis "rummage in ##{scrollbag.id} spell #{spell_num}", /You rummage through .+ (and remove .+ with .+ scrawled upon it|but can't seem to locate anything with that spell on it)/
+					result = dothis "rummage in ##{scrollsack.id} spell #{spell_num}", /You rummage through .+ (and remove .+ with .+ scrawled upon it|but can't seem to locate anything with that spell on it)/
 					if result =~ /but can't seem to locate anything with that spell on it/
 						if debug == true; echo "missing scroll";end
 						scrolltype = "none"
@@ -324,7 +327,7 @@ def findscroll(spell_num, scrollbag, vibrantscrollbag)
 		end
 end
 
-def castscroll(spell_num, scrollid, scrollbag, vibrantscrollbag, stackto_duration, refreshto_duration, scrolltype)
+def castscroll(spell_num, scrollid, scrollsack, vibrantscrollsack, stackto_duration, refreshto_duration, scrolltype)
 
 	if (Spell[spell_num].stackable?)
 		if debug == true; echo "#{spell_num} is stackable";end
@@ -363,8 +366,8 @@ def castscroll(spell_num, scrollid, scrollbag, vibrantscrollbag, stackto_duratio
 					end
 				end
 			elsif result =~ /That spell is not on the|Invoke from what/
-				fput "put right in ##{scrollbag.id}"
-					scrolltype = findscroll(spell_num, scrollbag, vibrantscrollbag)
+				fput "put right in ##{scrollsack.id}"
+					scrolltype = findscroll(spell_num, scrollsack, vibrantscrollsack)
 					target_duration = (scrolltype == "vibrant") ? Spell[spell_num].max_duration.to_f : stackto_duration.to_f
 					if checkright =~ /scroll|paper|papyrus|parchment|vellum|palimpsest/
 						scrollid = GameObj.right_hand.id
@@ -421,9 +424,9 @@ def castscroll(spell_num, scrollid, scrollbag, vibrantscrollbag, stackto_duratio
 	end
      
 	if scrolltype == "vibrant"
-		fput "put ##{scrollid} in ##{vibrantscrollbag.id}"	
+		fput "put ##{scrollid} in ##{vibrantscrollsack.id}"	
 	else
-		fput "put ##{scrollid} in ##{scrollbag.id}"
+		fput "put ##{scrollid} in ##{scrollsack.id}"
 	end
 end
 
@@ -436,16 +439,16 @@ SpellNumsNeeded.each do |spell_num|
 
     if spell && !(spell.type =~ /attack/)
 
-		scrolltype = findscroll(spell_num, scrollbag, vibrantscrollbag)
+		scrolltype = findscroll(spell_num, scrollsack, vibrantscrollsack)
 
 		if scrolltype == "none"
 			echo "No scroll found for #{spell_num} #{spell.name}, skipping."
 			spells_not_found << spell_num
 		elsif checkright =~ /scroll|paper|papyrus|parchment|vellum|palimpsest/
-			castscroll(spell_num, GameObj.right_hand.id, scrollbag, vibrantscrollbag, stackto_duration, refreshto_duration, scrolltype)
+			castscroll(spell_num, GameObj.right_hand.id, scrollsack, vibrantscrollsack, stackto_duration, refreshto_duration, scrolltype)
 			spells_cast << spell_num
         elsif checkleft =~ /scroll|paper|papyrus|parchment|vellum|palimpsest/
-			castscroll(spell_num, GameObj.left_hand.id, scrollbag, vibrantscrollbag, stackto_duration, refreshto_duration, scrolltype)
+			castscroll(spell_num, GameObj.left_hand.id, scrollsack, vibrantscrollsack, stackto_duration, refreshto_duration, scrolltype)
 			spells_cast << spell_num
 		else
 			echo "Error: Found a scroll for #{spell_num} but couldn't recognize it in hand, noun might not be supported."
@@ -458,8 +461,8 @@ SpellNumsNeeded.each do |spell_num|
 
 end
 
-##fput "close ##{scrollbag.id}"
-##fput "close ##{vibrantscrollbag.id}"
+##fput "close ##{scrollsack.id}"
+##fput "close ##{vibrantscrollsack.id}"
 
 echofmt "SCROLL BUFFS COMPLETE",
         "",
