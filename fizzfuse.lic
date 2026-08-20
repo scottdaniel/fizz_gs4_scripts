@@ -4,7 +4,7 @@
         game: gemstone
         tags: scroll infusion, infuse, unlock, runestone, scroll
     requires: Lich > 5.4.0
-     version: 0.4
+     version: 0.5
 
 
 Infuse!
@@ -14,12 +14,19 @@ Infuse!
 	The script always uses the quiss'fyn rune, and always attempts to fully unlock the scroll. 
 	
     You must first define your infuse and scroll sack (which can be the same):
-	
+
 		;vars set infusesack=<container name>
-        # for runestones and runestone-making tools
+        # for runestones and runestone-making tools (brush, ink, cup)
         ;vars set scrollsack=<container name>
-        # for the scrolls
-		
+        # for finished scrolls
+
+    Optionally, define a separate sack for vibrant-ink scrolls (those whose
+    spell descriptions come back "vibrant" when checked). If unset, vibrant
+    scrolls are stored in scrollsack along with everything else.
+
+        ;vars set vibrantscrollsack=<container name>
+        # for finished vibrant-ink scrolls
+
 	Other assumptions:
 		- You have silvers in your local bank
 		- You can read all scrolls
@@ -51,6 +58,8 @@ Infuse!
         - Removed "infuse_scroll" and replaced with "infuse"
         - Stop cleanly if too injured to cast the link spell (714) instead of hanging
         - Detect when the link to the scroll slips mid-infuse and relink automatically
+        - Store finished vibrant-ink scrolls in a separate vibrantscrollsack (set with ;vars)
+        - ;infuse help now shows current settings and what each sack is for
 
 =end
 
@@ -245,12 +254,47 @@ def infuse
 	end
 end
 
-# Checks spells are unlocked and how charged they are
+# Send action and collect every line of the response up to (and including) a
+# line matching terminator.
+#
+# dothistimeout only returns the single line that matched the terminator,
+# which loses the rest of a multi-line block - like the full list of spell
+# charges shown by "wave left at scroll", which we need in full to check for
+# "vibrant".
+def collect_lines(action, terminator, timeout = 5)
+	end_time = Time.now.to_f + timeout
+	lines = []
+	Script.current.clear
+	fput action
+	loop do
+		line = get?
+		if line
+			lines << line
+			break if line =~ terminator
+		else
+			sleep 0.1
+		end
+		break if Time.now.to_f > end_time
+	end
+	lines
+end
+
+# Checks spells are unlocked and how charged they are, then stows the scroll
+# in scrollsack - or vibrantscrollsack if any of its spell descriptions come
+# back "vibrant".
 def check_charge
 	fput "put left in my #{UserVars.infusesack}"
 	find_rune("odeir'cos")
-	fput "wave left at my #{GameObj.right_hand}"
-	fput "put right in my #{UserVars.scrollsack}"
+	charge_lines = collect_lines("wave left at my #{GameObj.right_hand}", /Roundtime/, 5)
+	is_vibrant = charge_lines.any? { |line| line =~ /vibrant/i }
+
+	if is_vibrant && UserVars.vibrantscrollsack && UserVars.vibrantscrollsack.length >= 3
+		echo "Vibrant scroll detected, storing in vibrantscrollsack."
+		fput "put right in my #{UserVars.vibrantscrollsack}"
+	else
+		echo "Vibrant scroll detected but no vibrantscrollsack is set (;vars set vibrantscrollsack=<container name>) - storing in scrollsack instead." if is_vibrant
+		fput "put right in my #{UserVars.scrollsack}"
+	end
 end
 
 # Check that you're holding a scroll in your right hand & set scroll_id
@@ -308,9 +352,22 @@ elsif script.vars[1] == 'check'
 	check_charge
 
 elsif script.vars[1] == 'help'
-	respond "First, set your <infusesack> and <scrollsack> (can be the same): "
+	respond "First, set your <infusesack> and <scrollsack> (can be the same):"
 	respond "    ;vars set infusesack=<container name>"
     respond "    ;vars set scrollsack=<container name>"
+	respond ""
+	respond "Optionally, set a <vibrantscrollsack> to keep vibrant-ink scrolls separate:"
+	respond "    ;vars set vibrantscrollsack=<container name>"
+	respond ""
+	respond "    infusesack        - runestones and runestone-making tools (brush, ink, cup)"
+	respond "    scrollsack        - finished scrolls"
+	respond "    vibrantscrollsack - finished scrolls whose spell descriptions come back \"vibrant\";"
+	respond "                        falls back to scrollsack if this isn't set"
+	respond ""
+	respond "CURRENT SETTINGS:"
+	respond "    infusesack:        #{UserVars.infusesack || '(not set)'}"
+	respond "    scrollsack:        #{UserVars.scrollsack || '(not set)'}"
+	respond "    vibrantscrollsack: #{UserVars.vibrantscrollsack || '(not set)'}"
 	respond ""
 	respond "USAGE:"
 	respond "    ;infuse [unlock|infuse|rune <rune name>]"
