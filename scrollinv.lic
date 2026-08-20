@@ -1,0 +1,195 @@
+=begin
+  scrollinv.lic
+
+  Reads every scroll in a container (default: nouned "case") and prints a
+  collated table of every spell found, without needing to pick anything up
+  or put anything back -- equivalent in spirit to:
+      ;foreach scroll in my case; read item
+  but parses each "read" response for its spell number/name and prints a
+  summary table instead of dumping raw game text.
+
+  Usage:
+    ;scrollinv               scan the container nouned "case"
+    ;scrollinv backpack       scan a container nouned "backpack" instead
+    ;scrollinv help           show this message
+
+    tags: scroll, scrolls, inventory, utility
+=end
+
+SCROLL_NOUNS = %w[scroll vellum parchment papyrus palimpsest].freeze
+READ_TIMEOUT = 4
+
+# Prep/buff spells worth tracking separately -- same list fizzprep.lic feeds to scrollbuff3.
+PRIORITY_SPELLS = [
+  202, 211, 215, 219, 303, 307, 310, 313, 314, 319, 503, 507, 509, 508, 601,
+  606, 613, 905, 913, 1119, 1215, 1204, 1605, 1601, 1701, 1705, 1208, 207,
+  1616, 911
+].freeze
+
+# Spells already known well enough not to need tracking here.
+HIDDEN_RANGES = [(100..199), (400..499), (700..799)].freeze
+
+def hidden_spell?(num)
+  HIDDEN_RANGES.any? { |range| range.cover?(num) }
+end
+
+def usage
+  respond "scrollinv -- reads every scroll in a container and tables up the spells found."
+  respond ""
+  respond "  ;scrollinv               scan the container nouned \"case\""
+  respond "  ;scrollinv backpack       scan a container nouned \"backpack\" instead"
+  respond ""
+  respond "The container must be open and worn/held (or otherwise accessible)."
+end
+
+def find_container(noun)
+  noun = noun.to_s.strip.downcase
+  pools = []
+  pools.concat(Array(GameObj.inv))
+  pools.concat(Array(GameObj.loot))
+  pools << GameObj.right_hand if GameObj.right_hand&.id
+  pools << GameObj.left_hand  if GameObj.left_hand&.id
+  GameObj.containers.each_key { |cid| obj = GameObj[cid]; pools << obj if obj }
+  pools.compact!
+  pools.find { |o| o.noun.to_s.downcase == noun } ||
+    pools.find { |o| o.name.to_s.downcase.include?(noun) }
+end
+
+def refresh_container(noun)
+  # "my" forces GS4 to match something you're carrying instead of a same-nouned
+  # item lying in the room (e.g. a stray "wooden case" on the ground).
+  target = noun.to_s.strip
+  target = "my #{target}" unless target =~ /^my\b/i
+
+  result = dothistimeout "look in #{target}", 5, /In the|Inside the|There is nothing|That is closed|isn't a container|don't see|I don't|<container|<exposeContainer/i
+  if result =~ /That is closed/i
+    fput "open #{target}"
+    result = dothistimeout "look in #{target}", 5, /In the|Inside the|There is nothing|<container|<exposeContainer/i
+  end
+  find_container(noun)
+end
+
+# Marks the actual start of a "read" response, so we don't latch onto unrelated
+# lines already queued up (which was causing both misses and screen spam before).
+READ_START = /^(?:It takes you a moment to focus on|You continue to read|On the .* you see|You (?:don't|do not) see|There isn't any|nothing (?:scrawled|written|inscribed)|cannot be read|too dark to read|can't make out|You are unable to read)/i
+
+# XML mode is required here: the "<prompt" end marker that signals a response is
+# complete only exists on the raw XML stream, not the plain-text one, so plain mode
+# (Lich::Util.quiet_command) would never see it and always burn the full timeout.
+# Tags get stripped from spell names below since XML mode leaves clickable
+# <a exist=... noun=...>Name</a> markup in the captured lines.
+def read_scroll(scroll)
+  waitrt?
+  lines = Lich::Util.issue_command(
+    "read ##{scroll.id}", READ_START, /<prompt/,
+    include_end: false, timeout: READ_TIMEOUT, silent: true, usexml: true, quiet: true
+  )
+  waitrt?
+  spells = []
+  lines.each do |line|
+    clean = line.gsub(/<\/?[^>]*>/, '')
+    if clean =~ /\((\d+)\)\s+(.*?)\s*$/
+      spells << [$1.to_i, $2.strip]
+    end
+  end
+  spells
+end
+
+if script.vars[1].to_s =~ /^(?:help|\?|-h|--help)$/i
+  usage
+  exit
+end
+
+container_noun = script.vars[0].to_s.strip
+container_noun = "case" if container_noun.empty?
+
+container = refresh_container(container_noun)
+unless container
+  respond "scrollinv: couldn't find a container nouned '#{container_noun}'."
+  respond "Make sure it's worn/held and try again, or pass a different name, e.g. ;scrollinv pouch"
+  exit
+end
+
+contents = Array(GameObj.containers[container.id])
+if contents.empty?
+  respond "scrollinv: '#{container.name}' appears to be empty (or closed)."
+  exit
+end
+
+scrolls = contents.select { |o| SCROLL_NOUNS.include?(o.noun.to_s.downcase) }
+if scrolls.empty?
+  respond "scrollinv: no scrolls found in '#{container.name}'."
+  exit
+end
+
+respond "scrollinv: reading #{scrolls.size} scroll(s) in '#{container.name}'..."
+
+spell_counts = Hash.new(0)
+spell_names  = {}
+unreadable   = []
+sell_list    = [] # scrolls with no buff spell on them -- [scroll_name, spells]
+
+scrolls.each do |scroll|
+  spells = read_scroll(scroll)
+  if spells.empty?
+    unreadable << scroll.name
+  else
+    spells.each do |num, name|
+      spell_counts[num] += 1
+      spell_names[num] ||= name
+    end
+    has_buff = spells.any? { |num, _name| PRIORITY_SPELLS.include?(num) }
+    sell_list << [scroll.name, spells] unless has_buff
+  end
+end
+
+if spell_counts.empty?
+  respond "scrollinv: no spells could be identified on any scroll in '#{container.name}'."
+  exit
+end
+
+visible_nums  = spell_counts.keys.reject { |num| hidden_spell?(num) }
+priority_nums = PRIORITY_SPELLS.select { |num| visible_nums.include?(num) }
+other_nums    = (visible_nums - PRIORITY_SPELLS).sort
+
+def print_table(title, nums, spell_names, spell_counts)
+  return if nums.empty?
+
+  rows = nums.map { |num| [num, spell_names[num], spell_counts[num]] }
+
+  num_w   = [rows.map { |r| r[0].to_s.length }.max, "#".length].max
+  spell_w = [rows.map { |r| r[1].to_s.length }.max, "Spell".length].max
+  qty_w   = [rows.map { |r| r[2].to_s.length }.max, "Qty".length].max
+
+  sep = "+-#{'-' * num_w}-+-#{'-' * spell_w}-+-#{'-' * qty_w}-+"
+
+  respond ""
+  respond title
+  respond sep
+  respond "| #{'#'.ljust(num_w)} | #{'Spell'.ljust(spell_w)} | #{'Qty'.ljust(qty_w)} |"
+  respond sep
+  rows.each do |num, name, qty|
+    respond "| #{num.to_s.ljust(num_w)} | #{name.to_s.ljust(spell_w)} | #{qty.to_s.ljust(qty_w)} |"
+  end
+  respond sep
+end
+
+print_table("Buff Scrolls", priority_nums, spell_names, spell_counts)
+print_table("Hunting / Utility", other_nums, spell_names, spell_counts)
+
+respond ""
+respond "scrollinv: #{visible_nums.size} distinct spell(s) across #{scrolls.size} scroll(s)."
+
+unless sell_list.empty?
+  respond ""
+  respond "Sell Candidates (no buff spell -- #{sell_list.size} scroll(s)):"
+  sell_list.sort_by { |name, _spells| name.to_s }.each do |name, spells|
+    spell_desc = spells.map { |num, sname| "#{num} #{sname}" }.join(", ")
+    respond "  #{name}: #{spell_desc}"
+  end
+end
+
+unless unreadable.empty?
+  respond ""
+  respond "scrollinv: couldn't identify a spell on #{unreadable.size} item(s): #{unreadable.join(', ')}"
+end
