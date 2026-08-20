@@ -18,9 +18,18 @@ Configurable durations for stackable or refreshable spells
     author: Nihiladrem (todd.estabrooks@gmail.com)
       game: gs
       tags: invoke, scroll, scrolls, hunting
-      version: 0.1.11
+      version: 0.1.12
 
     CHANGELOG:
+    0.1.12 - The 0.1.9 "no progress" cap check read timeleft right after casting, before
+             the duration feed had caught up, so it mistook a normal update lag for
+             hitting the real cap: it broke out of the incant loop early, then the outer
+             loop re-invoked from the now-empty vibrant scroll ("That spell is not on
+             the ..."), which put it in the wrong sack (always scrollsack, regardless of
+             where it came from) and could try to put it away a second time at the end.
+             The cap check now waits up to 3 seconds for the duration to update, the
+             retry puts the scroll back in the sack matching its scrolltype, and the
+             final put-away is skipped if the scroll isn't actually in a hand anymore.
     0.1.11 - Renamed the scrollbag/vibrantscrollbag vars to scrollsack/vibrantscrollsack
              to match the container vars used by fizzfuse.lic. Still set with
              ;vars set scrollsack=... and ;vars set vibrantscrollsack=...
@@ -360,13 +369,25 @@ def castscroll(spell_num, scrollid, scrollsack, vibrantscrollsack, stackto_durat
 					fput "incant #{spell_num}" if Spell[spell_num].affordable?
 					waitcastrt?
 					waitrt?									
-					if Spell[spell_num].timeleft <= previous_duration + 0.5
+					## The duration feed can lag a beat behind the cast confirmation, so
+					## give it a few seconds to catch up before concluding the spell is
+					## capped and it's time to stop incanting.
+					made_progress = false
+					6.times do
+						break if (made_progress = Spell[spell_num].timeleft > previous_duration + 0.5)
+						sleep 0.5
+					end
+					unless made_progress
 						if debug == true; echo "#{spell_num} duration did not increase (#{Spell[spell_num].timeleft} min), stopping at the real cap";end
 						break
 					end
 				end
 			elsif result =~ /That spell is not on the|Invoke from what/
-				fput "put right in ##{scrollsack.id}"
+				if scrolltype == "vibrant"
+					fput "put right in ##{vibrantscrollsack.id}"
+				else
+					fput "put right in ##{scrollsack.id}"
+				end
 					scrolltype = findscroll(spell_num, scrollsack, vibrantscrollsack)
 					target_duration = (scrolltype == "vibrant") ? Spell[spell_num].max_duration.to_f : stackto_duration.to_f
 					if checkright =~ /scroll|paper|papyrus|parchment|vellum|palimpsest/
@@ -423,10 +444,15 @@ def castscroll(spell_num, scrollid, scrollsack, vibrantscrollsack, stackto_durat
 				waitrt?
 	end
      
-	if scrolltype == "vibrant"
-		fput "put ##{scrollid} in ##{vibrantscrollsack.id}"	
-	else
-		fput "put ##{scrollid} in ##{scrollsack.id}"
+	## The scroll may have already been put away (e.g. by the "That spell is
+	## not on the ..." retry above), so only put it away here if it's still
+	## actually in a hand.
+	if [GameObj.right_hand.id, GameObj.left_hand.id].include?(scrollid)
+		if scrolltype == "vibrant"
+			fput "put ##{scrollid} in ##{vibrantscrollsack.id}"
+		else
+			fput "put ##{scrollid} in ##{scrollsack.id}"
+		end
 	end
 end
 
