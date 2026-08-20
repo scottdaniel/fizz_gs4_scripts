@@ -1,23 +1,25 @@
 =begin
   scrollinv.lic
 
-  Reads every scroll in a container (default: nouned "case") and prints a
-  collated table of every spell found, without needing to pick anything up
-  or put anything back -- equivalent in spirit to:
+  Reads every scroll in a set of containers (default: nouned "case" and
+  "suede sack") and prints a collated table of every spell found, without
+  needing to pick anything up or put anything back -- equivalent in spirit to:
       ;foreach scroll in my case; read item
   but parses each "read" response for its spell number/name and prints a
   summary table instead of dumping raw game text.
 
   Usage:
-    ;scrollinv               scan the container nouned "case"
-    ;scrollinv backpack       scan a container nouned "backpack" instead
-    ;scrollinv help           show this message
+    ;scrollinv                    scan "case" and "suede sack"
+    ;scrollinv backpack           scan a container nouned "backpack" instead
+    ;scrollinv case, pouch        scan multiple containers (comma-separated)
+    ;scrollinv help                show this message
 
     tags: scroll, scrolls, inventory, utility
 =end
 
 SCROLL_NOUNS = %w[scroll vellum parchment papyrus palimpsest].freeze
 READ_TIMEOUT = 4
+DEFAULT_CONTAINERS = ["case", "suede sack"].freeze
 
 # Prep/buff spells worth tracking separately -- same list fizzprep.lic feeds to scrollbuff3.
 PRIORITY_SPELLS = [
@@ -36,10 +38,11 @@ end
 def usage
   respond "scrollinv -- reads every scroll in a container and tables up the spells found."
   respond ""
-  respond "  ;scrollinv               scan the container nouned \"case\""
-  respond "  ;scrollinv backpack       scan a container nouned \"backpack\" instead"
+  respond "  ;scrollinv                    scan \"#{DEFAULT_CONTAINERS.join('" and "')}\""
+  respond "  ;scrollinv backpack           scan a container nouned \"backpack\" instead"
+  respond "  ;scrollinv case, pouch        scan multiple containers (comma-separated)"
   respond ""
-  respond "The container must be open and worn/held (or otherwise accessible)."
+  respond "Containers must be open and worn/held (or otherwise accessible)."
 end
 
 def find_container(noun)
@@ -100,29 +103,40 @@ if script.vars[1].to_s =~ /^(?:help|\?|-h|--help)$/i
   exit
 end
 
-container_noun = script.vars[0].to_s.strip
-container_noun = "case" if container_noun.empty?
+container_arg = script.vars[0].to_s.strip
+container_nouns = container_arg.empty? ? DEFAULT_CONTAINERS : container_arg.split(',').map(&:strip).reject(&:empty?)
 
-container = refresh_container(container_noun)
-unless container
-  respond "scrollinv: couldn't find a container nouned '#{container_noun}'."
-  respond "Make sure it's worn/held and try again, or pass a different name, e.g. ;scrollinv pouch"
-  exit
+scrolls = []
+scanned_names = []
+
+container_nouns.each do |noun|
+  container = refresh_container(noun)
+  unless container
+    respond "scrollinv: couldn't find a container nouned '#{noun}'; skipping."
+    next
+  end
+
+  contents = Array(GameObj.containers[container.id])
+  if contents.empty?
+    respond "scrollinv: '#{container.name}' appears to be empty (or closed); skipping."
+    next
+  end
+
+  found = contents.select { |o| SCROLL_NOUNS.include?(o.noun.to_s.downcase) }
+  if found.empty?
+    respond "scrollinv: no scrolls found in '#{container.name}'."
+  else
+    scrolls.concat(found)
+    scanned_names << container.name
+  end
 end
 
-contents = Array(GameObj.containers[container.id])
-if contents.empty?
-  respond "scrollinv: '#{container.name}' appears to be empty (or closed)."
-  exit
-end
-
-scrolls = contents.select { |o| SCROLL_NOUNS.include?(o.noun.to_s.downcase) }
 if scrolls.empty?
-  respond "scrollinv: no scrolls found in '#{container.name}'."
+  respond "scrollinv: no scrolls found across #{container_nouns.join(', ')}."
   exit
 end
 
-respond "scrollinv: reading #{scrolls.size} scroll(s) in '#{container.name}'..."
+respond "scrollinv: reading #{scrolls.size} scroll(s) in #{scanned_names.join(', ')}..."
 
 spell_counts = Hash.new(0)
 spell_names  = {}
@@ -144,7 +158,7 @@ scrolls.each do |scroll|
 end
 
 if spell_counts.empty?
-  respond "scrollinv: no spells could be identified on any scroll in '#{container.name}'."
+  respond "scrollinv: no spells could be identified on any scroll in #{scanned_names.join(', ')}."
   exit
 end
 
