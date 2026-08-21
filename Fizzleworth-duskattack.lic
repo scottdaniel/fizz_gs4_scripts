@@ -59,12 +59,18 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
             # boost succeeded with no error), so no separate success pattern
             # is needed here.
             result = dothistimeout "boost longterm", 3, /You do not have any .*? Boosts to redeem\./
-            no_lte_boosts = true unless result.nil?
-            boosted_exp = true
+            if result.nil?
+              boosted_exp = true
+            else
+              no_lte_boosts = true
+            end
           elsif UserVars.fizzdusk[:boost_absorb] && !no_absorb_boosts
             result = dothistimeout "boost absorb", 3, /You do not have any .*? Boosts to redeem\./
-            no_absorb_boosts = true unless result.nil?
-            boosted_exp = true
+            if result.nil?
+              boosted_exp = true
+            else
+              no_absorb_boosts = true
+            end
           end
         end
       else
