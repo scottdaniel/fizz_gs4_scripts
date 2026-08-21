@@ -14,9 +14,12 @@
      author: Tysong (horibu on PC), original Nylis
        name: tdusk
        tags: duskruin, arena, dusk ruin, tdusk
-    version: 1.26.17
+    version: 1.26.18
 
     changelog:
+        1.26.18 (2026-08-15)
+            fizzdusk fork: add UserVars.tdusk[:boost_absorb] default and help text
+            for the boost absorb/longterm option in Fizzleworth-duskattack.lic
         1.26.17 (2026-08-15)
             fizzdusk fork: check "event entries" before every arena entry; once
             Duskruin Entries hits 0, kill active scripts and quit the game instead
@@ -139,6 +142,7 @@ UserVars.tdusk[:pause_me]       = true      if UserVars.tdusk[:pause_me].nil?
 UserVars.tdusk[:enhancive_me]   = false     if UserVars.tdusk[:enhancive_me].nil?
 UserVars.tdusk[:high_ds]        = false     if UserVars.tdusk[:high_ds].nil?
 UserVars.tdusk[:attack_script]  = false     if UserVars.tdusk[:attack_script].nil?
+UserVars.tdusk[:boost_absorb]   = false     if UserVars.tdusk[:boost_absorb].nil?
 UserVars.tdusk[:broadcast]      = true      if UserVars.tdusk[:broadcast].nil?
 UserVars.tdusk[:lootpackage]    = true      if UserVars.tdusk[:lootpackage].nil?
 UserVars.tdusk[:open_lootsack]  = false     if UserVars.tdusk[:open_lootsack].nil?
@@ -1295,6 +1299,10 @@ if variable[1].downcase == "help"
     Custom Attack Script In External CHARNAME-duskattack.lic file - Default to FALSE (Current #{UserVars.tdusk[:attack_script]})
     ;e echo UserVars.tdusk[:attack_script] = true
     Sample available via ;repo download Tysong-duskattack or https://github.com/mrhoribu/GS4-Stuff/tree/main/Duskruin
+
+    Whether Fizzleworth-duskattack.lic uses boost absorb instead of boost longterm
+    when it hits must rest. Default is set to FALSE (Current: #{UserVars.tdusk[:boost_absorb]})
+    ;e echo UserVars.tdusk[:boost_absorb] = true
 
     Set lootsack for emptying package into. (Current: #{UserVars.lootsack})
     ;vars set lootsack=CONTAINERHERE
