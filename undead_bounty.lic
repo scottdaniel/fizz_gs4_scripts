@@ -1,6 +1,11 @@
 =begin
-
-  undead_bounty.lic
+      author: Fizzleworth
+    co-writer: Claude (Anthropic)
+        name: undead_bounty
+        game: gemstone
+        tags: bounty, adventurer's guild, undead
+    requires: Lich > 5.4.0
+     version: 1.0
 
   Automates the "reroll until it's undead" bounty loop:
     1. Go to the Adventurer's Guild and ask the bounty master for a new
@@ -22,11 +27,13 @@
   town (guard, sergeant, sentry, tavernkeeper, purser, etc.), so that's
   matched with a broad pattern instead of a fixed word.
 
-    author: you
-      game: Gemstone
-      tags: bounty, adventurer's guild, undead
+  Also handles a few real-world hiccups along the way: it retries if the
+  taskmaster is busy or says you already have a task assigned (requesting
+  removal first), and it waits for a sleeping town guard to wake up instead
+  of giving up.
 
   usage:
+    ;undead_bounty help                  - show this help
     ;undead_bounty kill                  - loop requesting "kill" (culling) bounties,
                                             stop on any undead assignment
     ;undead_bounty dangerous             - same, but for "dangerous" bounties
@@ -39,6 +46,10 @@
   list ;ebestiary/gameobj-data.xml uses before the script ever leaves the
   guild - if nothing undead matches, it errors out immediately instead of
   burning a Bounty Boost.
+
+  changelog:
+    1.0
+      - initial release
 
 =end
 
@@ -343,10 +354,35 @@ module UndeadBounty
       ask_master_for_removal
     end
   end
+
+  def self.show_help
+    respond 'usage:'
+    respond "    ;#{Script.current.name} help                  - show this help"
+    respond "    ;#{Script.current.name} kill                  - loop requesting \"kill\" (culling) bounties,"
+    respond '                                            stop on any undead assignment'
+    respond "    ;#{Script.current.name} dangerous             - same, but for \"dangerous\" bounties"
+    respond "    ;#{Script.current.name} kill tomb wight       - stop only when the assigned creature is"
+    respond '                                            undead AND matches "tomb wight" (partial,'
+    respond '                                            case-insensitive)'
+    respond "    ;#{Script.current.name} dangerous nedum       - e.g. matches \"nedum vereri\""
+    respond ''
+    respond 'The optional creature name is checked against the known undead creature list'
+    respond 'before the script ever leaves the guild - if nothing undead matches, it errors'
+    respond 'out immediately instead of burning a Bounty Boost.'
+    respond ''
+    respond 'Boosts a bounty (if needed), asks the taskmaster for a new task, follows the'
+    respond "assignment to the assigned town's guard to learn the creature, and stops as"
+    respond 'soon as that creature is undead. Otherwise it requests removal and rerolls.'
+  end
 end
 
 ## script.vars[0] is the entire raw argument string; the individual
 ## space-split tokens start at script.vars[1].
+if script.vars[1].to_s.strip =~ /^help$/i
+  UndeadBounty.show_help
+  exit
+end
+
 bounty_type = (script.vars[1] || 'kill').downcase
 unless UndeadBounty::BOUNTY_TYPES.include?(bounty_type)
   respond "UndeadBounty: unknown bounty type '#{bounty_type}', expected one of: #{UndeadBounty::BOUNTY_TYPES.join(', ')}"
