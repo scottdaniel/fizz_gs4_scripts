@@ -11,12 +11,16 @@
     https://github.com/elanthia-online/scripts
 
        todo: unsure
-     author: Tysong (horibu on PC), original Nylis
+     author: Tysong (horibu on PC), original Nylis, fizzdusk fork by Fizzleworth
        name: fizzdusk
        tags: duskruin, arena, dusk ruin, fizzdusk
-    version: 1.26.20
+    version: 1.26.21
 
     changelog:
+        1.26.21 (2026-08-15)
+            fizzdusk fork: add Fizzleworth to the author credit, and one-time migrate
+            old UserVars.tdusk settings into UserVars.fizzdusk on first run so the
+            rename doesn't reset everyone's config back to defaults
         1.26.20 (2026-08-15)
             fizzdusk fork: rename all live references from tdusk to fizzdusk --
             UserVars.tdusk -> UserVars.fizzdusk (also in Fizzleworth-duskattack.lic),
@@ -144,6 +148,15 @@ else
 end
 
 UserVars.fizzdusk                ||= {}
+
+# One-time migration: the settings namespace used to be UserVars.tdusk. If this is
+# the first run since the fizzdusk rename, carry those old settings over instead of
+# falling back to defaults.
+if UserVars.fizzdusk.empty? && UserVars.tdusk.is_a?(Hash) && !UserVars.tdusk.empty?
+  UserVars.fizzdusk = UserVars.tdusk.dup
+  echo "fizzdusk: migrated your old UserVars.tdusk settings to UserVars.fizzdusk."
+end
+
 UserVars.fizzdusk[:activescripts]  = ['stand'] if UserVars.fizzdusk[:activescripts].nil?
 UserVars.fizzdusk[:waggle_me]      = true      if UserVars.fizzdusk[:waggle_me].nil?
 UserVars.fizzdusk[:waggle_script]  = 'ewaggle' if UserVars.fizzdusk[:waggle_script].nil?
