@@ -1,8 +1,11 @@
-boosted_longterm = false
-no_longterm_boosts = false
+boosted_exp = false
+no_lte_boosts = false
+no_absorb_boosts = false
 
-# Once you're out of Long-Term Experience Boosts, switch to instant "boost absorb"
-# instead. Same "must rest" trigger either way.
+# Separate toggles since they're separate boosts -- either, both, or neither can be
+# in use. When both are on, boost longterm is tried first each "must rest", falling
+# through to boost absorb once longterm boosts run out.
+UserVars.tdusk[:boost_lte]    = false if UserVars.tdusk[:boost_lte].nil?
 UserVars.tdusk[:boost_absorb] = false if UserVars.tdusk[:boost_absorb].nil?
 
 # Casts spell_num if affordable, otherwise prays to build resources back up.
@@ -49,18 +52,23 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
       break if Room.current.id != 24550
       break if npc.status =~ /dead|gone/
 
-      if checkmind("must rest") && !no_longterm_boosts
-        unless boosted_longterm
-          boost_cmd = UserVars.tdusk[:boost_absorb] ? "boost absorb" : "boost longterm"
-          # dothistimeout returns nil after 3s if nothing matches (i.e. the
-          # boost succeeded with no error), so no separate success pattern
-          # is needed here.
-          result = dothistimeout boost_cmd, 3, /You do not have any .*? Boosts to redeem\./
-          no_longterm_boosts = true unless result.nil?
-          boosted_longterm = true
+      if checkmind("must rest")
+        unless boosted_exp
+          if UserVars.tdusk[:boost_lte] && !no_lte_boosts
+            # dothistimeout returns nil after 3s if nothing matches (i.e. the
+            # boost succeeded with no error), so no separate success pattern
+            # is needed here.
+            result = dothistimeout "boost longterm", 3, /You do not have any .*? Boosts to redeem\./
+            no_lte_boosts = true unless result.nil?
+            boosted_exp = true
+          elsif UserVars.tdusk[:boost_absorb] && !no_absorb_boosts
+            result = dothistimeout "boost absorb", 3, /You do not have any .*? Boosts to redeem\./
+            no_absorb_boosts = true unless result.nil?
+            boosted_exp = true
+          end
         end
       else
-        boosted_longterm = false
+        boosted_exp = false
       end
 
       waitrt? if npc.status !~ /dead|gone/
