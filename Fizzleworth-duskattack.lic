@@ -1,6 +1,12 @@
 boosted_longterm = false
 no_longterm_boosts = false
 
+# Once you're out of Long-Term Experience Boosts, switch to instant "boost absorb"
+# instead. Same "must rest" trigger, but only once there's at least 1000
+# experience in your mind for it to absorb.
+UserVars.tdusk[:boost_absorb] = false if UserVars.tdusk[:boost_absorb].nil?
+BOOST_ABSORB_MIN_FXP = 1000 unless defined?(BOOST_ABSORB_MIN_FXP)
+
 # Casts spell_num if affordable, otherwise prays to build resources back up.
 # Returns true if it cast, false if it prayed instead.
 def cast_or_pray(spell_num, npc)
@@ -46,11 +52,17 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
       break if npc.status =~ /dead|gone/
 
       if checkmind("must rest") && !no_longterm_boosts
-        unless boosted_longterm
-          # dothistimeout returns nil after 3s if nothing matches (i.e. the
-          # boost succeeded with no error), so no separate success pattern
-          # is needed here.
-          result = dothistimeout "boost longterm", 3, /You do not have any Long-Term Experience Boosts to redeem\./
+        if UserVars.tdusk[:boost_absorb]
+          if !boosted_longterm && Experience.fxp_current >= BOOST_ABSORB_MIN_FXP
+            # dothistimeout returns nil after 3s if nothing matches (i.e. the
+            # boost succeeded with no error), so no separate success pattern
+            # is needed here.
+            result = dothistimeout "boost absorb", 3, /You do not have any .*? Boosts to redeem\./
+            no_longterm_boosts = true unless result.nil?
+            boosted_longterm = true
+          end
+        elsif !boosted_longterm
+          result = dothistimeout "boost longterm", 3, /You do not have any .*? Boosts to redeem\./
           no_longterm_boosts = true unless result.nil?
           boosted_longterm = true
         end
