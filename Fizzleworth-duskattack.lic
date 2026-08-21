@@ -5,8 +5,8 @@ no_absorb_boosts = false
 # Separate toggles since they're separate boosts -- either, both, or neither can be
 # in use. When both are on, boost longterm is tried first each "must rest", falling
 # through to boost absorb once longterm boosts run out.
-UserVars.tdusk[:boost_lte]    = false if UserVars.tdusk[:boost_lte].nil?
-UserVars.tdusk[:boost_absorb] = false if UserVars.tdusk[:boost_absorb].nil?
+UserVars.fizzdusk[:boost_lte]    = false if UserVars.fizzdusk[:boost_lte].nil?
+UserVars.fizzdusk[:boost_absorb] = false if UserVars.fizzdusk[:boost_absorb].nil?
 
 # Casts spell_num if affordable, otherwise prays to build resources back up.
 # Returns true if it cast, false if it prayed instead.
@@ -28,9 +28,9 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
 
     put "target ##{npc.id}"
     fput "release" if checkprep != "None"
-    if ( checkmana <= 20 ) && ( UserVars.tdusk[:praycurrent] < 3 )
+    if ( checkmana <= 20 ) && ( UserVars.fizzdusk[:praycurrent] < 3 )
       fput "pray mana"
-      UserVars.tdusk[:praycurrent] += 1
+      UserVars.fizzdusk[:praycurrent] += 1
     elsif ( checkmana <= 20 ) && (Experience.deeds > 3)
       waitrt?
       waitcastrt?
@@ -54,14 +54,14 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
 
       if checkmind("must rest")
         unless boosted_exp
-          if UserVars.tdusk[:boost_lte] && !no_lte_boosts
+          if UserVars.fizzdusk[:boost_lte] && !no_lte_boosts
             # dothistimeout returns nil after 3s if nothing matches (i.e. the
             # boost succeeded with no error), so no separate success pattern
             # is needed here.
             result = dothistimeout "boost longterm", 3, /You do not have any .*? Boosts to redeem\./
             no_lte_boosts = true unless result.nil?
             boosted_exp = true
-          elsif UserVars.tdusk[:boost_absorb] && !no_absorb_boosts
+          elsif UserVars.fizzdusk[:boost_absorb] && !no_absorb_boosts
             result = dothistimeout "boost absorb", 3, /You do not have any .*? Boosts to redeem\./
             no_absorb_boosts = true unless result.nil?
             boosted_exp = true
@@ -86,5 +86,5 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
     #end main attack routine here
   }
 end
-Script.start("foreach", "in room; look item") if UserVars.tdusk[:wave_number] != 25
-Script.start("foreach", "in room; get item; stow item") if UserVars.tdusk[:wave_number] == 25
+Script.start("foreach", "in room; look item") if UserVars.fizzdusk[:wave_number] != 25
+Script.start("foreach", "in room; get item; stow item") if UserVars.fizzdusk[:wave_number] == 25
