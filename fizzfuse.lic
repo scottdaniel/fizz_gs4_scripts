@@ -4,7 +4,8 @@
         game: gemstone
         tags: scroll infusion, infuse, unlock, runestone, scroll
     requires: Lich > 5.4.0
-     version: 0.5
+     version: 0.7
+        note: Written with assistance from Claude (Anthropic).
 
 
 Infuse!
@@ -28,7 +29,8 @@ Infuse!
         # for finished vibrant-ink scrolls
 
 	Other assumptions:
-		- You have silvers in your local bank
+		- You have at least 20,000 silvers in your local bank (withdrawn as a flat
+		  amount whenever a rune needs to be made, to cover runestones/ink/cup/etc.)
 		- You can read all scrolls
 	
     Once you have the variables set, you can activate the script in the following ways:
@@ -44,7 +46,14 @@ Infuse!
     
 		;infuse rune <rune name>
 			- Creates the rune of your choice
-	
+
+		;infuse check
+			- Check the charges/unlock status of the scroll in your right hand, then
+			  stow it in scrollsack (or vibrantscrollsack)
+
+		;infuse help
+			- Show usage and your current settings
+
     NotAramund's note:        
 	I adapted Ashraam's infuse.lic to create this script. I had the following goals in mind:
 		- Create a no-fuss way to fully unlock scrolls for my Thaumaturgy Tome
@@ -60,6 +69,12 @@ Infuse!
         - Detect when the link to the scroll slips mid-infuse and relink automatically
         - Store finished vibrant-ink scrolls in a separate vibrantscrollsack (set with ;vars)
         - ;infuse help now shows current settings and what each sack is for
+        - Widened several 1-second response timeouts to 5 seconds; on a slow connection
+          they could time out before the game's reply arrived, causing false
+          "not enough money" / "something went wrong" errors and a stuck rune-unlock loop
+        - Unlocking now checks with odeir'cos first to see how many spells are still
+          locked, then waves quiss'fyn exactly that many times instead of waving blindly
+          until the scroll reports fully unlocked
 
 =end
 
@@ -80,10 +95,10 @@ def make_rune (rune_name)
 		orderlist = orderlist.each.find{|item| item.include? "#{item_name}"}
 		ordernum = orderlist.scan(/\d+/).first
 		fput "order #{ordernum}"
-		buy_result = dothistimeout "buy", 3, /Sold for|need a free hand/
+		buy_result = dothistimeout "buy", 5, /Sold for|need a free hand/
 		if buy_result =~ /need a free hand/
 			fput "stow left"
-			buy_result = dothistimeout "buy", 3, /Sold for|need a free hand/
+			buy_result = dothistimeout "buy", 5, /Sold for|need a free hand/
 		end
 		buy_result
 	end
@@ -91,9 +106,12 @@ def make_rune (rune_name)
 	# Withdraw money
 	start_script('go2',['bank'])
 	wait_while {running?('go2')}
-	have_money = dothistimeout "withdraw 20000 silver", 1, /20,000 silvers/
+	# 1 second isn't enough for the teller's response to reliably land in time,
+	# which caused this to report "not enough money" even after a successful
+	# withdrawal.
+	have_money = dothistimeout "withdraw 20000 silver", 5, /20,000 silvers/
 	if !have_money
-		echo "You don't have enough money for runestones!"
+		echo "You don't have enough money for runestones! You need at least 20,000 silvers in your bank account."
 		exit
 	end
 	
@@ -102,12 +120,12 @@ def make_rune (rune_name)
 	wait_while {running?('go2')}
 
 	fput "get my brush in my #{UserVars.infusesack}"
-	brush_state = dothistimeout "look at my brush",1, /covered in|clean|dried|dry/
+	brush_state = dothistimeout "look at my brush", 5, /covered in|clean|dried|dry/
 	echo "#{brush_state}"
 	
 	# Clean brush
 	if brush_state =~ /dried|dry/
-		find_cup = dothistimeout "get cup in my #{UserVars.infusesack}", 1, /You remove|You get|You grab/
+		find_cup = dothistimeout "get cup in my #{UserVars.infusesack}", 5, /You remove|You get|You grab/
 		order.("cup") if !find_cup
 		fput "dip brush in my cup"
 		fput "put cup in my #{UserVars.infusesack}"
@@ -115,7 +133,7 @@ def make_rune (rune_name)
 	
 	# Dip ink
 	if brush_state =~ /clean|dried|dry/
-		find_ink = dothistimeout "get ink in my #{UserVars.infusesack}", 1, /You remove|You get|You grab/
+		find_ink = dothistimeout "get ink in my #{UserVars.infusesack}", 5, /You remove|You get|You grab/
 		if !find_ink
 			# Why do they do this to us??
 			if checkarea "icemule"
@@ -132,7 +150,7 @@ def make_rune (rune_name)
 	order.("runestone")
 	
 	# Draw rune
-	draw = dothistimeout "draw #{rune_name} rune on runestone",1, /cleaned off first|will need ink|Roundtime/
+	draw = dothistimeout "draw #{rune_name} rune on runestone", 5, /cleaned off first|will need ink|Roundtime/
 	if !draw.include? 'Roundtime'
 		echo "Something went wrong"
 		exit
@@ -167,20 +185,72 @@ def find_rune(rune_name)
 	end
 end
 
-# Unlock all spells on the scroll in your right hand
+# Send action and collect every line of the response up to (and including) a
+# line matching terminator.
+#
+# dothistimeout only returns the single line that matched the terminator,
+# which loses the rest of a multi-line block - like the full list of spells
+# shown by "wave left at scroll", where a wave can produce both the "altered"
+# success line and a "disintegrates" line in the same response and we need to
+# see both, not just whichever comes first.
+def collect_lines(action, terminator, timeout = 5)
+	end_time = Time.now.to_f + timeout
+	lines = []
+	Script.current.clear
+	fput action
+	loop do
+		line = get?
+		if line
+			lines << line
+			break if line =~ terminator
+		else
+			sleep 0.1
+		end
+		break if Time.now.to_f > end_time
+	end
+	lines
+end
+
+# Count how many spells on the scroll in your right hand are still locked.
+#
+# The odeir'cos charge listing shows "...and the potential to add X charges"
+# for spells that are already unlocked; a locked spell's line doesn't have
+# that clause, so its absence is what marks a spell as still needing quiss'fyn.
+#
+# Preconditions:
+#	- Scroll in right hand
+def count_locked_spells
+	find_rune("odeir'cos")
+	lines = collect_lines("wave left at my #{GameObj.right_hand}", /Roundtime/, 5)
+	fput "put left in my #{UserVars.infusesack}"
+	lines.count { |line| line =~ /^\s*\(\d+\)/ && line !~ /potential to add/ }
+end
+
+# Unlock the locked spells on the scroll in your right hand.
+#
+# Checks with odeir'cos first to see how many spells still need unlocking,
+# then waves quiss'fyn exactly that many times instead of waving blindly
+# until the scroll reports fully charged.
 #
 # Preconditions:
 #	- Scroll in right hand
 def unlock_spells
+	locked = count_locked_spells
+	if locked.zero?
+		echo "No locked spells found."
+		return
+	end
+	echo "#{locked} locked spell(s) found, unlocking..."
+
 	find_rune("quiss'fyn")
-	loop do
-		waved = dothistimeout "wave left at my #{GameObj.right_hand}", 1, /nothing|disintegrates/
+	while locked > 0
+		wave_lines = collect_lines("wave left at my #{GameObj.right_hand}", /Roundtime/, 5)
 		waitrt?
 		waitcastrt?
-		break if waved.include? 'nothing'
-		find_rune("quiss'fyn") if waved.include? 'disintegrates'
+		find_rune("quiss'fyn") if wave_lines.any? { |line| line =~ /disintegrates/ }
+		locked -= 1 if wave_lines.any? { |line| line =~ /You sense that the scroll has somehow been altered/ }
 	end
-	echo "Scroll locked, or fully charged."
+	echo "Scroll fully unlocked."
 	fput "put left in my #{UserVars.infusesack}"
 end
 
@@ -235,7 +305,7 @@ def infuse
 
 	loop do
 		break unless wait_for_mana(infusescroll)
-		infuse_line = dothistimeout "infuse my #{GameObj.right_hand}", 1, /glows dimly for a moment|mana dissipates|You are not prepared to infuse that/
+		infuse_line = dothistimeout "infuse my #{GameObj.right_hand}", 5, /glows dimly for a moment|mana dissipates|You are not prepared to infuse that/
 		waitcastrt?
 
 		if (infuse_line.include? 'grows cold') || (infuse_line.include? 'not prepared to infuse')
@@ -254,39 +324,17 @@ def infuse
 	end
 end
 
-# Send action and collect every line of the response up to (and including) a
-# line matching terminator.
-#
-# dothistimeout only returns the single line that matched the terminator,
-# which loses the rest of a multi-line block - like the full list of spell
-# charges shown by "wave left at scroll", which we need in full to check for
-# "vibrant".
-def collect_lines(action, terminator, timeout = 5)
-	end_time = Time.now.to_f + timeout
-	lines = []
-	Script.current.clear
-	fput action
-	loop do
-		line = get?
-		if line
-			lines << line
-			break if line =~ terminator
-		else
-			sleep 0.1
-		end
-		break if Time.now.to_f > end_time
-	end
-	lines
-end
-
 # Checks spells are unlocked and how charged they are, then stows the scroll
-# in scrollsack - or vibrantscrollsack if any of its spell descriptions come
-# back "vibrant".
+# in scrollsack - or vibrantscrollsack if it's a vibrant ink scroll.
+#
+# The odeir'cos charge listing shows "X charges remaining" for a regular
+# scroll's spells, but "X time remaining" (temporary knowledge, no charges)
+# for a vibrant one - so the wave response alone is enough to tell them apart.
 def check_charge
 	fput "put left in my #{UserVars.infusesack}"
 	find_rune("odeir'cos")
-	charge_lines = collect_lines("wave left at my #{GameObj.right_hand}", /Roundtime/, 5)
-	is_vibrant = charge_lines.any? { |line| line =~ /vibrant/i }
+	charge_line = dothistimeout "wave left at my #{GameObj.right_hand}", 5, /time remaining|charges remaining/
+	is_vibrant = charge_line =~ /time remaining/ ? true : false
 
 	if is_vibrant && UserVars.vibrantscrollsack && UserVars.vibrantscrollsack.length >= 3
 		echo "Vibrant scroll detected, storing in vibrantscrollsack."
@@ -368,6 +416,10 @@ elsif script.vars[1] == 'help'
 	respond "    infusesack:        #{UserVars.infusesack || '(not set)'}"
 	respond "    scrollsack:        #{UserVars.scrollsack || '(not set)'}"
 	respond "    vibrantscrollsack: #{UserVars.vibrantscrollsack || '(not set)'}"
+	respond ""
+	respond "You need at least 20,000 silvers in your local bank - whenever a rune needs"
+	respond "to be made (;infuse rune, or automatically during unlock/infuse), it withdraws"
+	respond "a flat 20,000 to cover runestones, ink, a cup, etc."
 	respond ""
 	respond "USAGE:"
 	respond "    ;infuse [unlock|infuse|rune <rune name>]"
