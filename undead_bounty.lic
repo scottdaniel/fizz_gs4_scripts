@@ -5,7 +5,7 @@
         game: gemstone
         tags: bounty, adventurer's guild, undead, voln
     requires: Lich > 5.4.0
-     version: 1.0
+     version: 1.1
 
   Want to keep earning favor with Voln while at the same time completing bounties?
 
@@ -49,9 +49,18 @@
   The creature name (if given) is checked against the same undead creature
   list ;ebestiary/gameobj-data.xml uses before the script ever leaves the
   guild - if nothing undead matches, it errors out immediately instead of
-  burning a Bounty Boost.
+  burning a Bounty Boost. A typo gets a distinct error from a real creature
+  that just isn't undead (checked against every known creature name, not
+  only the undead ones).
+
+  Gives up after 25 rerolls without a match, in case of a bad creature name
+  or a bounty that can't be assigned at your level.
 
   changelog:
+    1.1
+      - add a 25-attempt cap to the reroll loop
+      - distinguish "no such creature" (typo) from "known creature, not
+        undead" when validating the optional creature filter
     1.0
       - initial release
 
@@ -342,21 +351,37 @@ module UndeadBounty
     fakeobj.type.to_s.split(',').include?('undead')
   end
 
-  # the undead 'name' pattern is one big regex: ^(?:adjective prefixes)?(name1|name2|...)$
+  # each type's 'name' pattern is one big regex: ^(?:adjective prefixes)?(name1|name2|...)$
   # pull the literal creature names out of the middle group so we can search
-  # them, rather than re-parsing data/gameobj-data.xml ourselves.
-  def self.known_undead_creatures
-    return @known_undead_creatures if defined?(@known_undead_creatures)
-
-    GameObj.load_data if GameObj.type_data.nil? || GameObj.type_data.empty?
-    pattern = GameObj.type_data.dig('undead', :name)
+  # them, rather than matching against it directly.
+  def self.creature_names_from_pattern(pattern)
     source = pattern&.source.to_s
+    return [] if source.empty?
 
     boundary = source.index(')?(')
     body = boundary ? source[(boundary + 3)..-1] : source
     body = body.sub(/\)\$\z/, '')
 
-    @known_undead_creatures = body.split('|').map { |n| n.delete('\\') }.reject(&:empty?)
+    body.split('|').map { |n| n.delete('\\') }.reject(&:empty?)
+  end
+
+  def self.known_undead_creatures
+    return @known_undead_creatures if defined?(@known_undead_creatures)
+
+    GameObj.load_data if GameObj.type_data.nil? || GameObj.type_data.empty?
+    @known_undead_creatures = creature_names_from_pattern(GameObj.type_data.dig('undead', :name))
+  end
+
+  # same idea as known_undead_creatures, but across every type (armor, food,
+  # every creature type, etc.) - used only to tell a plain typo apart from a
+  # real, known creature that just isn't undead.
+  def self.known_creatures
+    return @known_creatures if defined?(@known_creatures)
+
+    GameObj.load_data if GameObj.type_data.nil? || GameObj.type_data.empty?
+    names = []
+    GameObj.type_data.each_value { |fields| names.concat(creature_names_from_pattern(fields[:name])) }
+    @known_creatures = names.uniq
   end
 
   # partial, case-insensitive search against the known undead creature list
@@ -367,14 +392,37 @@ module UndeadBounty
     known_undead_creatures.select { |name| name.downcase.include?(q) }
   end
 
+  # same, but against every creature name gameobj-data.xml knows about,
+  # regardless of type - for typo detection
+  def self.find_creature_matches(query)
+    return [] if query.to_s.strip.empty?
+
+    q = query.strip.downcase
+    known_creatures.select { |name| name.downcase.include?(q) }
+  end
+
   def self.creature_matches_filter?(creature_name, filter)
     return true if filter.to_s.strip.empty?
 
     creature_name.to_s.downcase.include?(filter.strip.downcase)
   end
 
+  # max rerolls before giving up - guards against an endless loop if the
+  # creature name has a typo, or it's a bounty that just can't be assigned
+  # (e.g. wrong level range)
+  MAX_ATTEMPTS = 25
+
   def self.run(bounty_type, creature_filter = nil)
+    attempt = 0
+
     loop do
+      attempt += 1
+      if attempt > MAX_ATTEMPTS
+        respond "UndeadBounty: hit the #{MAX_ATTEMPTS}-attempt limit without landing on a match, stopping."
+        respond 'UndeadBounty: double check the creature name/spelling, or this bounty may not be assignable at your level.'
+        return
+      end
+
       assignment = ask_master_for_bounty(bounty_type)
       task = ask_guard_for_bounty(assignment)
 
@@ -423,6 +471,9 @@ module UndeadBounty
     respond 'Boosts a bounty (if needed), asks the taskmaster for a new task, follows the'
     respond "assignment to the assigned town's guard to learn the creature, and stops as"
     respond 'soon as that creature is undead. Otherwise it requests removal and rerolls.'
+    respond ''
+    respond "Gives up after #{UndeadBounty::MAX_ATTEMPTS} rerolls without a match, in case the"
+    respond 'creature/spelling is wrong or the bounty just cannot be assigned at your level.'
   end
 end
 
@@ -445,7 +496,15 @@ creature_filter = nil if creature_filter.empty?
 if creature_filter
   matches = UndeadBounty.find_undead_matches(creature_filter)
   if matches.empty?
-    respond "UndeadBounty: no known undead creature matches '#{creature_filter}', stopping."
+    # same technique ;ebestiary uses to look creatures up: if it doesn't
+    # match ANY known creature name, it's probably a typo; if it matches
+    # something that just isn't undead, say so instead
+    any_matches = UndeadBounty.find_creature_matches(creature_filter)
+    if any_matches.empty?
+      respond "UndeadBounty: '#{creature_filter}' doesn't match any known creature name - check your spelling, stopping."
+    else
+      respond "UndeadBounty: '#{creature_filter}' matches #{any_matches.first(5).join(', ')}#{' and others' if any_matches.length > 5}, but none of them are undead, stopping."
+    end
     exit
   end
   respond "UndeadBounty: targeting creatures matching '#{creature_filter}' (e.g. #{matches.first(5).join(', ')})#{' and others' if matches.length > 5}"
