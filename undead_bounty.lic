@@ -3,9 +3,13 @@
     co-writer: Claude (Anthropic)
         name: undead_bounty
         game: gemstone
-        tags: bounty, adventurer's guild, undead
+        tags: bounty, adventurer's guild, undead, voln
     requires: Lich > 5.4.0
      version: 1.0
+
+  Want to keep earning favor with Voln while at the same time completing bounties?
+
+  Then this is your script!
 
   Automates the "reroll until it's undead" bounty loop:
     1. Go to the Adventurer's Guild and ask the bounty master for a new
@@ -58,6 +62,43 @@ module UndeadBounty
   BOUNTY_MASTER_NAME = 'taskmaster'.freeze
   GUARD_NAME_PATTERN = /(?:guard|sergeant|guardsman|sentry|tavernkeeper|alchemist|purser)/i.freeze
   GUARD_NOT_READY_PATTERN = /is in no condition to talk to you/i.freeze
+
+  # debug aid: print every bounty the script received this run, on exit.
+  # on for now while we're still shaking bugs out.
+  LOG_BOUNTY_HISTORY = true
+
+  def self.bounty_history
+    @bounty_history ||= []
+  end
+
+  def self.record_bounty(creature:, number:, type:, location:, verdict:)
+    bounty_history << {
+      creature: creature,
+      number: number,
+      type: type,
+      location: location,
+      verdict: verdict
+    }
+  end
+
+  def self.print_bounty_history
+    return unless LOG_BOUNTY_HISTORY
+    return if bounty_history.empty?
+
+    respond ''
+    respond "UndeadBounty: bounty history for this run (#{bounty_history.length}):"
+    bounty_history.each_with_index do |entry, i|
+      respond format(
+        '  %<n>2d. %<count>3s x %<creature>-24s [%<type>s] near %<location>-20s - %<verdict>s',
+        n: i + 1,
+        count: entry[:number] || '?',
+        creature: entry[:creature] || 'unknown',
+        type: entry[:type] || '?',
+        location: entry[:location] || '?',
+        verdict: entry[:verdict]
+      )
+    end
+  end
 
   def self.find_npc(pattern)
     (GameObj.npcs.to_a + GameObj.room_desc.to_a).find { |n| n.status != 'dead' && n.name =~ pattern }
@@ -338,6 +379,8 @@ module UndeadBounty
       task = ask_guard_for_bounty(assignment)
 
       unless task.creature
+        record_bounty(creature: nil, number: task.number, type: task.type, location: task.location,
+                       verdict: "couldn't parse creature from guard response")
         respond "UndeadBounty: could not determine the bounty creature from the guard's response, stopping."
         return
       end
@@ -346,13 +389,20 @@ module UndeadBounty
       respond "UndeadBounty: assigned #{task.number || '?'} x #{creature} in/near #{task.location}."
 
       if creature_undead?(creature) && creature_matches_filter?(creature, creature_filter)
+        record_bounty(creature: creature, number: task.number, type: task.type, location: task.location,
+                       verdict: 'UNDEAD - stopped here')
         respond "UndeadBounty: #{creature} is UNDEAD#{" and matches '#{creature_filter}'" if creature_filter} - stopping, take it from here."
         return
       end
 
+      verdict = creature_undead?(creature) ? "undead, but doesn't match filter '#{creature_filter}' - rerolled" : 'not undead - rerolled'
+      record_bounty(creature: creature, number: task.number, type: task.type, location: task.location, verdict: verdict)
+
       respond "UndeadBounty: #{creature} doesn't qualify, requesting removal and rerolling..."
       ask_master_for_removal
     end
+  ensure
+    print_bounty_history
   end
 
   def self.show_help
