@@ -74,6 +74,7 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
 
     put "target ##{npc.id}"
     fput "release" if checkprep != "None"
+    heat_resistant = false
 
     #start main attack routine here
     loop do
@@ -107,10 +108,16 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
       end
 
       if checkrt == 0 && checkcastrt == 0 && npc.status !~ /dead|gone/
-        if Spell[903].affordable?
+        spell_num = heat_resistant ? 904 : 903
+        if Spell[spell_num].affordable?
           put "stance offensive"
-          fput "incant 903 evoke"
+          cast_cmd = heat_resistant ? "incant 904" : "incant 903 evoke"
+          # Some creatures shrug off 903's heat entirely ("...absorbs the heat...").
+          # The roundtime message matches fast on a normal hit, so this doesn't slow
+          # down the common case waiting out the full timeout.
+          result = dothistimeout cast_cmd, 5, /absorbs? the heat|Roundtime: \d+ sec/i
           put "stance defensive"
+          heat_resistant = true if !heat_resistant && result =~ /absorbs? the heat/i
           sleep DEFENSIVE_PAUSE_SECONDS
         elsif UserVars.tdusk[:praycurrent] < 3
           fput "pray"
