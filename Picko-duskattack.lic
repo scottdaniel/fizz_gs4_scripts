@@ -4,8 +4,43 @@
 # rest of tdusk.lic) when mana runs out, then fall back to waving wands from the sack
 # for the rest of the run. Stays in stance defensive and only steps into offensive
 # for the moment it takes to act, same idiom as the Wizard routines in tdusk.lic.
+#
+# Wand handling mirrors bigshot.lic's cmd_wand/fresh_wand_container/dead_wand_container
+# (see Picko's zombies_landing bigshot profile): a wand that disintegrates is just
+# gone from hand, so the next get_fresh_wand call fetches another; a wand that's out
+# of charges instead fires silently ("Nothing happens.", no roundtime) and gets moved
+# to the knapsack for recharging instead of getting dropped or re-waved forever.
 
-WAND_CONTAINER = "sack" unless defined?(WAND_CONTAINER)
+FRESH_WAND_CONTAINER = "sack" unless defined?(FRESH_WAND_CONTAINER)
+DEAD_WAND_CONTAINER = "knapsack" unless defined?(DEAD_WAND_CONTAINER)
+WAND_NAME = "wand" unless defined?(WAND_NAME)
+
+# Makes sure a fresh wand is in hand. Returns false (and leaves an echo) if the
+# fresh wand container turns out to be empty.
+def get_fresh_wand
+  until GameObj.right_hand.noun =~ /#{WAND_NAME}/i
+    result = dothistimeout "get #{WAND_NAME} from my #{FRESH_WAND_CONTAINER}", 3, /You remove|You slip|You slide|Get what/
+    if result.nil? || result =~ /Get what/
+      echo "Picko-duskattack: no fresh wands left in my #{FRESH_WAND_CONTAINER}."
+      return false
+    end
+  end
+  true
+end
+
+# Stance-dances a single wand wave at npc. A disintegrated wand is simply gone from
+# hand (get_fresh_wand will notice and fetch another next time); a wand that's out of
+# charges fires with no roundtime and no recognizable result, so it gets moved to the
+# dead wand container instead.
+def wave_wand(npc)
+  return unless get_fresh_wand
+
+  put "stance offensive"
+  result = dothistimeout "wave my #{WAND_NAME} at ##{npc.id}", 3, /d100|You hurl|is already dead|You do not see that here|You are in no condition|I could not find|Roundtime: \d+ sec/
+  put "stance defensive"
+
+  fput "put my #{WAND_NAME} in my #{DEAD_WAND_CONTAINER}" if result.nil?
+end
 
 while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /animated/ }
   GameObj.targets
@@ -31,10 +66,7 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
           fput "pray"
           UserVars.tdusk[:praycurrent] += 1
         else
-          fput "get wand from my #{WAND_CONTAINER}" if GameObj.right_hand.noun !~ /wand/i
-          put "stance offensive"
-          fput "wave my wand"
-          put "stance defensive"
+          wave_wand(npc)
         end
       end
       sleep 0.1
