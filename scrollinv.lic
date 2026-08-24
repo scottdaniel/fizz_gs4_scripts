@@ -1,25 +1,28 @@
 =begin
   scrollinv.lic
 
-  Reads every scroll in a set of containers (default: nouned "case" and
-  "suede sack") and prints a collated table of every spell found, without
+  Reads every scroll in your scrollsack (and vibrantscrollsack, if set --
+  see fizzfuse.lic) and prints a collated table of every spell found, without
   needing to pick anything up or put anything back -- equivalent in spirit to:
       ;foreach scroll in my case; read item
   but parses each "read" response for its spell number/name and prints a
   summary table instead of dumping raw game text.
 
   Usage:
-    ;scrollinv                    scan "case" and "suede sack"
+    ;scrollinv                    scan UserVars.scrollsack / vibrantscrollsack
     ;scrollinv backpack           scan a container nouned "backpack" instead
     ;scrollinv case, pouch        scan multiple containers (comma-separated)
     ;scrollinv help                show this message
+
+  Set your containers with (same vars fizzfuse.lic uses):
+    ;vars set scrollsack=<container name>
+    ;vars set vibrantscrollsack=<container name>
 
     tags: scroll, scrolls, inventory, utility
 =end
 
 SCROLL_NOUNS = %w[scroll vellum parchment papyrus palimpsest].freeze
 READ_TIMEOUT = 4
-DEFAULT_CONTAINERS = ["case", "suede sack"].freeze
 
 # Prep/buff spells worth tracking separately -- same list fizzprep.lic feeds to scrollbuff3.
 PRIORITY_SPELLS = [
@@ -38,9 +41,17 @@ end
 def usage
   respond "scrollinv -- reads every scroll in a container and tables up the spells found."
   respond ""
-  respond "  ;scrollinv                    scan \"#{DEFAULT_CONTAINERS.join('" and "')}\""
+  respond "  ;scrollinv                    scan your scrollsack / vibrantscrollsack"
   respond "  ;scrollinv backpack           scan a container nouned \"backpack\" instead"
   respond "  ;scrollinv case, pouch        scan multiple containers (comma-separated)"
+  respond ""
+  respond "Set your containers with (same vars fizzfuse.lic uses):"
+  respond "    ;vars set scrollsack=<container name>"
+  respond "    ;vars set vibrantscrollsack=<container name>"
+  respond ""
+  respond "CURRENT SETTINGS:"
+  respond "    scrollsack:        #{UserVars.scrollsack || '(not set)'}"
+  respond "    vibrantscrollsack: #{UserVars.vibrantscrollsack || '(not set)'}"
   respond ""
   respond "Containers must be open and worn/held (or otherwise accessible)."
 end
@@ -104,7 +115,17 @@ if script.vars[1].to_s =~ /^(?:help|\?|-h|--help)$/i
 end
 
 container_arg = script.vars[0].to_s.strip
-container_nouns = container_arg.empty? ? DEFAULT_CONTAINERS : container_arg.split(',').map(&:strip).reject(&:empty?)
+
+if container_arg.empty?
+  container_nouns = [UserVars.scrollsack, UserVars.vibrantscrollsack].compact.map(&:strip).reject(&:empty?).uniq
+  if container_nouns.empty?
+    respond "scrollinv: you must define a scrollsack - ;vars set scrollsack=<container name>"
+    respond "  (optionally also ;vars set vibrantscrollsack=<container name>)"
+    exit
+  end
+else
+  container_nouns = container_arg.split(',').map(&:strip).reject(&:empty?)
+end
 
 scrolls = []
 scanned_names = []
