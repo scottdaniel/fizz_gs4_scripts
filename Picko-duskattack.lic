@@ -3,7 +3,9 @@
 # 3 times (UserVars.tdusk[:praycurrent], shared/reset once per arena run same as the
 # rest of tdusk.lic) when mana runs out, then fall back to waving wands from the sack
 # for the rest of the run. Stays in stance defensive and only steps into offensive
-# for the moment it takes to act, same idiom as the Wizard routines in tdusk.lic.
+# for the moment it takes to act, then waits (wait_for_attack) for the monster to
+# actually swing back -- or up to ATTACK_WAIT_TIMEOUT seconds, whichever comes first
+# -- before acting again.
 #
 # Wand handling mirrors bigshot.lic's cmd_wand/fresh_wand_container/dead_wand_container
 # (see Picko's zombies_landing bigshot profile): a wand that disintegrates is just
@@ -15,12 +17,19 @@ FRESH_WAND_CONTAINER = "sack" unless defined?(FRESH_WAND_CONTAINER)
 DEAD_WAND_CONTAINER = "knapsack" unless defined?(DEAD_WAND_CONTAINER)
 WAND_NAME = "wand" unless defined?(WAND_NAME)
 
-# How long to actually hold stance defensive after acting before stepping back into
-# offensive. Without this, checkrt hits 0 again almost the instant the cast/wave
-# roundtime clears, so defensive stance barely gets any real time -- there's no
-# reliable way to detect the monster's own attack across every monster/attack type,
-# so this is a fixed wait standing in for "give the thing a chance to swing back."
-DEFENSIVE_PAUSE_SECONDS = 3 unless defined?(DEFENSIVE_PAUSE_SECONDS)
+# How long to wait in stance defensive for the monster to actually attack before
+# giving up and acting anyway. checkrt hitting 0 again isn't a real signal the
+# monster did anything -- it just means your own cast/wave roundtime cleared -- so
+# without this, defensive stance barely gets held at all.
+ATTACK_WAIT_TIMEOUT = 5 unless defined?(ATTACK_WAIT_TIMEOUT)
+
+# Waits for a line that looks like a monster attacking you -- GS4 attack messages
+# aimed at the player consistently end in "...you!" regardless of the specific verb
+# ("bites you!", "claws at you!", etc) -- or ATTACK_WAIT_TIMEOUT seconds, whichever
+# comes first. Passive: doesn't send anything, just watches incoming lines.
+def wait_for_attack
+  dothistimeout nil, ATTACK_WAIT_TIMEOUT, /you!\s*$/i
+end
 
 # This script gets killed and restarted every wave, so a local "already tried and it
 # was empty" flag wouldn't survive between waves -- UserVars.tdusk persists across
@@ -61,7 +70,7 @@ def wave_wand(npc)
   put "stance offensive"
   result = dothistimeout "wave my #{WAND_NAME} at ##{npc.id}", 3, /d100|You hurl|is already dead|You do not see that here|You are in no condition|I could not find|Roundtime: \d+ sec/
   put "stance defensive"
-  sleep DEFENSIVE_PAUSE_SECONDS
+  wait_for_attack
 
   fput "put my #{WAND_NAME} in my #{DEAD_WAND_CONTAINER}" if result.nil?
 end
@@ -118,7 +127,7 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
           result = dothistimeout cast_cmd, 5, /absorbs? the heat|Roundtime: \d+ sec/i
           put "stance defensive"
           heat_resistant = true if !heat_resistant && result =~ /absorbs? the heat/i
-          sleep DEFENSIVE_PAUSE_SECONDS
+          wait_for_attack
         elsif UserVars.tdusk[:praycurrent] < 3
           fput "pray"
           UserVars.tdusk[:praycurrent] += 1
