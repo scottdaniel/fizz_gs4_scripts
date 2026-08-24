@@ -14,9 +14,13 @@
      author: Tysong (horibu on PC), original Nylis, fizzdusk fork by Fizzleworth
        name: fizzdusk
        tags: duskruin, arena, dusk ruin, fizzdusk
-    version: 1.26.22
+    version: 1.26.23
 
     changelog:
+        1.26.23 (2026-08-22)
+            fizzdusk fork: stand up before every "go entrance" attempt -- being seated
+            for any reason ("You need to stand up to enter the arena.") was blocking
+            arena entry
         1.26.22 (2026-08-21)
             fizzdusk fork: start ;playsongs between runs (see
             UserVars.fizzdusk[:playsongs_me]), stopping it and stowing the
@@ -1279,11 +1283,13 @@ def loot(group_size, package_line)
   sleep 2 if !checkgrouped
   if !checkgrouped && UserVars.fizzdusk[:reentry]
     until Room.current.id == 24550 do
+      fput "stand" if !standing?
       line = dothistimeout "go entrance", 3, /\[Duskruin Arena, Dueling Sands\]/
       break if line =~ /\[Duskruin Arena, Dueling Sands\]/
       sleep(rand(30..60))
     end
   elsif !checkgrouped
+    fput "stand" if !standing?
     fput "go entrance"
   end
   sleep(1) until Room.current.id == 24550
@@ -1450,7 +1456,10 @@ exit unless duskruin_entries_remain?
 fput "store all" if UserVars.fizzdusk[:girdstore]
 sleep(1)
 Script.run("fizzprep") if UserVars.fizzdusk[:fizzprep_me] && Script.exists?("fizzprep")
-fput "go entrance" if !checkgrouped
+if !checkgrouped
+  fput "stand" if !standing?
+  fput "go entrance"
+end
 sleep(1) until Room.current.id == 24550
 
 loop {
