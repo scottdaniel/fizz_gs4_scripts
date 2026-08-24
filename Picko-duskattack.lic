@@ -15,6 +15,13 @@ FRESH_WAND_CONTAINER = "sack" unless defined?(FRESH_WAND_CONTAINER)
 DEAD_WAND_CONTAINER = "knapsack" unless defined?(DEAD_WAND_CONTAINER)
 WAND_NAME = "wand" unless defined?(WAND_NAME)
 
+# How long to actually hold stance defensive after acting before stepping back into
+# offensive. Without this, checkrt hits 0 again almost the instant the cast/wave
+# roundtime clears, so defensive stance barely gets any real time -- there's no
+# reliable way to detect the monster's own attack across every monster/attack type,
+# so this is a fixed wait standing in for "give the thing a chance to swing back."
+DEFENSIVE_PAUSE_SECONDS = 3 unless defined?(DEFENSIVE_PAUSE_SECONDS)
+
 # This script gets killed and restarted every wave, so a local "already tried and it
 # was empty" flag wouldn't survive between waves -- UserVars.tdusk persists across
 # restarts within the same run, which is what lets these actually remember instead of
@@ -54,6 +61,7 @@ def wave_wand(npc)
   put "stance offensive"
   result = dothistimeout "wave my #{WAND_NAME} at ##{npc.id}", 3, /d100|You hurl|is already dead|You do not see that here|You are in no condition|I could not find|Roundtime: \d+ sec/
   put "stance defensive"
+  sleep DEFENSIVE_PAUSE_SECONDS
 
   fput "put my #{WAND_NAME} in my #{DEAD_WAND_CONTAINER}" if result.nil?
 end
@@ -103,6 +111,7 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
           put "stance offensive"
           fput "incant 903 evoke"
           put "stance defensive"
+          sleep DEFENSIVE_PAUSE_SECONDS
         elsif UserVars.tdusk[:praycurrent] < 3
           fput "pray"
           UserVars.tdusk[:praycurrent] += 1
