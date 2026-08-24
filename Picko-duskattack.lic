@@ -1,0 +1,46 @@
+# Picko-duskattack.lic
+# Wizard stance-dance routine: evoke 903 (minor steam) while affordable, pray up to
+# 3 times (UserVars.tdusk[:praycurrent], shared/reset once per arena run same as the
+# rest of tdusk.lic) when mana runs out, then fall back to waving wands from the sack
+# for the rest of the run. Stays in stance defensive and only steps into offensive
+# for the moment it takes to act, same idiom as the Wizard routines in tdusk.lic.
+
+WAND_CONTAINER = "sack" unless defined?(WAND_CONTAINER)
+
+while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /animated/ }
+  GameObj.targets
+         .reject {|foe| foe.status =~ /dead|gone/ }
+         .sample
+         .tap { |npc|
+
+    put "target ##{npc.id}"
+    fput "release" if checkprep != "None"
+
+    #start main attack routine here
+    loop do
+      break if Room.current.id != 24550
+      break if npc.status =~ /dead|gone/
+      waitrt? if npc.status !~ /dead|gone/
+      waitcastrt? if npc.status !~ /dead|gone/
+      if checkrt == 0 && checkcastrt == 0 && npc.status !~ /dead|gone/
+        if Spell[903].affordable?
+          put "stance offensive"
+          fput "evoke 903"
+          put "stance defensive"
+        elsif UserVars.tdusk[:praycurrent] < 3
+          fput "pray"
+          UserVars.tdusk[:praycurrent] += 1
+        else
+          fput "get wand from my #{WAND_CONTAINER}" if GameObj.right_hand.noun !~ /wand/i
+          put "stance offensive"
+          fput "wave my wand"
+          put "stance defensive"
+        end
+      end
+      sleep 0.1
+    end
+    #end main attack routine here
+  }
+end
+Script.start("foreach", "in room; look item") if UserVars.tdusk[:wave_number] != 25
+Script.start("foreach", "in room; get item; stow item") if UserVars.tdusk[:wave_number] == 25
