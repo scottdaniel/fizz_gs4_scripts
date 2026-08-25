@@ -413,6 +413,9 @@ module UndeadBounty
   MAX_ATTEMPTS = 25
 
   def self.run(bounty_type, creature_filter = nil)
+    # module-level state survives across separate script runs in the same
+    # Lich session, so reset it at the start of each run
+    @bounty_history = []
     attempt = 0
 
     loop do
