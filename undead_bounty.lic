@@ -5,7 +5,7 @@
         game: gemstone
         tags: bounty, adventurer's guild, undead, voln
     requires: Lich > 5.4.0
-     version: 1.3
+     version: 1.4
 
   Want to keep earning favor with Voln while at the same time completing bounties?
 
@@ -66,7 +66,17 @@
   going on to reroll for a new one. Handy if you run this in between hunting
   runs and don't want to babysit turn-ins yourself.
 
+  It also checks whether your CURRENT in-progress bounty already qualifies
+  (undead, and matches the creature filter if you gave one) before touching
+  anything - if it does, the script leaves it alone and stops immediately
+  instead of tossing out an already-good, partially-completed bounty for a
+  reroll.
+
   changelog:
+    1.4
+      - check the current in-progress bounty first: if it already qualifies
+        (undead + matches the filter), leave it alone instead of rerolling
+        over it and losing progress
     1.3
       - turn in an already-completed bounty (guard -> taskmaster -> bank
         deposit) before requesting a new one
@@ -301,10 +311,7 @@ module UndeadBounty
   # report back to..." (Bounty.current.type == :guard). Handle that before
   # starting a new reroll loop: report to the guard, then the taskmaster,
   # then bank the reward.
-  def self.turn_in_completed_bounty
-    task = refresh_bounty_status
-    return unless task&.type == :guard
-
+  def self.turn_in_bounty(task)
     respond 'UndeadBounty: found a completed bounty waiting to be turned in, handling that first...'
 
     npc = locate_guard(task.town)
@@ -355,6 +362,36 @@ module UndeadBounty
     waitrt?
     fput 'deposit all'
     waitrt?
+  end
+
+  # checks status ONCE before touching anything, and handles whatever's
+  # already there:
+  #   - a completed task waiting on a guard report -> turn it in
+  #   - an in-progress task that already qualifies (undead + matches the
+  #     filter) -> leave it alone, don't burn it on a reroll
+  #   - anything else (:none, or an in-progress task that doesn't qualify)
+  #     -> nothing to do here, let the normal reroll loop handle it
+  # returns :already_matching if the in-progress bounty already qualifies,
+  # so run() knows to stop instead of starting the reroll loop.
+  def self.handle_existing_bounty(creature_filter)
+    task = refresh_bounty_status
+    return unless task
+
+    if task.type == :guard
+      turn_in_bounty(task)
+      return
+    end
+
+    return unless task.creature
+
+    creature = task.creature
+    return unless creature_undead?(creature) && creature_matches_filter?(creature, creature_filter)
+
+    record_bounty(creature: creature, number: task.number, type: task.type, location: task.location,
+                  verdict: 'UNDEAD - already in progress, left as-is')
+    respond "UndeadBounty: current bounty is already #{task.number || '?'} x #{creature} in/near " \
+            "#{task.location} - UNDEAD#{" and matches '#{creature_filter}'" if creature_filter}, leaving it alone."
+    :already_matching
   end
 
   # remembers which guard room actually had the guard, per town, so later
@@ -514,7 +551,7 @@ module UndeadBounty
     @bounty_history = []
     start_room = Room.current.id
 
-    turn_in_completed_bounty
+    return if handle_existing_bounty(creature_filter) == :already_matching
 
     attempt = 0
 
@@ -591,6 +628,9 @@ module UndeadBounty
     respond ''
     respond 'If your current bounty is already complete when the script starts, it turns that'
     respond 'one in first (guard, then taskmaster, then a bank deposit) before requesting a new one.'
+    respond ''
+    respond "If your current bounty is still in progress but already qualifies, it's left alone"
+    respond "instead of being tossed out for a reroll - progress on it isn't lost."
   end
 end
 
