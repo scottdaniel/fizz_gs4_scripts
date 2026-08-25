@@ -3,7 +3,8 @@
 # Withdraws 10,000 silver from the bank, then buys rub-items from the
 # pawnshop's arcana/magic table: quartz orb, crystal amulet, black crystal,
 # white crystal, small statue, moonstone cube. Each item is stowed right
-# after it's bought.
+# after it's bought. Deposits whatever silver is left back at the bank
+# before returning to town.
 #
 # If your pawnshop's magic table isn't reached with "go door" from the
 # entrance, change ARCANA_TABLE_CMD below to whatever it is (e.g. "go alcove").
@@ -86,6 +87,9 @@ ITEMS.each do |item|
 		echo "'#{item}' isn't on the #{TABLE_NAME}, skipping."
 	end
 end
+
+Script.run("go2", "bank")
+fput "deposit all"
 
 Script.run("go2", "town")
 
