@@ -5,7 +5,7 @@
         game: gemstone
         tags: bounty, adventurer's guild, undead, voln
     requires: Lich > 5.4.0
-     version: 1.1
+     version: 1.2
 
   Want to keep earning favor with Voln while at the same time completing bounties?
 
@@ -56,7 +56,13 @@
   Gives up after 25 rerolls without a match, in case of a bad creature name
   or a bounty that can't be assigned at your level.
 
+  Whenever the script ends - success, failure, or the attempt cap - it takes
+  you back to whatever room you were standing in when you started it.
+
   changelog:
+    1.2
+      - go2 back to the room you started in when the script ends, for any
+        reason (success, failure, or hitting the attempt cap)
     1.1
       - add a 25-attempt cap to the reroll loop
       - distinguish "no such creature" (typo) from "known creature, not
@@ -416,6 +422,7 @@ module UndeadBounty
     # module-level state survives across separate script runs in the same
     # Lich session, so reset it at the start of each run
     @bounty_history = []
+    start_room = Room.current.id
     attempt = 0
 
     loop do
@@ -454,6 +461,15 @@ module UndeadBounty
     end
   ensure
     print_bounty_history
+    return_to_room(start_room)
+  end
+
+  def self.return_to_room(room_id)
+    return if room_id.nil? || Room.current.id == room_id
+
+    respond "UndeadBounty: heading back to your starting room (#{room_id})..."
+    Script.run('go2', room_id.to_s)
+    waitrt?
   end
 
   def self.show_help
@@ -477,6 +493,8 @@ module UndeadBounty
     respond ''
     respond "Gives up after #{UndeadBounty::MAX_ATTEMPTS} rerolls without a match, in case the"
     respond 'creature/spelling is wrong or the bounty just cannot be assigned at your level.'
+    respond ''
+    respond 'When the script ends for any reason, it takes you back to the room you started in.'
   end
 end
 
