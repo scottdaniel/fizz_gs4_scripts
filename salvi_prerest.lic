@@ -1,0 +1,11 @@
+#salvi_prerest.lic
+
+module Salvi_prerest
+
+Script.run("eherbs")
+Script.run("eloot", "sell")
+Script.run("undead_bounty", "kill zombie")
+Script.run("buyitems")
+Script.run("ewaggle")
+
+end #End of module
