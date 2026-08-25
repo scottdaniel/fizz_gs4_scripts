@@ -7,5 +7,6 @@ Script.run("eloot", "sell")
 Script.run("undead_bounty", "kill zombie")
 Script.run("buyitems")
 Script.run("ewaggle")
+Script.run("timequit")
 
 end #End of module
