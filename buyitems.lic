@@ -6,14 +6,13 @@
 # after it's bought. Deposits whatever silver is left back at the bank
 # before returning to town.
 #
-# If your pawnshop's magic table isn't reached with "go door" from the
-# entrance, change ARCANA_TABLE_CMD below to whatever it is (e.g. "go alcove").
-# If it's not called "magic table" (e.g. "arcana table"), change TABLE_NAME too.
+# ARCANA_TABLE_CMD/TABLE_NAME below are set for River's Rest (north, arcana
+# table). Adjust them for other towns' pawnshops as needed.
 
 module Buyitems
 
-ARCANA_TABLE_CMD = "go door"
-TABLE_NAME = "magic table"
+ARCANA_TABLE_CMD = "north"
+TABLE_NAME = "arcana table"
 
 ITEMS = [
 	"quartz orb",
