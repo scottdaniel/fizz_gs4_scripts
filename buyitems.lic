@@ -6,13 +6,27 @@
 # after it's bought. Deposits whatever silver is left back at the bank
 # before returning to town.
 #
-# ARCANA_TABLE_CMD/TABLE_NAME below are set for River's Rest (north, arcana
-# table). Adjust them for other towns' pawnshops as needed.
+# Detects the town via Room.current.location and looks up how to reach that
+# pawnshop's arcana/magic table in TOWN_CONFIG. Add an entry for any town not
+# already listed (Room.current.location tells you the exact key to use).
 
 module Buyitems
 
-ARCANA_TABLE_CMD = "north"
-TABLE_NAME = "arcana table"
+TOWN_CONFIG = {
+	"the town of River's Rest" => { table_cmd: "north", table_name: "arcana table" },
+}
+DEFAULT_TABLE_CMD = "go door"
+DEFAULT_TABLE_NAME = "magic table"
+
+def self.town_config
+	town = Room.current.location
+	config = TOWN_CONFIG[town]
+	if config.nil?
+		echo "No known pawnshop layout for '#{town}' -- guessing '#{DEFAULT_TABLE_CMD}' / '#{DEFAULT_TABLE_NAME}'. Add an entry to TOWN_CONFIG if that's wrong."
+		config = { table_cmd: DEFAULT_TABLE_CMD, table_name: DEFAULT_TABLE_NAME }
+	end
+	config
+end
 
 ITEMS = [
 	"quartz orb",
@@ -29,8 +43,8 @@ ITEMS = [
 #   Total items: 20
 # so read until the "Total items:" line (or a "nothing here" reply) instead
 # of returning after just the first line.
-def self.table_contents
-	fput "look on #{TABLE_NAME}"
+def self.table_contents(table_name)
+	fput "look on #{table_name}"
 	lines = []
 	end_time = Time.now.to_f + 5
 	loop do
@@ -76,14 +90,15 @@ if !have_money
 end
 
 Script.run("go2", "pawnshop")
-fput ARCANA_TABLE_CMD
+config = town_config
+fput config[:table_cmd]
 
-contents = table_contents || ""
+contents = table_contents(config[:table_name]) || ""
 ITEMS.each do |item|
 	if contents =~ /#{item}/i
 		order_and_buy(item)
 	else
-		echo "'#{item}' isn't on the #{TABLE_NAME}, skipping."
+		echo "'#{item}' isn't on the #{config[:table_name]}, skipping."
 	end
 end
 
