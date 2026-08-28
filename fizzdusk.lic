@@ -14,9 +14,14 @@
      author: Tysong (horibu on PC), original Nylis, fizzdusk fork by Fizzleworth
        name: fizzdusk
        tags: duskruin, arena, dusk ruin, fizzdusk
-    version: 1.26.23
+    version: 1.26.24
 
     changelog:
+        1.26.24 (2026-08-28)
+            fizzdusk fork: restear.lic -> fizzrest.lic (and
+            UserVars.fizzdusk[:restear_me] -> [:fizzrest_me]), since "ear" stopped
+            making sense once it switched from "get carm runestaff from my cloak" to
+            "ready 2weap". Existing restear_me settings carry over automatically.
         1.26.23 (2026-08-22)
             fizzdusk fork: stand up before every "go entrance" attempt -- being seated
             for any reason ("You need to stand up to enter the arena.") was blocking
@@ -55,8 +60,8 @@
             runs to the team entrance (26387) instead of 23780 after finishing. Now
             uses Lich::Gemstone::Group.members when actually grouped.
         1.26.14 (2026-08-15)
-            fizzdusk fork: run restear.lic right after waggling to get the runestaff
-            back in hand for resting boosts, see UserVars.fizzdusk[:restear_me]
+            fizzdusk fork: run fizzrest.lic right after waggling to get the runestaff
+            back in hand for resting boosts, see UserVars.fizzdusk[:fizzrest_me]
         1.26.13 (2026-08-15)
             fizzdusk fork: move fizzprep.lic to run right before entering the arena
             (after pause_me/maxvitals/experience waits) instead of right after the
@@ -168,7 +173,10 @@ end
 UserVars.fizzdusk[:activescripts]  = ['stand'] if UserVars.fizzdusk[:activescripts].nil?
 UserVars.fizzdusk[:waggle_me]      = true      if UserVars.fizzdusk[:waggle_me].nil?
 UserVars.fizzdusk[:waggle_script]  = 'ewaggle' if UserVars.fizzdusk[:waggle_script].nil?
-UserVars.fizzdusk[:restear_me]     = true      if UserVars.fizzdusk[:restear_me].nil?
+# restear_me was renamed to fizzrest_me when restear.lic became fizzrest.lic --
+# carry over an existing setting instead of silently resetting to the default.
+UserVars.fizzdusk[:fizzrest_me]    = UserVars.fizzdusk[:restear_me] unless UserVars.fizzdusk[:restear_me].nil?
+UserVars.fizzdusk[:fizzrest_me]     = true      if UserVars.fizzdusk[:fizzrest_me].nil?
 UserVars.fizzdusk[:playsongs_me]   = true      if UserVars.fizzdusk[:playsongs_me].nil?
 UserVars.fizzdusk[:fizzprep_me]    = true      if UserVars.fizzdusk[:fizzprep_me].nil?
 UserVars.fizzdusk[:pause_me]       = true      if UserVars.fizzdusk[:pause_me].nil?
@@ -1246,7 +1254,7 @@ def loot(group_size, package_line)
     end
   end
   Script.run(UserVars.fizzdusk[:waggle_script]) if UserVars.fizzdusk[:waggle_me]
-  Script.run("restear") if UserVars.fizzdusk[:restear_me] && Script.exists?("restear")
+  Script.run("fizzrest") if UserVars.fizzdusk[:fizzrest_me] && Script.exists?("fizzrest")
 
   if UserVars.fizzdusk[:playsongs_me] && Script.exists?("playsongs") && !Script.running?("playsongs")
     Script.start("playsongs")
@@ -1309,9 +1317,9 @@ if variable[1].downcase == "help"
     Waggle Script to Use - Default is set to waggle (Current: #{UserVars.fizzdusk[:waggle_script]})
     ;e echo UserVars.fizzdusk[:waggle_script] = 'ewaggle'
 
-    Runs restear.lic right after waggling to get the runestaff back in hand for
-    resting boosts - Default is set to TRUE (Current: #{UserVars.fizzdusk[:restear_me]})
-    ;e echo UserVars.fizzdusk[:restear_me] = false
+    Runs fizzrest.lic right after waggling to get the runestaff back in hand for
+    resting boosts - Default is set to TRUE (Current: #{UserVars.fizzdusk[:fizzrest_me]})
+    ;e echo UserVars.fizzdusk[:fizzrest_me] = false
 
     Starts ;playsongs between runs and stops it (stowing the tambourine) right
     before heading back into the arena - Default is set to TRUE (Current: #{UserVars.fizzdusk[:playsongs_me]})

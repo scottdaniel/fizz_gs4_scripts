@@ -1,7 +1,7 @@
-#restear
+#fizzrest
 #gets ready for resting
 
-module Restear
+module Fizzrest
 
 fput "store weapon"
 fput "ready 2weap"
