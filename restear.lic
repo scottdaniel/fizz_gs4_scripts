@@ -1,0 +1,9 @@
+#restear
+#gets ready for resting
+
+module Restear
+
+fput "store weapon"
+fput "ready 2weap"
+
+end #End of module
