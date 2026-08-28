@@ -4,7 +4,8 @@ module FizzleW_prerest
 
 Script.run("eherbs")
 Script.run("eloot", "sell")
-Script.run("undead_bounty", "kill zombie")
+multifput "store weapon", "get carm runestaff from my cloak"
+Script.run("undead_bounty", "kill")
 #Script.run("buyitems")
 Script.run("ewaggle")
 Script.run("timequit")
