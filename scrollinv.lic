@@ -57,7 +57,7 @@ def usage
 end
 
 def find_container(noun)
-  noun = noun.to_s.strip.downcase
+  words = noun.to_s.strip.downcase.split(/\s+/)
   pools = []
   pools.concat(Array(GameObj.inv))
   pools.concat(Array(GameObj.loot))
@@ -65,8 +65,12 @@ def find_container(noun)
   pools << GameObj.left_hand  if GameObj.left_hand&.id
   GameObj.containers.each_key { |cid| obj = GameObj[cid]; pools << obj if obj }
   pools.compact!
-  pools.find { |o| o.noun.to_s.downcase == noun } ||
-    pools.find { |o| o.name.to_s.downcase.include?(noun) }
+  # Exact noun match first (the true GS4 noun is usually the last word, e.g.
+  # "leather case" -> "case" as in "leather scroll case"). Fall back to requiring
+  # every word show up somewhere in the full name, since names can have extra
+  # words in between (e.g. "leather case" vs. "leather scroll case").
+  pools.find { |o| o.noun.to_s.downcase == words.last } ||
+    pools.find { |o| words.all? { |w| o.name.to_s.downcase.include?(w) } }
 end
 
 def refresh_container(noun)
