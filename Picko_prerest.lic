@@ -1,6 +1,6 @@
-#PIcko_prerest.lic
+#Picko_prerest.lic
 
-module PIcko_prerest
+module Picko_prerest
 
 Script.run("eherbs")
 Script.run("eloot", "sell")
