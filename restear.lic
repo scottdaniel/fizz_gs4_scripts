@@ -1,7 +1,0 @@
-#restear
-#gets ready for reasing
-module Restear
-
-multifput "store weapon", "get carm runestaff from my cloak"
-
-end #End of module
