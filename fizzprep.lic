@@ -15,6 +15,8 @@ Script.run("qverb", "rub moonstone cube") unless Spell[1705].active?
 pause 3
 Script.run("qverb", "rub white crystal") unless Spell[509].active?
 pause 3
+Script.run("qverb", "rub black crystal") unless GameObj.loot.find { |i| i.name =~ /#{Char.name} disk/ }
+pause 3
 
 # cast protective spells from scrolls
 Script.run("scrollbuff3", "202 211 215 219 303 307 310 313 314 319 503 507 509 508 601 606 613 618 905 913 1119 1215 1204 1605 1601 1701 1705 1208 207 1616 911")
