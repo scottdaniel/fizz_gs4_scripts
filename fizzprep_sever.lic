@@ -10,6 +10,8 @@ Script.run("qverb", "rub small statue")
 pause 3
 Script.run("qverb", "rub moonstone cube")
 pause 3
+Script.run("qverb", "rub white crystal")
+pause 3
 
 fput "ready weapon"
 
