@@ -1,0 +1,24 @@
+#PickoPrep.lic
+# Wizard version of fizzprep.lic (Picko).
+
+module PickoPrep
+
+# clear hands
+fput "put my #{GameObj.right_hand} in my cloak"
+fput "stow all"
+
+# rub stuff, but only if the spell isn't already active
+Script.run("qverb", "rub gold coin") unless Spell[1701].active?
+pause 3
+Script.run("qverb", "rub small statue") unless Spell[1712].active?
+pause 3
+Script.run("qverb", "rub moonstone cube") unless Spell[1705].active?
+pause 3
+
+# cast protective spells from scrolls (fizzprep list minus the 500s and 900s
+# Picko doesn't want from scrolls)
+Script.run("scrollbuff3", "202 211 215 219 303 307 310 313 314 319 601 606 613 618 1119 1215 1204 1605 1601 1701 1705 1208 207 1616")
+
+fput "ready weapon"
+
+end #End of module
