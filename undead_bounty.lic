@@ -5,7 +5,7 @@
         game: gemstone
         tags: bounty, adventurer's guild, undead, voln
     requires: Lich > 5.4.0
-     version: 1.4
+     version: 1.5
 
   Want to keep earning favor with Voln while at the same time completing bounties?
 
@@ -72,7 +72,15 @@
   instead of tossing out an already-good, partially-completed bounty for a
   reroll.
 
+  If the taskmaster says there are no tasks of the requested type suitable
+  for you (usually because the hunting ground has become too easy for your
+  level), the script stops with a clear message instead of burning through
+  the attempt cap uselessly.
+
   changelog:
+    1.5
+      - fail gracefully with a clear message when the taskmaster has no
+        suitable tasks left for your level, instead of retrying uselessly
     1.4
       - check the current in-progress bounty first: if it already qualifies
         (undead + matches the filter), leave it alone instead of rerolling
@@ -265,6 +273,7 @@ module UndeadBounty
 
   ALREADY_ASSIGNED_PATTERN = /already been assigned a task/i.freeze
   TASKMASTER_BUSY_PATTERN = /kind of busy right now/i.freeze
+  NO_SUITABLE_TASK_PATTERN = /don't seem to have any tasks that are suitable for you/i.freeze
 
   def self.ask_master_for_bounty(bounty_type, max_attempts: 10)
     go_to_advguild
@@ -273,11 +282,16 @@ module UndeadBounty
     max_attempts.times do
       matched = fput_and_check(
         "ask #{BOUNTY_MASTER_NAME} for bounty #{bounty_type}",
-        [ALREADY_ASSIGNED_PATTERN, TASKMASTER_BUSY_PATTERN]
+        [ALREADY_ASSIGNED_PATTERN, TASKMASTER_BUSY_PATTERN, NO_SUITABLE_TASK_PATTERN]
       )
       waitrt?
 
-      if matched == ALREADY_ASSIGNED_PATTERN
+      if matched == NO_SUITABLE_TASK_PATTERN
+        respond "UndeadBounty: taskmaster has no #{bounty_type} tasks suitable for you here - this hunting"
+        respond 'ground has probably become too easy for your level. Try another town, or a different'
+        respond 'bounty type, stopping.'
+        exit
+      elsif matched == ALREADY_ASSIGNED_PATTERN
         respond 'UndeadBounty: taskmaster says a task is already assigned, requesting removal...'
         ask_master_for_removal
         next
@@ -631,6 +645,9 @@ module UndeadBounty
     respond ''
     respond "If your current bounty is still in progress but already qualifies, it's left alone"
     respond "instead of being tossed out for a reroll - progress on it isn't lost."
+    respond ''
+    respond 'If the taskmaster has no suitable tasks left for your level (hunting ground got too'
+    respond 'easy), the script stops with a clear message instead of retrying uselessly.'
   end
 end
 
