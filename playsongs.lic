@@ -114,6 +114,13 @@ module Playsongs
 
   SKILL_LEVEL_REGEX = /Your current skill level in (.+?) instruments is (\w+)\.?/i
 
+  # Some instruments (e.g. piccolo) need both hands, so having the right
+  # hand free for a weapon per ensure_in_left_hand isn't always possible --
+  # this catches the game telling us so and reacts by stowing the right
+  # hand and retrying, rather than needing a hardcoded list of which
+  # instruments are two-handed.
+  TWO_HANDED_REGEX = /requires two hands to play, try emptying your right hand\./
+
   # "your \S+" instead of the instrument name so this still matches regardless
   # of what's being played; "you"/"You" scopes it to your own performance so
   # it won't trigger off other bards finishing theirs.
@@ -414,6 +421,13 @@ module Playsongs
 
     loop do
       line = get
+      if line =~ TWO_HANDED_REGEX
+        echo "#{INSTRUMENT} needs both hands -- stowing right hand and retrying."
+        fput "stow right"
+        started_at = Time.now
+        fput "play my #{INSTRUMENT} #{STYLE}"
+        next
+      end
       started_at = Time.now if line =~ START_REGEX
       if line =~ RANKUP_REGEX
         rank_ups += 1
