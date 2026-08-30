@@ -97,16 +97,26 @@ UserVars.tdusk[:no_absorb_boosts] = false if UserVars.tdusk[:no_absorb_boosts].n
 boosted_exp = false
 
 # Makes sure a fresh wand is in hand. Returns false (and leaves an echo) if the
-# fresh wand container turns out to be empty.
+# fresh wand container turns out to have no wand-noun items left.
+#
+# Targets a specific item by ##id instead of "get wand from my sack" -- the sack
+# holds many *different* wand types (crystal, copper, starstone, etc, all sharing
+# the generic noun "wand"), so the plain-text get is ambiguous. That ambiguity was
+# previously read as "empty" (dothistimeout just timed out on a response it didn't
+# recognize), when the sack in fact still had two dozen wands in it.
 def get_fresh_wand
-  until GameObj.right_hand.noun =~ /#{WAND_NAME}/i
-    result = dothistimeout "get #{WAND_NAME} from my #{FRESH_WAND_CONTAINER}", 3, /You remove|You slip|You slide|Get what/
-    if result.nil? || result =~ /Get what/
-      echo "Picko-duskattack: no fresh wands left in my #{FRESH_WAND_CONTAINER}."
-      return false
-    end
+  return true if GameObj.right_hand.noun =~ /#{WAND_NAME}/i
+
+  fput "open my #{FRESH_WAND_CONTAINER}"
+  sack = GameObj.inv.find { |i| i.name =~ /#{Regexp.escape(FRESH_WAND_CONTAINER)}/i }
+  wand = sack && sack.contents.to_a.find { |item| item.noun =~ /#{WAND_NAME}/i }
+  unless wand
+    echo "Picko-duskattack: no fresh wands left in my #{FRESH_WAND_CONTAINER}."
+    return false
   end
-  true
+
+  dothistimeout "get ##{wand.id}", 3, /You remove|You slip|You slide|You get/
+  GameObj.right_hand.noun =~ /#{WAND_NAME}/i ? true : false
 end
 
 # Stance-dances a single wand wave at npc. A disintegrated wand is simply gone from
