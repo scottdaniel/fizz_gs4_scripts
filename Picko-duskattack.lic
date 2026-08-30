@@ -1,8 +1,9 @@
 # Picko-duskattack.lic
 # Wizard stance-dance routine: evoke 903 (minor steam) while affordable, pray up to
 # 3 times (UserVars.tdusk[:praycurrent], shared/reset once per arena run same as the
-# rest of tdusk.lic) when mana runs out, then fall back to waving wands from the sack
-# for the rest of the run.
+# rest of tdusk.lic) when mana runs out, then try symbol of mana if it's off cooldown
+# (never used while on cooldown, so it never costs deeds), then fall back to waving
+# wands from the sack for the rest of the run.
 #
 # While 515 (Rapid Fire, fizzdusk's own opener515 -- not cast by this script the
 # first time) is active, cast RT is short enough that stance-dancing is pointless,
@@ -181,6 +182,10 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
         elsif UserVars.tdusk[:praycurrent] < 3
           fput "pray"
           UserVars.tdusk[:praycurrent] += 1
+        elsif Spell[9813].known? && !Effects::Cooldowns.active?("Symbol of Mana")
+          # Off cooldown only -- Effects::Cooldowns tracks this directly, so this
+          # never touches deeds (same check bigshot.lic/BlackArts.lic use).
+          fput "symbol of mana"
         else
           wave_wand(npc)
         end
