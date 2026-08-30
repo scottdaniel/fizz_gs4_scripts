@@ -14,9 +14,18 @@
      author: Tysong (horibu on PC), original Nylis, fizzdusk fork by Fizzleworth
        name: fizzdusk
        tags: duskruin, arena, dusk ruin, fizzdusk
-    version: 1.26.24
+    version: 1.26.25
 
     changelog:
+        1.26.25 (2026-08-29)
+            fizzdusk fork: recover from dying in the arena instead of just exiting.
+            The arena's own healer revives/heals you automatically once dragged to
+            the Niveous Chamber, so the death branch now waits that out (and the
+            stun that comes with it), resets the run counters, and rejoins the
+            normal between-runs flow to head back in. Extracted that flow (go2 back,
+            check_valuable_loot, waggle/fizzrest/playsongs, pause/vitals/experience,
+            fizzprep, reentry) out of loot() into return_to_arena(group_size) so both
+            paths share it.
         1.26.24 (2026-08-28)
             fizzdusk fork: restear.lic -> fizzrest.lic (and
             UserVars.fizzdusk[:restear_me] -> [:fizzrest_me]), since "ear" stopped
@@ -1234,6 +1243,15 @@ def loot(group_size, package_line)
     end
   end
 
+  return_to_arena(group_size)
+end
+
+# Everything between one run ending and the next one starting: travel back, check
+# valuable loot, waggle/fizzrest/playsongs, wait out entries/pause/vitals/experience,
+# fizzprep, then re-enter. Shared by loot() (a normal run finishing) and the death
+# branch (getting dragged out mid-run) -- both land here with nothing left to do but
+# get ready and go back in.
+def return_to_arena(group_size)
   if group_size == 1
     start_script("go2", ["23780"])
     wait_while { running?("go2") }
@@ -1570,14 +1588,24 @@ loop {
 
   elsif line =~ /drags you out of the arena/ || dead?
     respond "dead!!!"
-    if UserVars.fizzdusk[:enhancive_me]
-      loop do
-        result = dothistimeout "inventory enhancive off", 3, /^You cannot turn off enhancives while in combat\.|^You are no longer accepting the benefits of your enhancive inventory items\.|^You concentrate, but nothing seems to happen.|^You already are not accepting the benefits of any enhancive items in your inventory\./
-        UserVars.fizzdusk[:enhancive_me] = false if result =~ /^You concentrate, but nothing seems to happen\./
-        break if result =~ /^You are no longer accepting the benefits of your enhancive inventory items.|^You concentrate, but nothing seems to happen\.|^You already are not accepting the benefits of any enhancive items in your inventory\./
-        sleep(5)
-      end
-    end
-    exit
+    Script.kill("#{Char.name}-duskattack") if Script.running?("#{Char.name}-duskattack")
+    put "STOP 1018" if Stats.prof =~ /Bard/
+
+    # The arena's own healer revives and heals you automatically once you're
+    # dragged to the Niveous Chamber -- no manual recovery needed, just wait for
+    # it (and the stun that comes with being healed) to actually finish before
+    # doing anything else.
+    sleep(1) while dead?
+    sleep(1) while checkstunned
+    waitrt?
+    waitcastrt?
+
+    start_time = 0
+    total_time = 0
+    kill_time  = 0
+    avg_reg    = 0
+    avg_champ  = 0
+    UserVars.fizzdusk[:wave_number] = 0
+    return_to_arena(group_size)
   end
 }
