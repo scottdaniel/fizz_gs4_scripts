@@ -14,9 +14,22 @@
      author: Tysong (horibu on PC), original Nylis, fizzdusk fork by Fizzleworth
        name: fizzdusk
        tags: duskruin, arena, dusk ruin, fizzdusk
-    version: 1.26.31
+    version: 1.26.32
 
     changelog:
+        1.26.32 (2026-08-30)
+            fizzdusk fork: require the portcullis/enters-the-arena clause in the
+            wave-transition trigger instead of matching any "An announcer shouts,
+            \"...\"!" line -- the optional (?:...)? around it let unrelated
+            announcer-shout messages (e.g. the arena's "using ancient magic has
+            caused the matches to get more difficult!" pray penalty) spuriously
+            match, incrementing wave_number and force-killing/restarting the
+            duskattack script mid-fight every time. Confirmed via a Picko log
+            (DR-Kills drifting past 25, Picko-duskattack repeatedly killed right
+            after every "pray") and the likely reason a pray cap got exceeded --
+            a restart landing between fput "pray" returning and the counter
+            increment could lose that increment. Every real transition already
+            includes this clause, so nothing legitimate stops matching.
         1.26.31 (2026-08-30)
             fizzdusk fork: fix the actual playsongs auto-start bug the debug echoes
             found -- Script.start("playsongs", [Vars.instrument || 'tambourine'])
@@ -1587,7 +1600,7 @@ loop {
     put "inventory enhancive on" if UserVars.fizzdusk[:enhancive_me]
     put "shout" if group_size == 1
 
-  elsif line =~ /^An announcer shouts\, \"(?:.*)(?:\"  An iron portcullis is raised and .* (?:enter|enters) the arena)?!/ || ((GameObj.targets.count { |npc| (npc.status !~ /dead|gone/) } >= 1) && Room.current.id == 24550 && UserVars.fizzdusk[:wave_number] != 0 && !UserVars.fizzdusk[:attack_script] && !UserVars.fizzdusk[:using_bigshot])
+  elsif line =~ /^An announcer shouts\, \"(?:.*)\"  An iron portcullis is raised and .* (?:enter|enters) the arena!/ || ((GameObj.targets.count { |npc| (npc.status !~ /dead|gone/) } >= 1) && Room.current.id == 24550 && UserVars.fizzdusk[:wave_number] != 0 && !UserVars.fizzdusk[:attack_script] && !UserVars.fizzdusk[:using_bigshot])
     if (line =~ /An announcer shouts\, \"FIGHT\!\"  An iron portcullis is raised and .* (?:enter|enters) the arena\!/)
       (start_time = Time.now)
     elsif start_time == 0

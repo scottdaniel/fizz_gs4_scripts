@@ -24,6 +24,13 @@ FRESH_WAND_CONTAINER = "sack" unless defined?(FRESH_WAND_CONTAINER)
 DEAD_WAND_CONTAINER = "knapsack" unless defined?(DEAD_WAND_CONTAINER)
 WAND_NAME = "wand" unless defined?(WAND_NAME)
 
+# "incant 903 evoke" actually costs more mana than Spell[903].affordable?/mana_cost
+# report (they only know the spell's base cost, not this specific incant flavor's
+# real cost) -- confirmed live: cast anyway, "You have overextended yourself! You
+# feel yourself going into shock!", which then blocked casting AND waving wands for
+# the rest of that fight. Checked as a backstop alongside affordable? below.
+EVOKE_903_MANA_COST = 4 unless defined?(EVOKE_903_MANA_COST)
+
 # How long to wait in stance defensive for the monster to actually attack before
 # giving up and acting anyway. checkrt hitting 0 again isn't a real signal the
 # monster did anything -- it just means your own cast/wave roundtime cleared -- so
@@ -165,7 +172,7 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
         if Spell[515].affordable? && !Spell[599].active? && !Spell[597].active? && !Spell[515].active?
           put "stance offensive" if stance != "offensive"
           fput "incant 515"
-        elsif Spell[spell_num].affordable?
+        elsif Spell[spell_num].affordable? && (heat_resistant || checkmana >= EVOKE_903_MANA_COST)
           # 515 (Rapid Fire) is fizzdusk's own opener515 -- while it's up, cast RT
           # is short enough that stance-dancing (and waiting on an attack) is just
           # wasted time, so stay offensive and spam-cast instead. Once it wears off
@@ -180,8 +187,13 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
             wait_for_attack
           end
         elsif UserVars.tdusk[:praycurrent] < 3
-          fput "pray"
+          # Bump the counter before sending the command, not after -- fizzdusk's
+          # wave-transition trigger can force this whole script to be killed and
+          # restarted mid-fight (see the fizzdusk.lic fix for why), and if that
+          # lands between fput returning and the increment running, the increment
+          # would be lost, letting a restarted instance pray a 4th time.
           UserVars.tdusk[:praycurrent] += 1
+          fput "pray"
         elsif Spell[9813].known? && !Effects::Cooldowns.active?("Symbol of Mana")
           # Off cooldown only -- Effects::Cooldowns tracks this directly, so this
           # never touches deeds (same check bigshot.lic/BlackArts.lic use).
