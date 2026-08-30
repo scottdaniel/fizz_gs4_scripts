@@ -14,9 +14,16 @@
      author: Tysong (horibu on PC), original Nylis, fizzdusk fork by Fizzleworth
        name: fizzdusk
        tags: duskruin, arena, dusk ruin, fizzdusk
-    version: 1.26.27
+    version: 1.26.28
 
     changelog:
+        1.26.28 (2026-08-30)
+            fizzdusk fork: kill any stuck playsongs instance before auto-starting it
+            between runs, instead of skipping the start whenever Script.running?
+            already said true. A botched manual invocation earlier in a session
+            (e.g. a bad instrument argument leaving it stuck on a game prompt) could
+            leave that permanently true even with nothing actually running, silently
+            blocking every future auto-start for the rest of the session.
         1.26.27 (2026-08-29)
             fizzdusk fork: playsongs instrument now comes from the character's own
             Vars.instrument (;vars set instrument=X) instead of being hardcoded to
@@ -1286,7 +1293,13 @@ def return_to_arena(group_size)
   Script.run(UserVars.fizzdusk[:waggle_script]) if UserVars.fizzdusk[:waggle_me]
   Script.run("fizzrest") if UserVars.fizzdusk[:fizzrest_me] && Script.exists?("fizzrest")
 
-  if UserVars.fizzdusk[:playsongs_me] && Script.exists?("playsongs") && !Script.running?("playsongs")
+  if UserVars.fizzdusk[:playsongs_me] && Script.exists?("playsongs")
+    # A stuck/zombie prior instance (e.g. a botched instrument argument leaving it
+    # waiting on a game prompt) can leave Script.running?("playsongs") permanently
+    # true even though nothing's actually running -- kill it first so a bad past
+    # invocation doesn't silently block every future auto-start.
+    Script.kill("playsongs") if Script.running?("playsongs")
+    sleep 0.1 until !Script.running?("playsongs")
     Script.start("playsongs", [Vars.instrument || 'tambourine'])
   end
 
