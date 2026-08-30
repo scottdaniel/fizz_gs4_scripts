@@ -14,9 +14,16 @@
      author: Tysong (horibu on PC), original Nylis, fizzdusk fork by Fizzleworth
        name: fizzdusk
        tags: duskruin, arena, dusk ruin, fizzdusk
-    version: 1.26.30
+    version: 1.26.31
 
     changelog:
+        1.26.31 (2026-08-30)
+            fizzdusk fork: fix the actual playsongs auto-start bug the debug echoes
+            found -- Script.start("playsongs", [Vars.instrument || 'tambourine'])
+            passed an Array as the args slot, which Lich's own dispatch silently
+            falls through to "next nil" on with no error message at all (every
+            other Script.start/run call in this file correctly passes a String).
+            Now passes the instrument directly as a String. Debug echoes removed.
         1.26.30 (2026-08-30)
             fizzdusk fork: temporary debug echoes around the playsongs auto-start
             in return_to_arena -- playsongs_me/exists?/running? are all confirmed
@@ -1306,7 +1313,6 @@ def return_to_arena(group_size)
   Script.run(UserVars.fizzdusk[:waggle_script]) if UserVars.fizzdusk[:waggle_me]
   Script.run("fizzrest") if UserVars.fizzdusk[:fizzrest_me] && Script.exists?("fizzrest")
 
-  echo "[fizzdusk debug] playsongs_me=#{UserVars.fizzdusk[:playsongs_me].inspect} exists=#{Script.exists?("playsongs").inspect} running=#{Script.running?("playsongs").inspect}"
   if UserVars.fizzdusk[:playsongs_me] && Script.exists?("playsongs")
     # A stuck/zombie prior instance (e.g. a botched instrument argument leaving it
     # waiting on a game prompt) can leave Script.running?("playsongs") permanently
@@ -1314,8 +1320,10 @@ def return_to_arena(group_size)
     # invocation doesn't silently block every future auto-start.
     Script.kill("playsongs") if Script.running?("playsongs")
     sleep 0.1 until !Script.running?("playsongs")
-    started = Script.start("playsongs", [Vars.instrument || 'tambourine'])
-    echo "[fizzdusk debug] Script.start(\"playsongs\") returned #{started.inspect}"
+    # Script.start wants args as a String (or a Hash of options), not an Array --
+    # an Array silently falls through every branch to a bare "next nil" with no
+    # error message at all, which is exactly what was happening here.
+    Script.start("playsongs", Vars.instrument || 'tambourine')
   end
 
   exit unless duskruin_entries_remain?
