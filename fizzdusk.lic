@@ -14,9 +14,14 @@
      author: Tysong (horibu on PC), original Nylis, fizzdusk fork by Fizzleworth
        name: fizzdusk
        tags: duskruin, arena, dusk ruin, fizzdusk
-    version: 1.26.25
+    version: 1.26.26
 
     changelog:
+        1.26.26 (2026-08-29)
+            fizzdusk fork: prep script name is now configurable via
+            UserVars.fizzdusk[:fizzprep_script] (default 'fizzprep'), same pattern
+            as waggle_script, so other characters can point it at their own prep
+            script (e.g. 'PickoPrep') instead of being hardcoded to fizzprep.lic
         1.26.25 (2026-08-29)
             fizzdusk fork: recover from dying in the arena instead of just exiting.
             The arena's own healer revives/heals you automatically once dragged to
@@ -188,6 +193,7 @@ UserVars.fizzdusk[:fizzrest_me]    = UserVars.fizzdusk[:restear_me] unless UserV
 UserVars.fizzdusk[:fizzrest_me]     = true      if UserVars.fizzdusk[:fizzrest_me].nil?
 UserVars.fizzdusk[:playsongs_me]   = true      if UserVars.fizzdusk[:playsongs_me].nil?
 UserVars.fizzdusk[:fizzprep_me]    = true      if UserVars.fizzdusk[:fizzprep_me].nil?
+UserVars.fizzdusk[:fizzprep_script] = 'fizzprep' if UserVars.fizzdusk[:fizzprep_script].nil?
 UserVars.fizzdusk[:pause_me]       = true      if UserVars.fizzdusk[:pause_me].nil?
 UserVars.fizzdusk[:enhancive_me]   = false     if UserVars.fizzdusk[:enhancive_me].nil?
 UserVars.fizzdusk[:high_ds]        = false     if UserVars.fizzdusk[:high_ds].nil?
@@ -1301,9 +1307,9 @@ def return_to_arena(group_size)
     fput "stow my tambourine"
   end
 
-  # Run fizzprep right before heading back in -- pause_me/maxvitals/experience above
-  # can wait a long time, and scroll-cast defensive spells don't last that long.
-  Script.run("fizzprep") if UserVars.fizzdusk[:fizzprep_me] && Script.exists?("fizzprep")
+  # Run the prep script right before heading back in -- pause_me/maxvitals/experience
+  # above can wait a long time, and scroll-cast defensive spells don't last that long.
+  Script.run(UserVars.fizzdusk[:fizzprep_script]) if UserVars.fizzdusk[:fizzprep_me] && Script.exists?(UserVars.fizzdusk[:fizzprep_script])
 
   sleep 1
   sleep 2 if !checkgrouped
@@ -1343,9 +1349,12 @@ if variable[1].downcase == "help"
     before heading back into the arena - Default is set to TRUE (Current: #{UserVars.fizzdusk[:playsongs_me]})
     ;e echo UserVars.fizzdusk[:playsongs_me] = false
 
-    Runs fizzprep.lic right before entering the arena to recast defensive spells from
-    scrolls - Default is set to TRUE (Current: #{UserVars.fizzdusk[:fizzprep_me]})
+    Runs a prep script right before entering the arena to recast defensive spells
+    from scrolls - Default is set to TRUE (Current: #{UserVars.fizzdusk[:fizzprep_me]})
     ;e echo UserVars.fizzdusk[:fizzprep_me] = false
+
+    Prep Script to Use - Default is fizzprep (Current: #{UserVars.fizzdusk[:fizzprep_script]})
+    ;e echo UserVars.fizzdusk[:fizzprep_script] = 'PickoPrep'
 
     Pauses Between Runs - Default is set to TRUE (Current: #{UserVars.fizzdusk[:pause_me]})
     ;e echo UserVars.fizzdusk[:pause_me] = false
@@ -1481,7 +1490,7 @@ exit unless duskruin_entries_remain?
 
 fput "store all" if UserVars.fizzdusk[:girdstore]
 sleep(1)
-Script.run("fizzprep") if UserVars.fizzdusk[:fizzprep_me] && Script.exists?("fizzprep")
+Script.run(UserVars.fizzdusk[:fizzprep_script]) if UserVars.fizzdusk[:fizzprep_me] && Script.exists?(UserVars.fizzdusk[:fizzprep_script])
 if !checkgrouped
   fput "stand" if !standing?
   fput "go entrance"
