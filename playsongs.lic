@@ -128,7 +128,8 @@ module Playsongs
     /As the last whispered note fades from the stilled air, you slowly smile and put your hand over your \S+, bowing with a flourish\./,
     /The music moves slower and slower until finally, with a last hovering beat, it fades away\. You look up from your \S+ and smile\./,
     /The air suddenly stills as you halt your whirling rhythm as suddenly as you began, silencing your \S+\./,
-    /You complete the last beat with a flourish, lowering your \S+\./
+    /You complete the last beat with a flourish, lowering your \S+\./,
+    /With quiet grace, you allow your \S+'s melody to drop off, ever softer, until there is nothing but the intense silence left in its wake\./
   )
 
   RESTART_PAUSE_SECONDS = 3
