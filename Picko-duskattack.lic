@@ -3,7 +3,10 @@
 # 3 times (UserVars.tdusk[:praycurrent], shared/reset once per arena run same as the
 # rest of tdusk.lic) when mana runs out, then try symbol of mana if it's off cooldown
 # (never used while on cooldown, so it never costs deeds), then fall back to waving
-# wands from the sack for the rest of the run.
+# wands from the sack. Once that sack is actually empty it stops retrying for the
+# rest of that target's engagement (no_fresh_wands) and just holds stance defensive
+# instead -- otherwise it hammers "get wand" every tick forever with nothing to show
+# for it. A fresh target gets one more try in case the sack's been restocked by then.
 #
 # While 515 (Rapid Fire, fizzdusk's own opener515 -- not cast by this script the
 # first time) is active, cast RT is short enough that stance-dancing is pointless,
@@ -109,9 +112,10 @@ end
 # Stance-dances a single wand wave at npc. A disintegrated wand is simply gone from
 # hand (get_fresh_wand will notice and fetch another next time); a wand that's out of
 # charges fires with no roundtime and no recognizable result, so it gets moved to the
-# dead wand container instead.
+# dead wand container instead. Returns false if the fresh wand container was empty
+# (so the caller can stop retrying instead of hammering "get wand" every tick).
 def wave_wand(npc)
-  return unless get_fresh_wand
+  return false unless get_fresh_wand
 
   put "stance offensive"
   result = dothistimeout "wave my #{WAND_NAME} at ##{npc.id}", 3, /d100|You hurl|is already dead|You do not see that here|You are in no condition|I could not find|Roundtime: \d+ sec/
@@ -119,6 +123,7 @@ def wave_wand(npc)
   wait_for_attack
 
   fput "put my #{WAND_NAME} in my #{DEAD_WAND_CONTAINER}" if result.nil?
+  true
 end
 
 while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /animated/ }
@@ -130,6 +135,7 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
     put "target ##{npc.id}"
     fput "release" if checkprep != "None"
     heat_resistant = false
+    no_fresh_wands = false
 
     #start main attack routine here
     loop do
@@ -198,8 +204,16 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
           # Off cooldown only -- Effects::Cooldowns tracks this directly, so this
           # never touches deeds (same check bigshot.lic/BlackArts.lic use).
           fput "symbol of mana"
+        elsif !no_fresh_wands
+          # Once the sack's genuinely empty this stops retrying (get_fresh_wand
+          # would otherwise get hammered every 0.1s tick forever -- confirmed live,
+          # hundreds of back-to-back "get wand"/"no fresh wands left" with nothing
+          # else happening). Local to this npc, so a fresh target gets one more try
+          # in case the sack's been restocked by then.
+          no_fresh_wands = true unless wave_wand(npc)
         else
-          wave_wand(npc)
+          put "stance defensive" if stance != "defensive"
+          wait_for_attack
         end
       end
       sleep 0.1
