@@ -4,12 +4,14 @@
 # rest of tdusk.lic) when mana runs out, then fall back to waving wands from the sack
 # for the rest of the run.
 #
-# While 515 (Rapid Fire, fizzdusk's own opener515 -- not cast by this script) is
-# active, cast RT is short enough that stance-dancing is pointless, so it just stays
-# offensive and spam-casts. Once 515 isn't up, it stays in stance defensive and only
-# steps into offensive for the moment it takes to act, then waits (wait_for_attack)
-# for the monster to actually swing back -- or up to ATTACK_WAIT_TIMEOUT seconds,
-# whichever comes first -- before acting again.
+# While 515 (Rapid Fire, fizzdusk's own opener515 -- not cast by this script the
+# first time) is active, cast RT is short enough that stance-dancing is pointless,
+# so it just stays offensive and spam-casts. Once the elemental fatigue from the
+# last 515 wears off, it recasts 515 itself to get back into spam-cast mode. Only
+# while 515 isn't up and can't yet be recast does it stay in stance defensive,
+# stepping into offensive for the moment it takes to act, then waiting
+# (wait_for_attack) for the monster to actually swing back -- or up to
+# ATTACK_WAIT_TIMEOUT seconds, whichever comes first -- before acting again.
 #
 # Wand handling mirrors bigshot.lic's cmd_wand/fresh_wand_container/dead_wand_container
 # (see Picko's zombies_landing bigshot profile): a wand that disintegrates is just
@@ -154,7 +156,15 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
 
       if checkrt == 0 && checkcastrt == 0 && npc.status !~ /dead|gone/
         spell_num = heat_resistant ? 904 : 903
-        if Spell[spell_num].affordable?
+        # Once the elemental fatigue from the last 515 wears off ("You notice the
+        # feeling of elemental fatigue fade away."), recast it to get back into
+        # spam-cast mode -- same recastability check tdusk.lic/fizzdusk.lic already
+        # use elsewhere. Exclusive with the attack this tick so a same-tick RT from
+        # casting 515 can't collide with cast_and_collect's own put right after.
+        if Spell[515].affordable? && !Spell[599].active? && !Spell[597].active? && !Spell[515].active?
+          put "stance offensive" if stance != "offensive"
+          fput "incant 515"
+        elsif Spell[spell_num].affordable?
           # 515 (Rapid Fire) is fizzdusk's own opener515 -- while it's up, cast RT
           # is short enough that stance-dancing (and waiting on an attack) is just
           # wasted time, so stay offensive and spam-cast instead. Once it wears off
