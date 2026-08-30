@@ -18,10 +18,11 @@
 
     changelog:
         1.26.27 (2026-08-29)
-            fizzdusk fork: playsongs instrument is now configurable via
-            UserVars.fizzdusk[:playsongs_instrument] (default 'tambourine') instead
-            of hardcoded -- playsongs.lic supports multiple instruments, so this is
-            passed through to it and used for the stow command afterward
+            fizzdusk fork: playsongs instrument now comes from the character's own
+            Vars.instrument (;vars set instrument=X) instead of being hardcoded to
+            tambourine or a new fizzdusk-specific setting -- playsongs.lic supports
+            multiple instruments, and Vars.instrument is the existing convention for
+            it, same as how Vars.lootsack already works
         1.26.26 (2026-08-29)
             fizzdusk fork: prep script name is now configurable via
             UserVars.fizzdusk[:fizzprep_script] (default 'fizzprep'), same pattern
@@ -197,7 +198,6 @@ UserVars.fizzdusk[:waggle_script]  = 'ewaggle' if UserVars.fizzdusk[:waggle_scri
 UserVars.fizzdusk[:fizzrest_me]    = UserVars.fizzdusk[:restear_me] unless UserVars.fizzdusk[:restear_me].nil?
 UserVars.fizzdusk[:fizzrest_me]     = true      if UserVars.fizzdusk[:fizzrest_me].nil?
 UserVars.fizzdusk[:playsongs_me]   = true      if UserVars.fizzdusk[:playsongs_me].nil?
-UserVars.fizzdusk[:playsongs_instrument] = 'tambourine' if UserVars.fizzdusk[:playsongs_instrument].nil?
 UserVars.fizzdusk[:fizzprep_me]    = true      if UserVars.fizzdusk[:fizzprep_me].nil?
 UserVars.fizzdusk[:fizzprep_script] = 'fizzprep' if UserVars.fizzdusk[:fizzprep_script].nil?
 UserVars.fizzdusk[:pause_me]       = true      if UserVars.fizzdusk[:pause_me].nil?
@@ -1287,7 +1287,7 @@ def return_to_arena(group_size)
   Script.run("fizzrest") if UserVars.fizzdusk[:fizzrest_me] && Script.exists?("fizzrest")
 
   if UserVars.fizzdusk[:playsongs_me] && Script.exists?("playsongs") && !Script.running?("playsongs")
-    Script.start("playsongs", [UserVars.fizzdusk[:playsongs_instrument]])
+    Script.start("playsongs", [Vars.instrument || 'tambourine'])
   end
 
   exit unless duskruin_entries_remain?
@@ -1310,7 +1310,7 @@ def return_to_arena(group_size)
   if Script.running?("playsongs")
     Script.kill("playsongs")
     waitrt?
-    fput "stow my #{UserVars.fizzdusk[:playsongs_instrument]}"
+    fput "stow my #{Vars.instrument || 'tambourine'}"
   end
 
   # Run the prep script right before heading back in -- pause_me/maxvitals/experience
@@ -1355,8 +1355,9 @@ if variable[1].downcase == "help"
     before heading back into the arena - Default is set to TRUE (Current: #{UserVars.fizzdusk[:playsongs_me]})
     ;e echo UserVars.fizzdusk[:playsongs_me] = false
 
-    Instrument to Play/Stow - Default is tambourine (Current: #{UserVars.fizzdusk[:playsongs_instrument]})
-    ;e echo UserVars.fizzdusk[:playsongs_instrument] = 'lute'
+    Set instrument for ;playsongs to play/stow. Falls back to tambourine if unset.
+    (Current: #{UserVars.instrument})
+    ;vars set instrument=INSTRUMENTHERE
 
     Runs a prep script right before entering the arena to recast defensive spells
     from scrolls - Default is set to TRUE (Current: #{UserVars.fizzdusk[:fizzprep_me]})
@@ -1488,7 +1489,7 @@ before_dying {
   if Script.running?("playsongs")
     Script.kill("playsongs")
     waitrt?
-    fput "stow my #{UserVars.fizzdusk[:playsongs_instrument]}"
+    fput "stow my #{Vars.instrument || 'tambourine'}"
   end
   fput "incant set evoke 903" if Char.name =~ /Tysong|Sabotage/
 }
