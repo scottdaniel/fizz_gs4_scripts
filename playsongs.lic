@@ -37,6 +37,13 @@
           ;playsongs lute           (play a different instrument instead)
           ;playsongs tambourine fast   (style: soft (default), fast, or slow)
 
+  Set a persistent default instrument (used whenever no instrument is
+  given on the command line) with:
+          ;vars instrument = lute
+  A command-line instrument always overrides that setting -- ";playsongs
+  tambourine" plays tambourine for that run even if instrument is set to
+  lute in ;vars.
+
   Commands -- "stats" and "help" work either way (;playsongs stats or just
   typing playsongs stats), including before the script has ever been
   started. "pause"/"resume" need it already running, so use the no-
@@ -77,7 +84,13 @@ module Playsongs
   RAW_FIRST_ARG = Script.current.vars[1]
   EARLY_COMMAND = match_command(RAW_FIRST_ARG)
 
-  INSTRUMENT = (EARLY_COMMAND ? "tambourine" : (RAW_FIRST_ARG || "tambourine")).downcase
+  # Persistent default instrument, set with: ;vars instrument = lute
+  # A command-line arg (";playsongs lute") always wins over this when given;
+  # this is only the fallback used when none is passed. Hardcoded
+  # "tambourine" is the last resort if neither is set.
+  DEFAULT_INSTRUMENT = (UserVars.instrument || "tambourine").to_s.downcase
+
+  INSTRUMENT = (EARLY_COMMAND ? DEFAULT_INSTRUMENT : (RAW_FIRST_ARG || DEFAULT_INSTRUMENT)).downcase
 
   STYLES = %w[soft fast slow]
   requested_style = (Script.current.vars[2] || "soft").downcase
@@ -329,6 +342,8 @@ module Playsongs
     respond '  playsongs pause    - stop starting new songs after the current one finishes'
     respond '  playsongs resume   - resume after a pause'
     respond '  playsongs help     - show this help'
+    respond ''
+    respond "Default instrument: set with ;vars instrument = <name> (currently: #{DEFAULT_INSTRUMENT}). A command-line instrument always overrides it."
     respond ''
     respond 'Stop the script entirely with: ;kill playsongs'
     respond ''
