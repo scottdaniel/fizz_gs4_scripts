@@ -37,8 +37,10 @@
           ;playsongs lute           (play a different instrument instead)
           ;playsongs tambourine fast   (style: soft (default), fast, or slow)
 
-  Commands (typed directly, no leading semicolon -- work even while the
-  script is already running in the background):
+  Commands -- "stats" and "help" work either way (;playsongs stats or just
+  typing playsongs stats), including before the script has ever been
+  started. "pause"/"resume" need it already running, so use the no-
+  semicolon form for those while it's going in the background:
           playsongs stats           - print stats for every instrument
                                        tracked so far
           playsongs pause           - stop starting new songs after the
@@ -54,7 +56,28 @@ require 'fileutils'
 
 module Playsongs
 
-  INSTRUMENT = (Script.current.vars[1] || "tambourine").downcase
+  COMMANDS = %w[stats help pause resume].freeze
+
+  # @param word [String, nil]
+  # @return [String, nil] the COMMANDS entry word is an unambiguous
+  #   (3+ char) prefix of, e.g. "res"/"resum" -> "resume", or nil
+  def self.match_command(word)
+    return nil unless word
+
+    w = word.downcase
+    COMMANDS.find { |c| w.length >= 3 && c.start_with?(w) }
+  end
+
+  # vars[1] doubles as both the instrument name (";playsongs lute") and a
+  # command (";playsongs help") -- resolve which one it is before deciding
+  # INSTRUMENT, so "help"/"stats"/etc. never end up as a literal instrument
+  # name (e.g. when the script isn't running yet, so the UpstreamHook
+  # trigger below -- which only fires for the no-semicolon typed form --
+  # never gets a chance to handle it).
+  RAW_FIRST_ARG = Script.current.vars[1]
+  EARLY_COMMAND = match_command(RAW_FIRST_ARG)
+
+  INSTRUMENT = (EARLY_COMMAND ? "tambourine" : (RAW_FIRST_ARG || "tambourine")).downcase
 
   STYLES = %w[soft fast slow]
   requested_style = (Script.current.vars[2] || "soft").downcase
@@ -403,6 +426,22 @@ module Playsongs
     end
   end
 
+  # ";playsongs help"/";playsongs stats" work standalone (before the script
+  # is even running) since vars[1] resolved to a command instead of an
+  # instrument up above. "pause"/"resume" don't make sense without a
+  # running instance to control, so just say so instead of starting one.
+  if EARLY_COMMAND
+    case EARLY_COMMAND
+    when 'stats'
+      show_stats
+    when 'help'
+      show_help
+    when 'pause', 'resume'
+      echo "Not running yet -- start with ;playsongs [instrument] first, then use 'playsongs #{EARLY_COMMAND}' (no semicolon) once it's going."
+    end
+    exit
+  end
+
   echo "Playsongs started -- instrument: #{INSTRUMENT}, style: #{STYLE}"
 
   # Lets typing "playsongs <command>" (no leading semicolon) control the
@@ -411,16 +450,12 @@ module Playsongs
   # so it still works while playsongs is already running in the background
   # -- ";playsongs stats" would just hit Lich's "already running" guard
   # instead.
-  COMMANDS = %w[stats help pause resume]
-
   UpstreamHook.remove('playsongs-trigger') if UpstreamHook.list.include?('playsongs-trigger')
   UpstreamHook.add('playsongs-trigger', proc { |client_string|
     match = client_string.strip.match(/^(?:<c>)?playsongs\s+(\S+)$/i)
     if match
       word = match[1].downcase
-      # allow abbreviations/typos like "res" or "resum" as long as they're an
-      # unambiguous prefix of one of the real commands
-      command = COMMANDS.find { |c| word.length >= 3 && c.start_with?(word) }
+      command = Playsongs.match_command(word)
       case command
       when 'stats'
         Playsongs.show_stats
