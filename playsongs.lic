@@ -512,6 +512,16 @@ module Playsongs
     end
   })
 
+  # Stow the instrument on the way out regardless of how this script stops --
+  # killed by fizzdusk between arena runs, killed manually (;k playsongs), or an
+  # uncaught error -- so it never gets left sitting in hand. Also cleans up the
+  # trigger hook so it doesn't linger registered after the script's gone (Lich
+  # warns about exactly that otherwise).
+  before_dying {
+    UpstreamHook.remove('playsongs-trigger') if UpstreamHook.list.include?('playsongs-trigger')
+    fput "stow my #{INSTRUMENT}" if checkleft(INSTRUMENT) || checkright(INSTRUMENT)
+  }
+
   if ensure_in_left_hand
     echo "Already holding #{INSTRUMENT} in my left hand, skipping get."
   end

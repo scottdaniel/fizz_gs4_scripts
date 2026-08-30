@@ -14,9 +14,16 @@
      author: Tysong (horibu on PC), original Nylis, fizzdusk fork by Fizzleworth
        name: fizzdusk
        tags: duskruin, arena, dusk ruin, fizzdusk
-    version: 1.26.28
+    version: 1.26.29
 
     changelog:
+        1.26.29 (2026-08-30)
+            fizzdusk fork: stow the instrument unconditionally (guarded on it
+            actually being in hand) instead of only when Script.running?("playsongs")
+            still said true -- covers a manual ";k playsongs" outside fizzdusk's own
+            bookkeeping. playsongs.lic itself also gained a before_dying that stows
+            on any exit (killed by fizzdusk, killed manually, or an error), so this
+            is now double-covered.
         1.26.28 (2026-08-30)
             fizzdusk fork: kill any stuck playsongs instance before auto-starting it
             between runs, instead of skipping the start whenever Script.running?
@@ -1320,11 +1327,14 @@ def return_to_arena(group_size)
     sleep(1) until ((checkmind('saturated') ? 110 : percentmind) <= UserVars.fizzdusk[:experience])
   end
 
-  if Script.running?("playsongs")
-    Script.kill("playsongs")
-    waitrt?
-    fput "stow my #{Vars.instrument || 'tambourine'}"
-  end
+  # Stow regardless of Script.running?("playsongs") -- playsongs.lic's own
+  # before_dying already stows on any exit, but this covers the case where the
+  # instance running? doesn't know about (already dead, killed manually, or
+  # Script.running? itself stuck stale) still left something in hand.
+  instrument = Vars.instrument || 'tambourine'
+  Script.kill("playsongs") if Script.running?("playsongs")
+  waitrt?
+  fput "stow my #{instrument}" if checkleft(instrument) || checkright(instrument)
 
   # Run the prep script right before heading back in -- pause_me/maxvitals/experience
   # above can wait a long time, and scroll-cast defensive spells don't last that long.
@@ -1499,11 +1509,10 @@ before_dying {
   UserVars.fizzdusk[:activescripts].each { |activescript|
     kill_script "#{activescript}"
   }
-  if Script.running?("playsongs")
-    Script.kill("playsongs")
-    waitrt?
-    fput "stow my #{Vars.instrument || 'tambourine'}"
-  end
+  fizzdusk_instrument = Vars.instrument || 'tambourine'
+  Script.kill("playsongs") if Script.running?("playsongs")
+  waitrt?
+  fput "stow my #{fizzdusk_instrument}" if checkleft(fizzdusk_instrument) || checkright(fizzdusk_instrument)
   fput "incant set evoke 903" if Char.name =~ /Tysong|Sabotage/
 }
 
