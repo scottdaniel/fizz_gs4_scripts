@@ -333,7 +333,7 @@ module Playsongs
   def self.show_help
     respond ''
     respond '--- Playsongs Help ---'
-    respond "Keeps playing #{INSTRUMENT} (#{STYLE} style) in a loop, timing each song and counting rank-ups."
+    respond "Keeps playing an instrument (#{STYLE} style) in a loop, timing each song and counting rank-ups."
     respond "Also runs PLAY SKILL every #{SKILL_CHECK_INTERVAL} completed songs and saves the real skill level as a second confirmation of the rank-up count."
     respond "Auto-pauses while eloot sell is running (not eloot alone), no command needed."
     respond ''
