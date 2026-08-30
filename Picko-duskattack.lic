@@ -2,10 +2,14 @@
 # Wizard stance-dance routine: evoke 903 (minor steam) while affordable, pray up to
 # 3 times (UserVars.tdusk[:praycurrent], shared/reset once per arena run same as the
 # rest of tdusk.lic) when mana runs out, then fall back to waving wands from the sack
-# for the rest of the run. Stays in stance defensive and only steps into offensive
-# for the moment it takes to act, then waits (wait_for_attack) for the monster to
-# actually swing back -- or up to ATTACK_WAIT_TIMEOUT seconds, whichever comes first
-# -- before acting again.
+# for the rest of the run.
+#
+# While 515 (Rapid Fire, fizzdusk's own opener515 -- not cast by this script) is
+# active, cast RT is short enough that stance-dancing is pointless, so it just stays
+# offensive and spam-casts. Once 515 isn't up, it stays in stance defensive and only
+# steps into offensive for the moment it takes to act, then waits (wait_for_attack)
+# for the monster to actually swing back -- or up to ATTACK_WAIT_TIMEOUT seconds,
+# whichever comes first -- before acting again.
 #
 # Wand handling mirrors bigshot.lic's cmd_wand/fresh_wand_container/dead_wand_container
 # (see Picko's zombies_landing bigshot profile): a wand that disintegrates is just
@@ -151,12 +155,19 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
       if checkrt == 0 && checkcastrt == 0 && npc.status !~ /dead|gone/
         spell_num = heat_resistant ? 904 : 903
         if Spell[spell_num].affordable?
-          put "stance offensive"
+          # 515 (Rapid Fire) is fizzdusk's own opener515 -- while it's up, cast RT
+          # is short enough that stance-dancing (and waiting on an attack) is just
+          # wasted time, so stay offensive and spam-cast instead. Once it wears off
+          # (or was never up), fall back to the normal defensive-between-casts pace.
+          rapid_fire = Spell[515].active?
+          put "stance offensive" if stance != "offensive"
           cast_cmd = heat_resistant ? "incant 904" : "incant 903 evoke"
           text, endroll = cast_and_collect(cast_cmd)
-          put "stance defensive"
           heat_resistant = true if !heat_resistant && fully_resisted?(text, endroll)
-          wait_for_attack
+          unless rapid_fire
+            put "stance defensive"
+            wait_for_attack
+          end
         elsif UserVars.tdusk[:praycurrent] < 3
           fput "pray"
           UserVars.tdusk[:praycurrent] += 1
