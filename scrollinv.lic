@@ -21,7 +21,7 @@
     tags: scroll, scrolls, inventory, utility
 =end
 
-SCROLL_NOUNS = %w[scroll vellum parchment papyrus palimpsest].freeze
+SCROLL_NOUNS = %w[scroll vellum parchment papyrus palimpsest paper].freeze
 READ_TIMEOUT = 4
 
 # Prep/buff spells worth tracking separately -- same list fizzprep.lic feeds to scrollbuff3.
