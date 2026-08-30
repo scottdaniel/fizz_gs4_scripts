@@ -21,7 +21,11 @@
     tags: scroll, scrolls, inventory, utility
 =end
 
+# Matches Lich's own "scroll" type definition in data/gameobj-data.xml (which
+# eloot.lic relies on via thing.type =~ /scroll/), noun-for-noun and exclusion-
+# for-exclusion, so this stays in sync with whatever counts as a scroll there.
 SCROLL_NOUNS = %w[scroll vellum parchment papyrus palimpsest paper].freeze
+SCROLL_NAME_EXCLUDE = /\A(?:a |an |some )?(?:birth certificate parchment|amnesty parchment)\z/i
 READ_TIMEOUT = 4
 
 # Prep/buff spells worth tracking separately -- same list fizzprep.lic feeds to scrollbuff3.
@@ -147,7 +151,9 @@ container_nouns.each do |noun|
     next
   end
 
-  found = contents.select { |o| SCROLL_NOUNS.include?(o.noun.to_s.downcase) }
+  found = contents.select do |o|
+    SCROLL_NOUNS.include?(o.noun.to_s.downcase) && !(o.name.to_s =~ SCROLL_NAME_EXCLUDE)
+  end
   if found.empty?
     respond "scrollinv: no scrolls found in '#{container.name}'."
   else
