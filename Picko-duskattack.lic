@@ -120,19 +120,26 @@ def get_fresh_wand
 end
 
 # Stance-dances a single wand wave at npc. A disintegrated wand is simply gone from
-# hand (get_fresh_wand will notice and fetch another next time); a wand that's out of
-# charges fires with no roundtime and no recognizable result, so it gets moved to the
-# dead wand container instead. Returns false if the fresh wand container was empty
-# (so the caller can stop retrying instead of hammering "get wand" every tick).
+# hand (get_fresh_wand will notice and fetch another next time). Returns false if
+# the fresh wand container was empty (so the caller can stop retrying instead of
+# hammering "get wand" every tick).
+#
+# A wand that fires a resistible element (e.g. fire) against a resistant target
+# (see heat_resistant above) still fires -- it shows a roundtime/combat roll same
+# as any other hit, just with no effect. Only a genuinely depleted wand gives
+# neither of those ("Nothing happens.", no roundtime), so cast_and_collect's
+# roundtime/endroll detection (reused from spellcasting) tells the two apart
+# instead of a resisted-but-working wand getting written off as dead.
 def wave_wand(npc)
   return false unless get_fresh_wand
 
   put "stance offensive"
-  result = dothistimeout "wave my #{WAND_NAME} at ##{npc.id}", 3, /d100|You hurl|is already dead|You do not see that here|You are in no condition|I could not find|Roundtime: \d+ sec/
+  text, endroll = cast_and_collect("wave my #{WAND_NAME} at ##{npc.id}")
   put "stance defensive"
   wait_for_attack
 
-  fput "put my #{WAND_NAME} in my #{DEAD_WAND_CONTAINER}" if result.nil?
+  fired = endroll || text =~ /Roundtime: \d+ sec|Cast Roundtime \d+ Seconds?|is already dead|You do not see that here|You are in no condition|I could not find/i
+  fput "put my #{WAND_NAME} in my #{DEAD_WAND_CONTAINER}" unless fired
   true
 end
 
