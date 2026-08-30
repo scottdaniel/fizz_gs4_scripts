@@ -39,7 +39,7 @@
 
   Set a persistent default instrument (used whenever no instrument is
   given on the command line) with:
-          ;vars instrument = lute
+          ;vars set instrument=lute
   A command-line instrument always overrides that setting -- ";playsongs
   tambourine" plays tambourine for that run even if instrument is set to
   lute in ;vars.
@@ -84,7 +84,7 @@ module Playsongs
   RAW_FIRST_ARG = Script.current.vars[1]
   EARLY_COMMAND = match_command(RAW_FIRST_ARG)
 
-  # Persistent default instrument, set with: ;vars instrument = lute
+  # Persistent default instrument, set with: ;vars set instrument=lute
   # A command-line arg (";playsongs lute") always wins over this when given;
   # this is only the fallback used when none is passed. Hardcoded
   # "tambourine" is the last resort if neither is set.
@@ -343,7 +343,7 @@ module Playsongs
     respond '  playsongs resume   - resume after a pause'
     respond '  playsongs help     - show this help'
     respond ''
-    respond "Default instrument: set with ;vars instrument = <name> (currently: #{DEFAULT_INSTRUMENT}). A command-line instrument always overrides it."
+    respond "Default instrument: set with ;vars set instrument=<name> (currently: #{DEFAULT_INSTRUMENT}). A command-line instrument always overrides it."
     respond ''
     respond 'Stop the script entirely with: ;kill playsongs'
     respond ''
