@@ -1225,21 +1225,27 @@ def check_valuable_loot
   valuable.each { |item| stow_in_locker(item) }
 end
 
-# Checks remaining Duskruin entries via "event entries". If they're gone, kills
-# fizzdusk's active scripts and the game connection instead of trying to go back in.
-# Returns true if it's safe to keep going, false if the script should stop.
+# Checks remaining Duskruin entries via "event entries". Returns true if it's safe
+# to keep going, false once they're gone -- doesn't stop anything itself; callers
+# decide when it's actually safe to quit (see quit_out_of_entries).
 def duskruin_entries_remain?
   line = dothistimeout "event entries", 5, /Duskruin Entries:/
   return true if line.nil?
 
   entries = line[/Duskruin Entries:\s*(\d+)/, 1].to_i
-  return true if entries.positive?
+  entries.positive?
+end
 
+# Kills fizzdusk's active scripts and the duskattack routine, then quits. Called
+# once it's actually safe to stop -- either right at startup (nothing running yet
+# to protect) or from return_to_arena after it's finished waiting out whatever
+# vitals/XP were still outstanding from the run that just ended.
+def quit_out_of_entries
   echo "Out of Duskruin entries -- stopping fizzdusk and quitting."
   UserVars.fizzdusk[:activescripts].each { |activescript| kill_script "#{activescript}" if Script.running?("#{activescript}") }
   Script.kill("#{Char.name}-duskattack") if Script.running?("#{Char.name}-duskattack")
   fput "quit"
-  false
+  exit
 end
 
 def loot(group_size, package_line)
@@ -1339,9 +1345,16 @@ def return_to_arena(group_size)
     Script.start("playsongs", Vars.instrument || 'tambourine')
   end
 
-  exit unless duskruin_entries_remain?
+  # Out of entries doesn't mean stop right away -- there's likely still unabsorbed
+  # XP and less-than-full vitals from the run that just ended, and quitting on the
+  # spot would just throw that away instead of letting it soak in like rested.lic
+  # does before logging out. So keep going through the normal maxvitals/experience
+  # wait below and only actually quit once that's done. Skip the pause_me pause in
+  # that case though -- it waits on a manual ;u fizzdusk that will never come once
+  # there's nothing left to unpause into.
+  entries_remain = duskruin_entries_remain?
 
-  if UserVars.fizzdusk[:pause_me]
+  if UserVars.fizzdusk[:pause_me] && entries_remain
     echo "PAUSING SCRIPT"
     echo ";u fizzdusk"
     echo "TO CONTINUE"
@@ -1355,6 +1368,8 @@ def return_to_arena(group_size)
   if UserVars.fizzdusk[:experience]
     sleep(1) until ((checkmind('saturated') ? 110 : percentmind) <= UserVars.fizzdusk[:experience])
   end
+
+  quit_out_of_entries unless entries_remain
 
   # Stow regardless of Script.running?("playsongs") -- playsongs.lic's own
   # before_dying already stows on any exit, but this covers the case where the
@@ -1547,7 +1562,7 @@ before_dying {
 
 UpstreamHook.add('fizzdusk_hook', fizzdusk_hook)
 
-exit unless duskruin_entries_remain?
+quit_out_of_entries unless duskruin_entries_remain?
 
 fput "store all" if UserVars.fizzdusk[:girdstore]
 sleep(1)
