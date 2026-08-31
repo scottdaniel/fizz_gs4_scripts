@@ -196,8 +196,16 @@ sell_list           = [] # scrolls with no buff spell on them -- [scroll_name, s
 spells_by_item_name = Hash.new { |h, k| h[k] = [] } # for the reserve-slot lookup below
 name_counts         = Hash.new(0)                   # flags ambiguous (same-named) scrolls below
 
+# scroll.name omits the leading article ("aged scroll"), but "reserve list" and the
+# "Scrolls [N]:" summary both include it ("an aged scroll") -- normalize both sides
+# before comparing so the reserve-slot lookup below can actually match.
+def normalize_item_name(name)
+  name.to_s.strip.sub(/\A(?:a|an|some)\s+/i, '').downcase
+end
+
 scrolls.each do |scroll|
-  name_counts[scroll.name.to_s] += 1
+  key = normalize_item_name(scroll.name)
+  name_counts[key] += 1
   spells = read_scroll(scroll)
   if spells.empty?
     unreadable << scroll.name
@@ -206,7 +214,7 @@ scrolls.each do |scroll|
       spell_counts[num] += 1
       spell_names[num] ||= name
     end
-    spells_by_item_name[scroll.name.to_s] += spells
+    spells_by_item_name[key] += spells
     has_buff = spells.any? { |num, _name| priority_spells.include?(num) }
     sell_list << [scroll.name, spells] unless has_buff
   end
@@ -268,12 +276,13 @@ unless reserved.empty?
   respond ""
   respond "Reserved for Combat:"
   reserved.each do |slot, item_name|
-    spells = spells_by_item_name[item_name]
+    key    = normalize_item_name(item_name)
+    spells = spells_by_item_name[key]
     if spells.empty?
       respond "  Slot #{slot}: #{item_name} -- not found in scanned containers"
     else
       spell_desc = spells.uniq.map { |num, sname| "#{num} #{sname}" }.join(", ")
-      note = name_counts[item_name] > 1 ? "  (#{name_counts[item_name]} scrolls share this name -- could be any of them)" : ""
+      note = name_counts[key] > 1 ? "  (#{name_counts[key]} scrolls share this name -- could be any of them)" : ""
       respond "  Slot #{slot}: #{item_name}: #{spell_desc}#{note}"
     end
   end
