@@ -1,7 +1,16 @@
 # Picko-duskattack.lic
+# Picko now runs the shared fizzdusk.lic (not stock tdusk.lic -- confirmed live via
+# the "[custom/fizzdusk]" prompt, opener515: true, and fizzprep_script: "PickoPrep"
+# in a UserVars.fizzdusk dump), so every shared counter here lives in
+# UserVars.fizzdusk, same namespace fizzdusk.lic itself reads and resets. It used to
+# read UserVars.tdusk -- left stale at whatever it was from actual stock-tdusk days,
+# since fizzdusk.lic only ever resets its own namespace, that meant praycurrent
+# stayed permanently capped at 3 and the pray fallback got skipped straight to
+# symbol of mana every single fight.
+#
 # Wizard stance-dance routine: evoke 903 (minor steam) while affordable, pray up to
-# 3 times (UserVars.tdusk[:praycurrent], shared/reset once per arena run same as the
-# rest of tdusk.lic) when mana runs out, then try symbol of mana if it's off cooldown
+# 3 times (UserVars.fizzdusk[:praycurrent], shared/reset once per arena run same as
+# fizzdusk.lic's own casting) when mana runs out, then try symbol of mana if it's off cooldown
 # (never used while on cooldown, so it never costs deeds), then fall back to waving
 # wands from the sack. Once that sack is actually empty it stops retrying for the
 # rest of that target's engagement (no_fresh_wands) and just holds stance defensive
@@ -88,18 +97,18 @@ def fully_resisted?(text, endroll)
 end
 
 # This script gets killed and restarted every wave, so a local "already tried and it
-# was empty" flag wouldn't survive between waves -- UserVars.tdusk persists across
+# was empty" flag wouldn't survive between waves -- UserVars.fizzdusk persists across
 # restarts within the same run, which is what lets these actually remember instead of
 # re-spamming "boost longterm"/"boost absorb" (and getting the same failure message)
 # on every single wave. wave_number == 1 marks the first wave of a fresh run (reset
-# to 0 by tdusk.lic when the winnings package arrives, then incremented before each
-# wave starts), so that's the one point these get cleared back to "try again".
-if UserVars.tdusk[:wave_number] == 1
-  UserVars.tdusk[:no_lte_boosts] = false
-  UserVars.tdusk[:no_absorb_boosts] = false
+# to 0 by fizzdusk.lic when the winnings package arrives, then incremented after each
+# wave's kill), so that's the one point these get cleared back to "try again".
+if UserVars.fizzdusk[:wave_number] == 1
+  UserVars.fizzdusk[:no_lte_boosts] = false
+  UserVars.fizzdusk[:no_absorb_boosts] = false
 end
-UserVars.tdusk[:no_lte_boosts]    = false if UserVars.tdusk[:no_lte_boosts].nil?
-UserVars.tdusk[:no_absorb_boosts] = false if UserVars.tdusk[:no_absorb_boosts].nil?
+UserVars.fizzdusk[:no_lte_boosts]    = false if UserVars.fizzdusk[:no_lte_boosts].nil?
+UserVars.fizzdusk[:no_absorb_boosts] = false if UserVars.fizzdusk[:no_absorb_boosts].nil?
 
 boosted_exp = false
 
@@ -208,7 +217,7 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
       waitcastrt? if npc.status !~ /dead|gone/
       if checkmind("must rest")
         unless boosted_exp
-          if !UserVars.tdusk[:no_lte_boosts]
+          if !UserVars.fizzdusk[:no_lte_boosts]
             # dothistimeout returns nil after 3s if nothing matches (i.e. the
             # boost succeeded with no error), so no separate success pattern
             # is needed here.
@@ -216,14 +225,14 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
             if result.nil?
               boosted_exp = true
             else
-              UserVars.tdusk[:no_lte_boosts] = true
+              UserVars.fizzdusk[:no_lte_boosts] = true
             end
-          elsif !UserVars.tdusk[:no_absorb_boosts]
+          elsif !UserVars.fizzdusk[:no_absorb_boosts]
             result = dothistimeout "boost absorb", 3, /You do not have any .*? Boosts to redeem\./
             if result.nil?
               boosted_exp = true
             else
-              UserVars.tdusk[:no_absorb_boosts] = true
+              UserVars.fizzdusk[:no_absorb_boosts] = true
             end
           end
         end
@@ -265,13 +274,13 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
             put "stance defensive"
             wait_for_attack
           end
-        elsif UserVars.tdusk[:praycurrent] < 3
+        elsif UserVars.fizzdusk[:praycurrent] < 3
           # Bump the counter before sending the command, not after -- fizzdusk's
           # wave-transition trigger can force this whole script to be killed and
           # restarted mid-fight (see the fizzdusk.lic fix for why), and if that
           # lands between fput returning and the increment running, the increment
           # would be lost, letting a restarted instance pray a 4th time.
-          UserVars.tdusk[:praycurrent] += 1
+          UserVars.fizzdusk[:praycurrent] += 1
           fput "pray"
         elsif Spell[9813].known? && !Effects::Cooldowns.active?("Symbol of Mana")
           # Off cooldown only -- Effects::Cooldowns tracks this directly, so this
@@ -294,5 +303,5 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
     #end main attack routine here
   }
 end
-Script.start("foreach", "in room; look item") if UserVars.tdusk[:wave_number] != 25
-Script.start("foreach", "in room; get item; stow item") if UserVars.tdusk[:wave_number] == 25
+Script.start("foreach", "in room; look item") if UserVars.fizzdusk[:wave_number] != 25
+Script.start("foreach", "in room; get item; stow item") if UserVars.fizzdusk[:wave_number] == 25
