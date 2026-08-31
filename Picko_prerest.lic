@@ -8,5 +8,6 @@ Script.run("undead_bounty", "kill zombie")
 #Script.run("buyitems")
 Script.run("ewaggle")
 Script.run("timequit")
+Script.run("playsongs")
 
 end #End of module
