@@ -28,18 +28,18 @@ SCROLL_NOUNS = %w[scroll vellum parchment papyrus palimpsest paper].freeze
 SCROLL_NAME_EXCLUDE = /\A(?:a |an |some )?(?:birth certificate parchment|amnesty parchment)\z/i
 READ_TIMEOUT = 4
 
-# Prep/buff spells worth tracking separately -- same list fizzprep.lic feeds to scrollbuff3.
-PRIORITY_SPELLS = [
-  202, 211, 215, 219, 303, 307, 310, 313, 314, 319, 503, 507, 509, 508, 601,
-  606, 613, 618, 905, 913, 1119, 1215, 1204, 1605, 1601, 1701, 1705, 1208, 207,
-  1616, 911
-].freeze
-
 # Spells already known well enough not to need tracking here.
 HIDDEN_RANGES = [(100..199), (400..499), (700..799)].freeze
 
 def hidden_spell?(num)
   HIDDEN_RANGES.any? { |range| range.cover?(num) }
+end
+
+# Prep/buff spells worth tracking separately, from a UserVars list you maintain
+# yourself (same one fizzprep.lic reads for its scrollbuff3 call) -- set with:
+#   ;vars set scroll_buff_spells=202 211 215 ...
+def buff_spells
+  UserVars.scroll_buff_spells.to_s.scan(/\d+/).map(&:to_i)
 end
 
 def usage
@@ -54,10 +54,16 @@ def usage
   respond "    ;vars set vibrantscrollsack=<container name>"
   respond ""
   respond "CURRENT SETTINGS:"
-  respond "    scrollsack:        #{UserVars.scrollsack || '(not set)'}"
-  respond "    vibrantscrollsack: #{UserVars.vibrantscrollsack || '(not set)'}"
+  respond "    scrollsack:         #{UserVars.scrollsack || '(not set)'}"
+  respond "    vibrantscrollsack:  #{UserVars.vibrantscrollsack || '(not set)'}"
+  respond "    scroll_buff_spells: #{UserVars.scroll_buff_spells || '(not set)'}"
   respond ""
   respond "Containers must be open and worn/held (or otherwise accessible)."
+  respond ""
+  respond "\"Buff Scrolls\" is whatever spell numbers you list in scroll_buff_spells -- set it with:"
+  respond "    ;vars set scroll_buff_spells=202 211 215 219 303 ..."
+  respond "(the same var fizzprep.lic reads for its scrollbuff3 call, so keeping it up to"
+  respond "date there keeps this script's categorization in sync automatically)."
 end
 
 def find_container(noun)
@@ -122,6 +128,13 @@ if script.vars[1].to_s =~ /^(?:help|\?|-h|--help)$/i
   exit
 end
 
+priority_spells = buff_spells
+if priority_spells.empty?
+  respond "scrollinv: you must define your buff spell list - ;vars set scroll_buff_spells=<spell numbers>"
+  respond "  (same var fizzprep.lic reads for its scrollbuff3 call)"
+  exit
+end
+
 container_arg = script.vars[0].to_s.strip
 
 if container_arg.empty?
@@ -183,7 +196,7 @@ scrolls.each do |scroll|
       spell_counts[num] += 1
       spell_names[num] ||= name
     end
-    has_buff = spells.any? { |num, _name| PRIORITY_SPELLS.include?(num) }
+    has_buff = spells.any? { |num, _name| priority_spells.include?(num) }
     sell_list << [scroll.name, spells] unless has_buff
   end
 end
@@ -194,8 +207,8 @@ if spell_counts.empty?
 end
 
 visible_nums  = spell_counts.keys.reject { |num| hidden_spell?(num) }
-priority_nums = PRIORITY_SPELLS.select { |num| visible_nums.include?(num) }
-other_nums    = (visible_nums - PRIORITY_SPELLS).sort
+priority_nums = priority_spells.select { |num| visible_nums.include?(num) }
+other_nums    = (visible_nums - priority_spells).sort
 
 def print_table(title, nums, spell_names, spell_counts)
   return if nums.empty?

@@ -18,9 +18,13 @@ pause 3
 Script.run("qverb", "rub black crystal") unless GameObj.loot.find { |i| i.name =~ /#{Char.name} disk/ }
 pause 3
 
-# removed 606 while I'm doing arena runs so as not to waste it
-# cast protective spells from scrolls
-Script.run("scrollbuff3", "202 211 215 219 303 307 310 313 314 319 503 507 509 508 601 613 618 905 913 1119 1215 1204 1601 1701 1705 1208 207 1616 911")
+# cast protective spells from scrolls -- spell list lives in UserVars.scroll_buff_spells
+# (shared with scrollinv.lic's "Buff Scrolls" categorization); seeded once below
+# with the list this line used to hardcode, so behavior doesn't change until you
+# edit it with ;vars set scroll_buff_spells=<spell numbers>
+# (606 is currently left out while doing arena runs, so as not to waste)
+UserVars.scroll_buff_spells ||= "202 211 215 219 303 307 310 313 314 319 503 507 509 508 601 613 618 905 913 1119 1215 1204 1601 1701 1705 1208 207 1616 911"
+Script.run("scrollbuff3", UserVars.scroll_buff_spells)
 fput "ready weapon"
 
 # check if runestaff is ensorcelled, if not, prep and evoke
