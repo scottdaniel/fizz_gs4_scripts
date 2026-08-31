@@ -1,0 +1,86 @@
+# lockerstow.lic
+# Manual test/utility command for the appraise-and-locker logic fizzdusk.lic's
+# check_valuable_loot runs automatically once you hit UserVars.fizzdusk
+# [:encumbrance_limit] percent encumbered. Run this on demand -- no encumbrance
+# check -- so you can verify the appraisal/locker logic actually works without
+# waiting to get that loaded down first.
+#
+# 1. Runs ;eloot sell first (same as your prerest scripts) to clear out anything
+#    eloot already knows how to sell.
+# 2. Whatever's left in your lootsack (Vars.lootsack) gets appraised -- jewelry at
+#    the gemshop, everything else at the pawnshop -- and anything at or above
+#    UserVars.fizzdusk[:locker_limit] gets moved into the locker at
+#    UserVars.fizzdusk[:locker_location] (trunk first, falling back to the locker
+#    itself if the trunk's full). Same settings fizzdusk.lic itself uses, so this
+#    is a faithful dry run of what would happen automatically mid-arena.
+
+UserVars.fizzdusk[:locker_limit]    = 25000 if UserVars.fizzdusk[:locker_limit].nil?
+UserVars.fizzdusk[:locker_location] = 15948 if UserVars.fizzdusk[:locker_location].nil?
+
+if Script.exists?("eloot")
+  Script.run("eloot", "sell")
+else
+  echo "lockerstow: eloot isn't installed, skipping the sell step."
+end
+
+# Pulls the item to hand, asks the current shop to appraise it, and returns it to
+# the lootsack. Returns the appraised silver value, or 0 if nothing was quoted.
+def appraise_value(item)
+  fput "get ##{item.id}"
+  waitrt?
+  line = dothistimeout("appraise ##{item.id}", 5, /[,0-9]+ (?:silver|for it if you want to sell|for this if you'd like)|not buying anything this valuable today/)
+  value = 0
+  value = $1.delete(',').to_i if line.to_s =~ /([,0-9]+) (?:silver|for it if you want to sell|for this if you'd like)/
+  fput "put ##{item.id} in my #{Vars.lootsack}"
+  value
+end
+
+# Tries the trunk first, falls back to the locker itself if the trunk is full.
+def stow_in_locker(item)
+  fput "get ##{item.id}"
+  waitrt?
+  result = dothistimeout("put ##{item.id} in my trunk", 5, /^You put|won't fit|can't fit|no room|too full|doesn't fit/i)
+  fput "put ##{item.id} in my locker" unless result.to_s =~ /^You put/i
+end
+
+fput "open my #{Vars.lootsack}"
+# "open" is a no-op ("That is already open.") once it's already open, so it can't
+# be trusted alone to (re)populate GameObj's cached contents -- confirmed live as
+# the exact bug behind Picko-duskattack.lic's wand sack reporting empty when it
+# wasn't. "look in" always forces a fresh listing regardless of open state.
+fput "look in my #{Vars.lootsack}"
+sack = GameObj.inv.find { |i| i.name =~ /#{Regexp.escape(Vars.lootsack)}/i }
+
+if sack.nil? || sack.contents.to_a.empty?
+  echo "lockerstow: #{Vars.lootsack} is empty, nothing to appraise."
+  exit
+end
+
+jewelry, regular = sack.contents.dup.partition { |item| item.type?('jewelry') }
+
+valuable = []
+
+unless regular.empty?
+  start_script("go2", ["pawnshop"])
+  wait_while { running?("go2") }
+  regular.each { |item| valuable << item if appraise_value(item) >= UserVars.fizzdusk[:locker_limit] }
+end
+
+unless jewelry.empty?
+  start_script("go2", ["gemshop"])
+  wait_while { running?("go2") }
+  jewelry.each { |item| valuable << item if appraise_value(item) >= UserVars.fizzdusk[:locker_limit] }
+end
+
+if valuable.empty?
+  echo "lockerstow: nothing appraised at or above #{UserVars.fizzdusk[:locker_limit]} silver."
+  exit
+end
+
+echo "lockerstow: #{valuable.length} item(s) appraised at or above #{UserVars.fizzdusk[:locker_limit]} silver, moving to locker."
+start_script("go2", [UserVars.fizzdusk[:locker_location].to_s])
+wait_while { running?("go2") }
+fput "open locker"
+fput "open my #{Vars.lootsack}"
+valuable.each { |item| stow_in_locker(item) }
+echo "lockerstow: done."
