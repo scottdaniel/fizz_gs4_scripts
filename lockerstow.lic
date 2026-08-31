@@ -7,12 +7,16 @@
 #
 # 1. Runs ;eloot sell first (same as your prerest scripts) to clear out anything
 #    eloot already knows how to sell.
-# 2. Whatever's left in your lootsack (Vars.lootsack) gets appraised -- jewelry at
-#    the gemshop, everything else at the pawnshop -- and anything at or above
-#    UserVars.fizzdusk[:locker_limit] gets moved into the locker at
-#    UserVars.fizzdusk[:locker_location] (trunk first, falling back to the locker
-#    itself if the trunk's full). Same settings fizzdusk.lic itself uses, so this
-#    is a faithful dry run of what would happen automatically mid-arena.
+# 2. Whatever's left in your lootsack (Vars.lootsack) -- minus anything on your
+#    eloot sell_exclude list (data/GSIV/<char>/eloot.yaml, per-character) -- gets
+#    appraised: jewelry at the gemshop, everything else at the pawnshop. Anything
+#    appraised at or above UserVars.fizzdusk[:locker_limit] gets moved into the
+#    locker at UserVars.fizzdusk[:locker_location] (trunk first, falling back to
+#    the locker itself if the trunk's full). Same settings fizzdusk.lic itself
+#    uses, so this is a faithful dry run of what would happen automatically
+#    mid-arena.
+
+require 'yaml'
 
 UserVars.fizzdusk[:locker_limit]    = 25000 if UserVars.fizzdusk[:locker_limit].nil?
 UserVars.fizzdusk[:locker_location] = 15948 if UserVars.fizzdusk[:locker_location].nil?
@@ -22,6 +26,23 @@ if Script.exists?("eloot")
 else
   echo "lockerstow: eloot isn't installed, skipping the sell step."
 end
+
+# Same word-boundary match eloot.lic's own build_word_boundary_regexes uses against
+# ELoot.data.sell_exclude_regex -- entries are used as raw regex source, not
+# literal-escaped, matching eloot's own behavior exactly (an entry that's itself
+# regex-flavored works the same way here as it does for eloot). Items you've told
+# eloot to never sell (kept wands, crafting components, etc) shouldn't get blindly
+# appraised/possibly locker-stowed here either. Returns nil (match everything) if
+# the per-character eloot.yaml doesn't exist yet or has no sell_exclude entries.
+def eloot_sell_exclude_regex
+  path = File.join(DATA_DIR, XMLData.game, Char.name, "eloot.yaml")
+  settings = YAML.load_file(path) rescue nil
+  list = settings.is_a?(Hash) ? Array(settings[:sell_exclude]) : []
+  return nil if list.empty?
+  Regexp.union(list.map { |entry| /\b#{entry}\b/i })
+end
+
+SELL_EXCLUDE_REGEX = eloot_sell_exclude_regex
 
 # Pulls the item to hand, asks the current shop to appraise it, and returns it to
 # the lootsack. Returns the appraised silver value, or 0 if nothing was quoted.
@@ -56,7 +77,18 @@ if sack.nil? || sack.contents.to_a.empty?
   exit
 end
 
-jewelry, regular = sack.contents.dup.partition { |item| item.type?('jewelry') }
+items = sack.contents.dup
+if SELL_EXCLUDE_REGEX
+  excluded, items = items.partition { |item| item.name =~ SELL_EXCLUDE_REGEX }
+  echo "lockerstow: skipping #{excluded.length} item(s) on your eloot sell_exclude list." unless excluded.empty?
+end
+
+if items.empty?
+  echo "lockerstow: nothing left to appraise after eloot exclusions."
+  exit
+end
+
+jewelry, regular = items.partition { |item| item.type?('jewelry') }
 
 valuable = []
 
