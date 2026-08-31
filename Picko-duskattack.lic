@@ -27,6 +27,13 @@ FRESH_WAND_CONTAINER = "sack" unless defined?(FRESH_WAND_CONTAINER)
 DEAD_WAND_CONTAINER = "knapsack" unless defined?(DEAD_WAND_CONTAINER)
 WAND_NAME = "wand" unless defined?(WAND_NAME)
 
+# Per https://gswiki.play.net/Wand, these are the only wand-noun (not rod-noun --
+# "slender crimson rod" doesn't match WAND_NAME anyway) items that cast a pure fire
+# spell: electrum/grooved ebony wand (Fire Spirit), golden wand (Minor Fire), drake
+# wand (Major Fire). Waving one of these at a heat-resistant target is exactly as
+# useless as casting 903 at one -- avoid picking them once heat_resistant is set.
+FIRE_WAND_PATTERN = /\b(?:electrum|grooved ebony|golden|drake)\s+wand\b/i unless defined?(FIRE_WAND_PATTERN)
+
 # "incant 903 evoke" actually costs more mana than Spell[903].affordable?/mana_cost
 # report (they only know the spell's base cost, not this specific incant flavor's
 # real cost) -- confirmed live: cast anyway, "You have overextended yourself! You
@@ -96,22 +103,32 @@ UserVars.tdusk[:no_absorb_boosts] = false if UserVars.tdusk[:no_absorb_boosts].n
 
 boosted_exp = false
 
-# Makes sure a fresh wand is in hand. Returns false (and leaves an echo) if the
-# fresh wand container turns out to have no wand-noun items left.
+# Makes sure a fresh (non-fire, if avoid_fire) wand is in hand. Returns false (and
+# leaves an echo) if the fresh wand container turns out to have no usable wand-noun
+# items left.
 #
 # Targets a specific item by ##id instead of "get wand from my sack" -- the sack
 # holds many *different* wand types (crystal, copper, starstone, etc, all sharing
 # the generic noun "wand"), so the plain-text get is ambiguous. That ambiguity was
 # previously read as "empty" (dothistimeout just timed out on a response it didn't
 # recognize), when the sack in fact still had two dozen wands in it.
-def get_fresh_wand
-  return true if GameObj.right_hand.noun =~ /#{WAND_NAME}/i
+def get_fresh_wand(avoid_fire = false)
+  held = GameObj.right_hand
+  if held.noun =~ /#{WAND_NAME}/i
+    return true unless avoid_fire && held.name =~ FIRE_WAND_PATTERN
+    # Holding a fire wand but the current target resists fire -- it's not dead,
+    # just wrong for this npc, so it goes back in the sack (not the knapsack) to
+    # be picked up again for a later, non-resistant target.
+    fput "put my #{WAND_NAME} in my #{FRESH_WAND_CONTAINER}"
+  end
 
   fput "open my #{FRESH_WAND_CONTAINER}"
   sack = GameObj.inv.find { |i| i.name =~ /#{Regexp.escape(FRESH_WAND_CONTAINER)}/i }
-  wand = sack && sack.contents.to_a.find { |item| item.noun =~ /#{WAND_NAME}/i }
+  candidates = sack ? sack.contents.to_a.select { |item| item.noun =~ /#{WAND_NAME}/i } : []
+  candidates = candidates.reject { |item| item.name =~ FIRE_WAND_PATTERN } if avoid_fire
+  wand = candidates.first
   unless wand
-    echo "Picko-duskattack: no fresh wands left in my #{FRESH_WAND_CONTAINER}."
+    echo "Picko-duskattack: no fresh#{avoid_fire ? ' non-fire' : ''} wands left in my #{FRESH_WAND_CONTAINER}."
     return false
   end
 
@@ -124,14 +141,15 @@ end
 # the fresh wand container was empty (so the caller can stop retrying instead of
 # hammering "get wand" every tick).
 #
-# A wand that fires a resistible element (e.g. fire) against a resistant target
-# (see heat_resistant above) still fires -- it shows a roundtime/combat roll same
-# as any other hit, just with no effect. Only a genuinely depleted wand gives
-# neither of those ("Nothing happens.", no roundtime), so cast_and_collect's
-# roundtime/endroll detection (reused from spellcasting) tells the two apart
-# instead of a resisted-but-working wand getting written off as dead.
-def wave_wand(npc)
-  return false unless get_fresh_wand
+# A wand that fires a resistible element still fires -- it shows a roundtime/combat
+# roll same as any other hit, just with no effect. Only a genuinely depleted wand
+# gives neither of those ("Nothing happens.", no roundtime), so cast_and_collect's
+# roundtime/endroll detection (reused from spellcasting) tells the two apart instead
+# of a resisted-but-working wand getting written off as dead. For a target already
+# known to be heat_resistant, get_fresh_wand skips fire wands up front instead of
+# wasting a wave finding that out the hard way.
+def wave_wand(npc, heat_resistant)
+  return false unless get_fresh_wand(heat_resistant)
 
   put "stance offensive"
   text, endroll = cast_and_collect("wave my #{WAND_NAME} at ##{npc.id}")
@@ -227,7 +245,7 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
           # hundreds of back-to-back "get wand"/"no fresh wands left" with nothing
           # else happening). Local to this npc, so a fresh target gets one more try
           # in case the sack's been restocked by then.
-          no_fresh_wands = true unless wave_wand(npc)
+          no_fresh_wands = true unless wave_wand(npc, heat_resistant)
         else
           put "stance defensive" if stance != "defensive"
           wait_for_attack
