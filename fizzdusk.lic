@@ -1196,6 +1196,11 @@ def check_valuable_loot
   return if Char.percent_encumbrance < UserVars.fizzdusk[:encumbrance_limit]
 
   fput "open my #{Vars.lootsack}"
+  # "open" is a no-op ("That is already open.") once it's already open, so it can't
+  # be trusted alone to (re)populate GameObj's cached contents -- confirmed live as
+  # the exact bug behind Picko-duskattack.lic's wand sack reporting empty when it
+  # wasn't. "look in" always forces a fresh listing regardless of open state.
+  fput "look in my #{Vars.lootsack}"
   sack = GameObj.inv.find { |i| i.name =~ /#{Regexp.escape(Vars.lootsack)}/i }
   return if sack.nil? || sack.contents.to_a.empty?
 
