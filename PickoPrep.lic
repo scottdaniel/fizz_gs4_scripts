@@ -16,8 +16,8 @@ Script.run("qverb", "rub moonstone cube") unless Spell[1705].active?
 pause 3
 
 # cast protective spells from scrolls -- spell list lives in UserVars.scroll_buff_spells
-# (shared with scrollinv.lic's "Buff Scrolls" categorization). Already set via:
-#   ;vars set scroll_buff_spells=202 211 215 219 303 307 310 313 314 319 601 606 613 618 1119 1215 1204 1601 1701 1705 1208 207 1616
+# (shared with scrollinv.lic's "Buff Scrolls" categorization). Must be set via:
+# e.g. ;vars set scroll_buff_spells=101 103 107 112 120 202 207 211 215 219 303 307 310 313 314 319 601 606 613 618 1119 1215 1204 1601 1701 1705 1208 1616
 Script.run("scrollbuff3", UserVars.scroll_buff_spells)
 
 fput "ready weapon"

@@ -28,13 +28,6 @@ SCROLL_NOUNS = %w[scroll vellum parchment papyrus palimpsest paper].freeze
 SCROLL_NAME_EXCLUDE = /\A(?:a |an |some )?(?:birth certificate parchment|amnesty parchment)\z/i
 READ_TIMEOUT = 4
 
-# Spells already known well enough not to need tracking here.
-HIDDEN_RANGES = [(100..199), (400..499), (700..799)].freeze
-
-def hidden_spell?(num)
-  HIDDEN_RANGES.any? { |range| range.cover?(num) }
-end
-
 # Prep/buff spells worth tracking separately, from a UserVars list you maintain
 # yourself (same one fizzprep.lic reads for its scrollbuff3 call) -- set with:
 #   ;vars set scroll_buff_spells=202 211 215 ...
@@ -123,6 +116,20 @@ def read_scroll(scroll)
   spells
 end
 
+RESERVE_START = /^You have (?:the following items reserved for combat|no items reserved for combat)/i
+
+def read_reserve_list
+  lines = Lich::Util.issue_command(
+    "reserve list", RESERVE_START, /<prompt/,
+    include_end: false, timeout: 5, usexml: true, quiet: false
+  )
+  lines.filter_map do |line|
+    clean = line.gsub(/<\/?[^>]*>/, '')
+    next unless clean =~ /^\s*Slot\s+(\d+):\s*(.+?)\s*$/i
+    [$1.to_i, $2.strip]
+  end
+end
+
 if script.vars[1].to_s =~ /^(?:help|\?|-h|--help)$/i
   usage
   exit
@@ -182,12 +189,15 @@ end
 
 respond "scrollinv: reading #{scrolls.size} scroll(s) in #{scanned_names.join(', ')}..."
 
-spell_counts = Hash.new(0)
-spell_names  = {}
-unreadable   = []
-sell_list    = [] # scrolls with no buff spell on them -- [scroll_name, spells]
+spell_counts        = Hash.new(0)
+spell_names         = {}
+unreadable          = []
+sell_list           = [] # scrolls with no buff spell on them -- [scroll_name, spells]
+spells_by_item_name = Hash.new { |h, k| h[k] = [] } # for the reserve-slot lookup below
+name_counts         = Hash.new(0)                   # flags ambiguous (same-named) scrolls below
 
 scrolls.each do |scroll|
+  name_counts[scroll.name.to_s] += 1
   spells = read_scroll(scroll)
   if spells.empty?
     unreadable << scroll.name
@@ -196,6 +206,7 @@ scrolls.each do |scroll|
       spell_counts[num] += 1
       spell_names[num] ||= name
     end
+    spells_by_item_name[scroll.name.to_s] += spells
     has_buff = spells.any? { |num, _name| priority_spells.include?(num) }
     sell_list << [scroll.name, spells] unless has_buff
   end
@@ -206,9 +217,9 @@ if spell_counts.empty?
   exit
 end
 
-visible_nums  = spell_counts.keys.reject { |num| hidden_spell?(num) }
-priority_nums = priority_spells.select { |num| visible_nums.include?(num) }
-other_nums    = (visible_nums - priority_spells).sort
+all_nums      = spell_counts.keys
+priority_nums = priority_spells.select { |num| all_nums.include?(num) }
+other_nums    = (all_nums - priority_spells).sort
 
 def print_table(title, nums, spell_names, spell_counts)
   return if nums.empty?
@@ -236,7 +247,7 @@ print_table("Buff Scrolls", priority_nums, spell_names, spell_counts)
 print_table("Hunting / Utility", other_nums, spell_names, spell_counts)
 
 respond ""
-respond "scrollinv: #{visible_nums.size} distinct spell(s) across #{scrolls.size} scroll(s)."
+respond "scrollinv: #{all_nums.size} distinct spell(s) across #{scrolls.size} scroll(s)."
 
 unless sell_list.empty?
   respond ""
@@ -250,4 +261,20 @@ end
 unless unreadable.empty?
   respond ""
   respond "scrollinv: couldn't identify a spell on #{unreadable.size} item(s): #{unreadable.join(', ')}"
+end
+
+reserved = read_reserve_list
+unless reserved.empty?
+  respond ""
+  respond "Reserved for Combat:"
+  reserved.each do |slot, item_name|
+    spells = spells_by_item_name[item_name]
+    if spells.empty?
+      respond "  Slot #{slot}: #{item_name} -- not found in scanned containers"
+    else
+      spell_desc = spells.uniq.map { |num, sname| "#{num} #{sname}" }.join(", ")
+      note = name_counts[item_name] > 1 ? "  (#{name_counts[item_name]} scrolls share this name -- could be any of them)" : ""
+      respond "  Slot #{slot}: #{item_name}: #{spell_desc}#{note}"
+    end
+  end
 end
