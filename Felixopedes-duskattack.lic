@@ -13,7 +13,7 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
     end
 
     Spell[212].force_incant if npc.status !~ /dead|gone/
-    Spell[214].force_incant if (Array[5, 10, 15, 20, 25].include? UserVars.tdusk[:wave_number]) && Spell[214].affordable? && Room.current.id == 24550
+    Spell[214].force_incant if (Array[5, 10, 15, 20, 25].include? UserVars.fizzdusk[:wave_number]) && Spell[214].affordable? && Room.current.id == 24550
 
     #start main attack routine here
     loop do
@@ -30,5 +30,5 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
     #end main attack routine here
   }
 end
-Script.start("foreach", "in room; look item") if UserVars.tdusk[:wave_number] != 25
-Script.start("foreach", "in room; get item; stow item") if UserVars.tdusk[:wave_number] == 25
+Script.start("foreach", "in room; look item") if UserVars.fizzdusk[:wave_number] != 25
+Script.start("foreach", "in room; get item; stow item") if UserVars.fizzdusk[:wave_number] == 25
