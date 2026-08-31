@@ -214,6 +214,8 @@
         Nylis for his initial script released back in 2015.
 =end
 
+require 'yaml'
+
 if Script.running?("0net")
   lnet_or_0net = "0net"
 else
@@ -260,7 +262,6 @@ UserVars.fizzdusk[:girdstore]      = true      if UserVars.fizzdusk[:girdstore].
 UserVars.fizzdusk[:reentry]        = true      if UserVars.fizzdusk[:reentry].nil?
 UserVars.fizzdusk[:encumbrance_limit] = 50     if UserVars.fizzdusk[:encumbrance_limit].nil?
 UserVars.fizzdusk[:locker_check]   = true      if UserVars.fizzdusk[:locker_check].nil?
-UserVars.fizzdusk[:locker_limit]   = 25000     if UserVars.fizzdusk[:locker_limit].nil?
 UserVars.fizzdusk[:locker_location] = 15948    if UserVars.fizzdusk[:locker_location].nil?
 UserVars.fizzdusk[:using_bigshot]  = false
 
@@ -1187,10 +1188,30 @@ def stow_in_locker(item)
   fput "put ##{item.id} in my locker" unless result.to_s =~ /^You put/i
 end
 
+# Reads eloot's own per-character sell_appraise_gemshop/sell_appraise_pawnshop
+# thresholds (data/GSIV/<char>/eloot.yaml, set via ;eloot setup -> Selling tab) as
+# the "too valuable to sell" cutoff, rather than a second, separate locker_limit
+# setting that could drift out of sync with eloot's -- confirmed live as a real
+# problem: eloot's own default sell_appraise_pawnshop (34999) is higher than a
+# 25000 locker_limit used to be, so eloot would happily sell something this script
+# was trying to protect. Falls back to eloot's own defaults (14999/34999) if the
+# per-character eloot.yaml doesn't exist yet.
+def eloot_appraise_limits
+  path = File.join(DATA_DIR, XMLData.game, Char.name, "eloot.yaml")
+  settings = YAML.load_file(path) rescue nil
+  settings = {} unless settings.is_a?(Hash)
+  {
+    gemshop:  (settings[:sell_appraise_gemshop] || 14_999).to_i,
+    pawnshop: (settings[:sell_appraise_pawnshop] || 34_999).to_i
+  }
+end
+
 # Once encumbrance hits the same limit that would otherwise block the next run, appraises
 # everything in the lootsack (jewelry at the gemshop, everything else at the pawnshop) and
-# moves anything worth UserVars.fizzdusk[:locker_limit] or more into the locker. Below that
-# encumbrance limit it's skipped and the script just keeps repeating arena runs.
+# moves anything appraised above eloot's own sell_appraise_gemshop/sell_appraise_pawnshop
+# limit into the locker -- the same cutoff eloot itself uses to decide something's too
+# valuable to auto-sell. Below the encumbrance limit it's skipped and the script just
+# keeps repeating arena runs.
 def check_valuable_loot
   return unless UserVars.fizzdusk[:locker_check]
   return if Char.percent_encumbrance < UserVars.fizzdusk[:encumbrance_limit]
@@ -1206,23 +1227,24 @@ def check_valuable_loot
 
   jewelry, regular = sack.contents.dup.partition { |item| item.type?('jewelry') }
 
+  limits = eloot_appraise_limits
   valuable = []
 
   unless regular.empty?
     start_script("go2", ["pawnshop"])
     wait_while { running?("go2") }
-    regular.each { |item| valuable << item if appraise_value(item) >= UserVars.fizzdusk[:locker_limit] }
+    regular.each { |item| valuable << item if appraise_value(item) > limits[:pawnshop] }
   end
 
   unless jewelry.empty?
     start_script("go2", ["gemshop"])
     wait_while { running?("go2") }
-    jewelry.each { |item| valuable << item if appraise_value(item) >= UserVars.fizzdusk[:locker_limit] }
+    jewelry.each { |item| valuable << item if appraise_value(item) > limits[:gemshop] }
   end
 
   return if valuable.empty?
 
-  echo "#{valuable.length} item(s) appraised at or above #{UserVars.fizzdusk[:locker_limit]} silver, moving to locker."
+  echo "#{valuable.length} item(s) appraised above your eloot sell_appraise limits, moving to locker."
   start_script("go2", [UserVars.fizzdusk[:locker_location].to_s])
   wait_while { running?("go2") }
   fput "open locker"
@@ -1506,14 +1528,17 @@ if variable[1].downcase == "help"
     ones to the locker to lighten your load instead of exiting. Default is 50. (Current: #{UserVars.fizzdusk[:encumbrance_limit]})
     ;e echo UserVars.fizzdusk[:encumbrance_limit] = 75
 
-    Whether to appraise winnings at the pawnshop/gemshop and move anything worth
-    locker_limit or more into the locker (room locker_location) instead of keeping it in
-    your lootsack. Only runs once encumbrance hits encumbrance_limit -- below that it's
-    skipped and runs just keep repeating. Default is set to TRUE. (Current: #{UserVars.fizzdusk[:locker_check]})
+    Whether to appraise winnings at the pawnshop/gemshop and move anything appraised
+    above your eloot sell_appraise limit into the locker (room locker_location) instead
+    of keeping it in your lootsack. Only runs once encumbrance hits encumbrance_limit --
+    below that it's skipped and runs just keep repeating. Default is set to TRUE. (Current: #{UserVars.fizzdusk[:locker_check]})
     ;e echo UserVars.fizzdusk[:locker_check] = false
 
-    Silver value at/above which an appraised item gets moved to the locker. Default is 25000. (Current: #{UserVars.fizzdusk[:locker_limit]})
-    ;e echo UserVars.fizzdusk[:locker_limit] = 30000
+    The silver value above which an appraised item goes to the locker instead of your
+    lootsack comes from eloot's own per-character settings (Jewelry Appraise Limit /
+    Pawnshop Appraise Limit on the Selling tab), not a separate fizzdusk setting -- so
+    it can't drift out of sync with what eloot itself would refuse to auto-sell.
+    ;eloot setup
 
     Room number of the locker to use for over-limit items. Default is 15948. (Current: #{UserVars.fizzdusk[:locker_location]})
     ;e echo UserVars.fizzdusk[:locker_location] = 15948

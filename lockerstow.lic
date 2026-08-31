@@ -6,42 +6,54 @@
 # waiting to get that loaded down first.
 #
 # 1. Whatever's in your lootsack (Vars.lootsack) -- minus anything on your eloot
-#    sell_exclude list (data/GSIV/<char>/eloot.yaml, per-character) -- gets
-#    appraised: jewelry at the gemshop, everything else at the pawnshop. Anything
-#    appraised at or above UserVars.fizzdusk[:locker_limit] gets moved into the
-#    locker at UserVars.fizzdusk[:locker_location] (trunk first, falling back to
-#    the locker itself if the trunk's full). Same settings fizzdusk.lic itself
+#    sell_exclude list -- gets appraised: jewelry at the gemshop, everything else
+#    at the pawnshop. Anything appraised above eloot's own per-character
+#    sell_appraise_gemshop/sell_appraise_pawnshop limit (data/GSIV/<char>/eloot.yaml,
+#    set via ;eloot setup -> Selling tab) gets moved into the locker at
+#    UserVars.fizzdusk[:locker_location] (trunk first, falling back to the locker
+#    itself if the trunk's full). Same cutoff fizzdusk.lic's own check_valuable_loot
 #    uses, so this is a faithful dry run of what would happen automatically
 #    mid-arena.
 # 2. Only THEN runs ;eloot sell, to clear out whatever's left. This has to happen
-#    last -- eloot's own sell_appraise_pawnshop/sell_appraise_gemshop thresholds
-#    (34999/14999 by default) are higher than a typical locker_limit, so running
-#    eloot sell first would sell anything in between right out from under this
-#    script before it ever got a chance to appraise it. Confirmed live: a war
-#    hammer appraised at 31,421 (above a 25,000 locker_limit) got sold by eloot
-#    for a 25,000 note when eloot sell ran first.
+#    last, not first -- otherwise eloot would be racing this script to sell the
+#    very items it's trying to protect, using the exact same limits.
 
 require 'yaml'
 
-UserVars.fizzdusk[:locker_limit]    = 25000 if UserVars.fizzdusk[:locker_limit].nil?
 UserVars.fizzdusk[:locker_location] = 15948 if UserVars.fizzdusk[:locker_location].nil?
+
+# Loaded once and reused for both the sell_exclude filter and the appraise limits
+# below, so the per-character eloot.yaml only gets read from disk a single time.
+def eloot_settings
+  path = File.join(DATA_DIR, XMLData.game, Char.name, "eloot.yaml")
+  settings = YAML.load_file(path) rescue nil
+  settings.is_a?(Hash) ? settings : {}
+end
+
+ELOOT_SETTINGS = eloot_settings
 
 # Same word-boundary match eloot.lic's own build_word_boundary_regexes uses against
 # ELoot.data.sell_exclude_regex -- entries are used as raw regex source, not
 # literal-escaped, matching eloot's own behavior exactly (an entry that's itself
 # regex-flavored works the same way here as it does for eloot). Items you've told
 # eloot to never sell (kept wands, crafting components, etc) shouldn't get blindly
-# appraised/possibly locker-stowed here either. Returns nil (match everything) if
-# the per-character eloot.yaml doesn't exist yet or has no sell_exclude entries.
-def eloot_sell_exclude_regex
-  path = File.join(DATA_DIR, XMLData.game, Char.name, "eloot.yaml")
-  settings = YAML.load_file(path) rescue nil
-  list = settings.is_a?(Hash) ? Array(settings[:sell_exclude]) : []
+# appraised/possibly locker-stowed here either. nil (match everything) if there's
+# no sell_exclude list.
+def eloot_sell_exclude_regex(settings)
+  list = Array(settings[:sell_exclude])
   return nil if list.empty?
   Regexp.union(list.map { |entry| /\b#{entry}\b/i })
 end
 
-SELL_EXCLUDE_REGEX = eloot_sell_exclude_regex
+SELL_EXCLUDE_REGEX = eloot_sell_exclude_regex(ELOOT_SETTINGS)
+
+# eloot's own "too valuable to auto-sell, flag as a locker/review candidate" cutoff
+# (ELoot::Sell.appraise: `amount > limit`) -- reusing it here instead of a separate
+# fizzdusk locker_limit means the two can't drift out of sync with each other. Falls
+# back to eloot's own defaults (14999/34999) if the per-character eloot.yaml doesn't
+# exist yet.
+GEMSHOP_LIMIT  = (ELOOT_SETTINGS[:sell_appraise_gemshop]  || 14_999).to_i
+PAWNSHOP_LIMIT = (ELOOT_SETTINGS[:sell_appraise_pawnshop] || 34_999).to_i
 
 # Pulls the item to hand, asks the current shop to appraise it, and returns it to
 # the lootsack. Returns the appraised silver value, or 0 if nothing was quoted.
@@ -89,19 +101,19 @@ else
     unless regular.empty?
       start_script("go2", ["pawnshop"])
       wait_while { running?("go2") }
-      regular.each { |item| valuable << item if appraise_value(item) >= UserVars.fizzdusk[:locker_limit] }
+      regular.each { |item| valuable << item if appraise_value(item) > PAWNSHOP_LIMIT }
     end
 
     unless jewelry.empty?
       start_script("go2", ["gemshop"])
       wait_while { running?("go2") }
-      jewelry.each { |item| valuable << item if appraise_value(item) >= UserVars.fizzdusk[:locker_limit] }
+      jewelry.each { |item| valuable << item if appraise_value(item) > GEMSHOP_LIMIT }
     end
 
     if valuable.empty?
-      echo "lockerstow: nothing appraised at or above #{UserVars.fizzdusk[:locker_limit]} silver."
+      echo "lockerstow: nothing appraised above your eloot sell_appraise limits."
     else
-      echo "lockerstow: #{valuable.length} item(s) appraised at or above #{UserVars.fizzdusk[:locker_limit]} silver, moving to locker."
+      echo "lockerstow: #{valuable.length} item(s) appraised above your eloot sell_appraise limits, moving to locker."
       start_script("go2", [UserVars.fizzdusk[:locker_location].to_s])
       wait_while { running?("go2") }
       fput "open locker"
