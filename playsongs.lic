@@ -34,6 +34,12 @@
   to add others. Any pause -- that auto-pause or a manual "playsongs
   pause" -- stows the instrument, and resuming gets it back out.
 
+  Bigshot auto-pause is opt-in per character, since it only matters if the
+  instrument occupies a hand you need free while hunting (spellcasting
+  classes) -- a one-handed instrument doesn't bother a bard. Turn it on
+  with:
+          ;vars set playsongs_pause_for_bigshot=true
+
   Usage:  ;playsongs                (defaults to tambourine, played soft)
           ;playsongs lute           (play a different instrument instead)
           ;playsongs tambourine fast   (style: soft (default), fast, or slow)
@@ -196,6 +202,13 @@ module Playsongs
     CATEGORY_HINTS.find { |_category, names| names.any? { |n| instrument_name.include?(n) } }&.first
   end
 
+  # Whether Bigshot hunting needs a free hand this instrument would
+  # otherwise occupy is character-dependent -- a one-handed instrument (e.g.
+  # tambourine) doesn't get in a bard's way, but a sorcerer/wizard needs a
+  # hand open for spellcasting. Per-character opt-in, same mechanism as the
+  # default instrument: ;vars set playsongs_pause_for_bigshot=true
+  PAUSE_FOR_BIGSHOT = UserVars.playsongs_pause_for_bigshot.to_s =~ /^(true|yes|1)$/i ? true : false
+
   # Scripts that need your hands/attention -- playsongs auto-pauses (same as
   # a manual "playsongs pause") for as long as a running script matches one
   # of these, and auto-resumes once it finishes, no command needed either
@@ -203,7 +216,7 @@ module Playsongs
   # otherwise at least one of the script's args must match the pattern.
   EXCLUSIVE_SCRIPTS = [
     { name: 'eloot', arg_pattern: /sell/i } # only "eloot sell", not eloot alone
-  ]
+  ] + (PAUSE_FOR_BIGSHOT ? [{ name: 'bigshot', arg_pattern: nil }] : [])
 
   STATS_FILE = File.join(DATA_DIR, XMLData.game, Char.name, 'playsongs_stats.yaml')
 
@@ -345,6 +358,7 @@ module Playsongs
     respond "Keeps playing an instrument (#{STYLE} style) in a loop, timing each song and counting rank-ups."
     respond "Also runs PLAY SKILL every #{SKILL_CHECK_INTERVAL} completed songs and saves the real skill level as a second confirmation of the rank-up count."
     respond "Auto-pauses while eloot sell is running (not eloot alone), no command needed."
+    respond "Bigshot auto-pause: #{PAUSE_FOR_BIGSHOT ? 'ON' : 'off'} (toggle with ;vars set playsongs_pause_for_bigshot=true/false) -- only matters for classes that need a hand free to cast while hunting."
     respond "Any pause stows the instrument; resuming gets it back out."
     respond ''
     respond 'Commands (typed directly, no leading semicolon):'
