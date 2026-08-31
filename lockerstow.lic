@@ -5,27 +5,26 @@
 # check -- so you can verify the appraisal/locker logic actually works without
 # waiting to get that loaded down first.
 #
-# 1. Runs ;eloot sell first (same as your prerest scripts) to clear out anything
-#    eloot already knows how to sell.
-# 2. Whatever's left in your lootsack (Vars.lootsack) -- minus anything on your
-#    eloot sell_exclude list (data/GSIV/<char>/eloot.yaml, per-character) -- gets
+# 1. Whatever's in your lootsack (Vars.lootsack) -- minus anything on your eloot
+#    sell_exclude list (data/GSIV/<char>/eloot.yaml, per-character) -- gets
 #    appraised: jewelry at the gemshop, everything else at the pawnshop. Anything
 #    appraised at or above UserVars.fizzdusk[:locker_limit] gets moved into the
 #    locker at UserVars.fizzdusk[:locker_location] (trunk first, falling back to
 #    the locker itself if the trunk's full). Same settings fizzdusk.lic itself
 #    uses, so this is a faithful dry run of what would happen automatically
 #    mid-arena.
+# 2. Only THEN runs ;eloot sell, to clear out whatever's left. This has to happen
+#    last -- eloot's own sell_appraise_pawnshop/sell_appraise_gemshop thresholds
+#    (34999/14999 by default) are higher than a typical locker_limit, so running
+#    eloot sell first would sell anything in between right out from under this
+#    script before it ever got a chance to appraise it. Confirmed live: a war
+#    hammer appraised at 31,421 (above a 25,000 locker_limit) got sold by eloot
+#    for a 25,000 note when eloot sell ran first.
 
 require 'yaml'
 
 UserVars.fizzdusk[:locker_limit]    = 25000 if UserVars.fizzdusk[:locker_limit].nil?
 UserVars.fizzdusk[:locker_location] = 15948 if UserVars.fizzdusk[:locker_location].nil?
-
-if Script.exists?("eloot")
-  Script.run("eloot", "sell")
-else
-  echo "lockerstow: eloot isn't installed, skipping the sell step."
-end
 
 # Same word-boundary match eloot.lic's own build_word_boundary_regexes uses against
 # ELoot.data.sell_exclude_regex -- entries are used as raw regex source, not
@@ -74,45 +73,48 @@ sack = GameObj.inv.find { |i| i.name =~ /#{Regexp.escape(Vars.lootsack)}/i }
 
 if sack.nil? || sack.contents.to_a.empty?
   echo "lockerstow: #{Vars.lootsack} is empty, nothing to appraise."
-  exit
+else
+  items = sack.contents.dup
+  if SELL_EXCLUDE_REGEX
+    excluded, items = items.partition { |item| item.name =~ SELL_EXCLUDE_REGEX }
+    echo "lockerstow: skipping #{excluded.length} item(s) on your eloot sell_exclude list." unless excluded.empty?
+  end
+
+  if items.empty?
+    echo "lockerstow: nothing left to appraise after eloot exclusions."
+  else
+    jewelry, regular = items.partition { |item| item.type?('jewelry') }
+    valuable = []
+
+    unless regular.empty?
+      start_script("go2", ["pawnshop"])
+      wait_while { running?("go2") }
+      regular.each { |item| valuable << item if appraise_value(item) >= UserVars.fizzdusk[:locker_limit] }
+    end
+
+    unless jewelry.empty?
+      start_script("go2", ["gemshop"])
+      wait_while { running?("go2") }
+      jewelry.each { |item| valuable << item if appraise_value(item) >= UserVars.fizzdusk[:locker_limit] }
+    end
+
+    if valuable.empty?
+      echo "lockerstow: nothing appraised at or above #{UserVars.fizzdusk[:locker_limit]} silver."
+    else
+      echo "lockerstow: #{valuable.length} item(s) appraised at or above #{UserVars.fizzdusk[:locker_limit]} silver, moving to locker."
+      start_script("go2", [UserVars.fizzdusk[:locker_location].to_s])
+      wait_while { running?("go2") }
+      fput "open locker"
+      fput "open my #{Vars.lootsack}"
+      valuable.each { |item| stow_in_locker(item) }
+    end
+  end
 end
 
-items = sack.contents.dup
-if SELL_EXCLUDE_REGEX
-  excluded, items = items.partition { |item| item.name =~ SELL_EXCLUDE_REGEX }
-  echo "lockerstow: skipping #{excluded.length} item(s) on your eloot sell_exclude list." unless excluded.empty?
+if Script.exists?("eloot")
+  Script.run("eloot", "sell")
+else
+  echo "lockerstow: eloot isn't installed, skipping the sell step."
 end
 
-if items.empty?
-  echo "lockerstow: nothing left to appraise after eloot exclusions."
-  exit
-end
-
-jewelry, regular = items.partition { |item| item.type?('jewelry') }
-
-valuable = []
-
-unless regular.empty?
-  start_script("go2", ["pawnshop"])
-  wait_while { running?("go2") }
-  regular.each { |item| valuable << item if appraise_value(item) >= UserVars.fizzdusk[:locker_limit] }
-end
-
-unless jewelry.empty?
-  start_script("go2", ["gemshop"])
-  wait_while { running?("go2") }
-  jewelry.each { |item| valuable << item if appraise_value(item) >= UserVars.fizzdusk[:locker_limit] }
-end
-
-if valuable.empty?
-  echo "lockerstow: nothing appraised at or above #{UserVars.fizzdusk[:locker_limit]} silver."
-  exit
-end
-
-echo "lockerstow: #{valuable.length} item(s) appraised at or above #{UserVars.fizzdusk[:locker_limit]} silver, moving to locker."
-start_script("go2", [UserVars.fizzdusk[:locker_location].to_s])
-wait_while { running?("go2") }
-fput "open locker"
-fput "open my #{Vars.lootsack}"
-valuable.each { |item| stow_in_locker(item) }
 echo "lockerstow: done."
