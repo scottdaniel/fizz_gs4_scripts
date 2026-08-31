@@ -31,7 +31,8 @@
 
   Auto-pauses (no command needed) for as long as ;eloot sell is running
   (not eloot alone), and resumes once it finishes -- see EXCLUSIVE_SCRIPTS
-  to add others.
+  to add others. Any pause -- that auto-pause or a manual "playsongs
+  pause" -- stows the instrument, and resuming gets it back out.
 
   Usage:  ;playsongs                (defaults to tambourine, played soft)
           ;playsongs lute           (play a different instrument instead)
@@ -344,6 +345,7 @@ module Playsongs
     respond "Keeps playing an instrument (#{STYLE} style) in a loop, timing each song and counting rank-ups."
     respond "Also runs PLAY SKILL every #{SKILL_CHECK_INTERVAL} completed songs and saves the real skill level as a second confirmation of the rank-up count."
     respond "Auto-pauses while eloot sell is running (not eloot alone), no command needed."
+    respond "Any pause stows the instrument; resuming gets it back out."
     respond ''
     respond 'Commands (typed directly, no leading semicolon):'
     respond '  playsongs stats    - print stats for every instrument tracked so far'
@@ -389,6 +391,10 @@ module Playsongs
   # wherever it landed.
   def self.get_instrument
     fput "get my #{INSTRUMENT}"
+  end
+
+  def self.stow_instrument
+    fput "stow my #{INSTRUMENT}" if checkleft(INSTRUMENT) || checkright(INSTRUMENT)
   end
 
   # INSTRUMENT belongs in the left hand so the right hand stays free for a
@@ -519,7 +525,7 @@ module Playsongs
   # warns about exactly that otherwise).
   before_dying {
     UpstreamHook.remove('playsongs-trigger') if UpstreamHook.list.include?('playsongs-trigger')
-    fput "stow my #{INSTRUMENT}" if checkleft(INSTRUMENT) || checkright(INSTRUMENT)
+    stow_instrument
   }
 
   if ensure_in_left_hand
@@ -532,6 +538,7 @@ module Playsongs
       if @blocking_script != blocker
         echo "Pausing while #{blocker} is running."
         @blocking_script = blocker
+        stow_instrument
       end
       sleep PAUSE_POLL_SECONDS
       next
@@ -541,6 +548,7 @@ module Playsongs
     end
 
     if paused?
+      stow_instrument unless @was_paused
       @was_paused = true
       sleep PAUSE_POLL_SECONDS
       next
