@@ -2,25 +2,45 @@
 
 Attempts to cast non-attack spells from your collection of scrolls,
 vellums, parchments, etc. Utilizes separate containers to manage vibrant scrolls.
-Will rummage in your scrollsack for matching spell numbers, upon finding a vibrant scroll it will place,
-that scroll in your vibrantscrollsack unless usage of vibrant scrolls is toggled on.
+Checks your reserve slots first (invoked directly, no need to hold them), then
+will rummage in your scrollsack for matching spell numbers, upon finding a vibrant
+scroll it will place that scroll in your vibrantscrollsack unless usage of vibrant
+scrolls is toggled on.
 
 Invoke/casts normal scrolls.
 Incants spells absorbed from vibrant scrolls.
-    
+
 Originally based on the work by Sulien on scrollbuff.lic, this script has been
 almost entirely re-written to allow:
 Invoking from either hand,
 Support for vibrant ink scrolls,
+Support for reserved scrolls,
 Support for self-cast utility spells,
 Configurable durations for stackable or refreshable spells
 
     author: Nihiladrem (todd.estabrooks@gmail.com)
       game: gs
       tags: invoke, scroll, scrolls, hunting
-      version: 0.1.12
+      version: 0.1.14
 
     CHANGELOG:
+    0.1.14 - 0.1.13's reserve check re-tested every reserve item against every spell
+             number, even ones already matched to a different spell -- spammy with a
+             couple of reserve items and a long spell list (e.g. one item matched to
+             spell 211, then re-tried and failing against every other spell requested
+             after it). A reserve item's spell doesn't change during a run, so matches
+             are now cached and reused instead of re-tested.
+    0.1.13 - Added support for scrolls sitting in reserve slots (see ;reserve list) --
+             these are invoked directly by id and never need to be picked up or put
+             away. findscroll now checks reserve before rummaging any container, and
+             returns [scrolltype, scrollid] (plus an already-completed invoke result
+             for reserve hits, so castscroll doesn't invoke it twice) instead of
+             leaving the caller to guess scrollid from checkright/checkleft -- which
+             also fixes findscroll silently returning nil when vibrant use was toggled
+             on and the very first rummage already found a normal (non-vibrant) scroll.
+             The "That spell is not on the ..." retry in castscroll now also figures
+             out which hand (if any) actually holds the failed scroll instead of
+             assuming it's always in the right hand.
     0.1.12 - The 0.1.9 "no progress" cap check read timeleft right after casting, before
              the duration feed had caught up, so it mistook a normal update lag for
              hitting the real cap: it broke out of the incant loop early, then the outer
@@ -67,6 +87,11 @@ Configurable durations for stackable or refreshable spells
 =end
 
 debug = false
+## spell_num (string) => reserve item id, once a reserve scroll's fixed spell
+## has been confirmed by invoking it. Reset each run since $ vars persist for
+## the life of the Lich process. Global (not local) so findscroll, a top-level
+## def, can see it without threading it through every call.
+$scrollbuff3_reserve_matches = {}
 
 def echofmt(*lines)
     maxlen = lines.map(&:length).max + 1
@@ -139,8 +164,10 @@ end
 SpellNums = script.vars[1..-1]
 if SpellNums.nil? || SpellNums.count == 0 || SpellNums.first.start_with?("h")
     echofmt "Attempts to cast defensive or self-cast spells from your collection of scrolls, vellums, parchments, etc.",
-			"Will rummage in your scrollsack for matching spell numbers, upon finding a vibrant scroll it will place",
-			"that scroll in your vibrantscrollsack unless usage of vibrant scrolls is toggled on.",
+			"Checks your reserve slots first -- reserved scrolls are invoked directly without needing",
+			"to be held -- then will rummage in your scrollsack for matching spell numbers, upon finding",
+			"a vibrant scroll it will place that scroll in your vibrantscrollsack unless usage of vibrant",
+			"scrolls is toggled on.",
             "",
             "Before running, you must set your scrollsack and vibrantscrollsack with a command like:",
             "   ;vars set scrollsack=pouch",
@@ -285,58 +312,81 @@ fput "open ##{scrollsack.id}"
 fput "open ##{vibrantscrollsack.id}"
 
 def findscroll(spell_num, scrollsack, vibrantscrollsack)
+	## Reserved scrolls can be invoked directly without ever being in hand.
+	## Try those first before rummaging through the containers. Each reserve
+	## item's spell is fixed for the life of the run, so once we've matched
+	## one to a spell number, reuse that match instead of re-testing it
+	## against every other spell number too.
+	fput("reserve list") if GameObj.reserve.nil?
+	if (known_id = $scrollbuff3_reserve_matches[spell_num.to_s])
+		return ["reserve", known_id, nil]
+	end
+	already_matched = $scrollbuff3_reserve_matches.values
+	GameObj.reserve.to_a.find_all { |o| o.noun =~ /scroll|paper|papyrus|parchment|vellum|palimpsest/i }.reject { |o| already_matched.include?(o.id) }.each do |candidate|
+		result = dothis "invoke #{spell_num} from ##{candidate.id}", /As you begin your invocation the ink leaps from the page and seeps into your skin.|and gesture to invoke the|That spell is not on the|Invoke from what/
+		next if result =~ /That spell is not on the|Invoke from what/
+		$scrollbuff3_reserve_matches[spell_num.to_s] = candidate.id
+		return ["reserve", candidate.id, result]
+	end
+
         result = dothis "rummage in ##{scrollsack.id} spell #{spell_num}", /You rummage through .+ (and remove .+ with .+ scrawled upon it|but can't seem to locate anything with that spell on it)/
-		
+
         if result =~ /but can't seem to locate anything with that spell on it/
 			if CharSettings["scrollbuff-usevibranttoggle"] == "True"
 				result = dothis "rummage in ##{vibrantscrollsack.id} spell #{spell_num}", /You rummage through .+ (and remove .+ with .+ scrawled upon it|but can't seem to locate anything with that spell on it)/
 				if result =~ /but can't seem to locate anything with that spell on it/
 					if debug == true; echo "Missing scroll for #{spell_num}";end
-					return "none"				
+					return ["none", nil, nil]
 				else
-					return "vibrant"
+					scrollid = checkright ? GameObj.right_hand.id : GameObj.left_hand.id
+					return ["vibrant", scrollid, nil]
 				end
 			end
-		
+
 			if debug == true; echo "Missing scroll for #{spell_num}";end
-			return "none"
-			
-		elsif !(CharSettings["scrollbuff-usevibranttoggle"] == "True")
-			scrolltype = ""
-			until (scrolltype == "normal" || scrolltype == "none")
-				if checkright =~ /scroll|paper|papyrus|parchment|vellum|palimpsest/			
-					result = dothistimeout "read ##{GameObj.right_hand.id}", 0.5, /vibrant/
-					if result =~ /vibrant/
-						fput "put right in ##{vibrantscrollsack.id}"
-						scrolltype="vibrant"
+			return ["none", nil, nil]
+
+		else
+			## The first rummage already succeeded and put a scroll in hand.
+			scrolltype = "normal"
+			unless CharSettings["scrollbuff-usevibranttoggle"] == "True"
+				scrolltype = ""
+				until (scrolltype == "normal" || scrolltype == "none")
+					if checkright =~ /scroll|paper|papyrus|parchment|vellum|palimpsest/			
+						result = dothistimeout "read ##{GameObj.right_hand.id}", 0.5, /vibrant/
+						if result =~ /vibrant/
+							fput "put right in ##{vibrantscrollsack.id}"
+							scrolltype="vibrant"
+						else
+							scrolltype="normal"
+						end
+					elsif checkleft =~ /scroll|paper|papyrus|parchment|vellum|palimpsest/
+						result = dothistimeout "read ##{GameObj.left_hand.id}", 0.5, /vibrant/
+						if result =~ /vibrant/
+							fput "put left in ##{vibrantscrollsack.id}"
+							scrolltype="vibrant"						
+						else
+							scrolltype="normal"
+						end
 					else
-						scrolltype="normal"
+						if debug == true; echo "Error, no scroll found in hands when expected";end
+						exit
 					end
-				elsif checkleft =~ /scroll|paper|papyrus|parchment|vellum|palimpsest/
-					result = dothistimeout "read ##{GameObj.left_hand.id}", 0.5, /vibrant/
-					if result =~ /vibrant/
-						fput "put left in ##{vibrantscrollsack.id}"
-						scrolltype="vibrant"						
-					else
-						scrolltype="normal"
-					end
-				else
-					if debug == true; echo "Error, no scroll found in hands when expected";end
-					exit
-				end
-				if !(scrolltype == "normal")
-					result = dothis "rummage in ##{scrollsack.id} spell #{spell_num}", /You rummage through .+ (and remove .+ with .+ scrawled upon it|but can't seem to locate anything with that spell on it)/
-					if result =~ /but can't seem to locate anything with that spell on it/
-						if debug == true; echo "missing scroll";end
-						scrolltype = "none"
+					if !(scrolltype == "normal")
+						result = dothis "rummage in ##{scrollsack.id} spell #{spell_num}", /You rummage through .+ (and remove .+ with .+ scrawled upon it|but can't seem to locate anything with that spell on it)/
+						if result =~ /but can't seem to locate anything with that spell on it/
+							if debug == true; echo "missing scroll";end
+							scrolltype = "none"
+						end
 					end
 				end
 			end
-			return scrolltype
+			scrollid = (scrolltype == "none") ? nil : (checkright ? GameObj.right_hand.id : GameObj.left_hand.id)
+			return [scrolltype, scrollid, nil]
 		end
 end
 
-def castscroll(spell_num, scrollid, scrollsack, vibrantscrollsack, stackto_duration, refreshto_duration, scrolltype)
+def castscroll(spell_num, scrollid, scrollsack, vibrantscrollsack, stackto_duration, refreshto_duration, scrolltype, prefetched_result = nil)
 
 	if (Spell[spell_num].stackable?)
 		if debug == true; echo "#{spell_num} is stackable";end
@@ -352,7 +402,12 @@ def castscroll(spell_num, scrollid, scrollsack, vibrantscrollsack, stackto_durat
 			if Spell[spell_num].timeleft >= target_duration; echo "Spell already above target duration"; break; end
 			waitcastrt?
 			waitrt?							
-			result = dothis "invoke #{spell_num} from ##{scrollid}", /As you begin your invocation the ink leaps from the page and seeps into your skin.|and gesture to invoke the|That spell is not on the|Invoke from what/
+			if prefetched_result
+				result = prefetched_result
+				prefetched_result = nil
+			else
+				result = dothis "invoke #{spell_num} from ##{scrollid}", /As you begin your invocation the ink leaps from the page and seeps into your skin.|and gesture to invoke the|That spell is not on the|Invoke from what/
+			end
 			if result =~ /and gesture to invoke the/
 				fput "cast"
 			elsif result =~ /As you begin your invocation the ink leaps from the page and seeps into your skin./
@@ -383,18 +438,23 @@ def castscroll(spell_num, scrollid, scrollsack, vibrantscrollsack, stackto_durat
 					end
 				end
 			elsif result =~ /That spell is not on the|Invoke from what/
-				if scrolltype == "vibrant"
-					fput "put right in ##{vibrantscrollsack.id}"
-				else
-					fput "put right in ##{scrollsack.id}"
-				end
-					scrolltype = findscroll(spell_num, scrollsack, vibrantscrollsack)
-					target_duration = (scrolltype == "vibrant") ? Spell[spell_num].max_duration.to_f : stackto_duration.to_f
-					if checkright =~ /scroll|paper|papyrus|parchment|vellum|palimpsest/
-						scrollid = GameObj.right_hand.id
-					elsif checkleft =~ /scroll|paper|papyrus|parchment|vellum|palimpsest/
-						scrollid = GameObj.left_hand.id
+				if scrolltype == "reserve"
+					## Never picked up -- nothing to put away.
+				elsif scrolltype == "vibrant"
+					if GameObj.right_hand.id == scrollid
+						fput "put right in ##{vibrantscrollsack.id}"
+					elsif GameObj.left_hand.id == scrollid
+						fput "put left in ##{vibrantscrollsack.id}"
 					end
+				else
+					if GameObj.right_hand.id == scrollid
+						fput "put right in ##{scrollsack.id}"
+					elsif GameObj.left_hand.id == scrollid
+						fput "put left in ##{scrollsack.id}"
+					end
+				end
+				scrolltype, scrollid, prefetched_result = findscroll(spell_num, scrollsack, vibrantscrollsack)
+				target_duration = (scrolltype == "vibrant") ? Spell[spell_num].max_duration.to_f : stackto_duration.to_f
 			end
 			waitcastrt?
 			waitrt?					
@@ -407,7 +467,7 @@ def castscroll(spell_num, scrollid, scrollsack, vibrantscrollsack, stackto_durat
 			if Spell[spell_num].timeleft < refreshto_duration.to_f
 				waitcastrt?
 				waitrt?							
-				result = dothis "invoke #{spell_num} from ##{scrollid}", /As you begin your invocation the ink leaps from the page and seeps into your skin.|and gesture to invoke the|That spell is not on the|Invoke from what/
+				result = prefetched_result || dothis("invoke #{spell_num} from ##{scrollid}", /As you begin your invocation the ink leaps from the page and seeps into your skin.|and gesture to invoke the|That spell is not on the|Invoke from what/)
 				if result =~ /and gesture to invoke the/
 					fput "cast"
 				elsif result =~ /As you begin your invocation the ink leaps from the page and seeps into your skin./
@@ -428,7 +488,7 @@ def castscroll(spell_num, scrollid, scrollsack, vibrantscrollsack, stackto_durat
 		if debug == true;echo "Scroll is not stackable or refreshable, casting once";end
 				waitcastrt?
 				waitrt?							
-				result = dothis "invoke #{spell_num} from ##{scrollid}", /As you begin your invocation the ink leaps from the page and seeps into your skin.|and gesture to invoke the|That spell is not on the|Invoke from what/
+				result = prefetched_result || dothis("invoke #{spell_num} from ##{scrollid}", /As you begin your invocation the ink leaps from the page and seeps into your skin.|and gesture to invoke the|That spell is not on the|Invoke from what/)
 				if result =~ /and gesture to invoke the/
 					fput "cast"
 				elsif result =~ /As you begin your invocation the ink leaps from the page and seeps into your skin./
@@ -445,8 +505,8 @@ def castscroll(spell_num, scrollid, scrollsack, vibrantscrollsack, stackto_durat
 	end
      
 	## The scroll may have already been put away (e.g. by the "That spell is
-	## not on the ..." retry above), so only put it away here if it's still
-	## actually in a hand.
+	## not on the ..." retry above), or may have come from reserve and never
+	## been picked up at all -- only put it away here if it's still in a hand.
 	if [GameObj.right_hand.id, GameObj.left_hand.id].include?(scrollid)
 		if scrolltype == "vibrant"
 			fput "put ##{scrollid} in ##{vibrantscrollsack.id}"
@@ -465,20 +525,14 @@ SpellNumsNeeded.each do |spell_num|
 
     if spell && !(spell.type =~ /attack/)
 
-		scrolltype = findscroll(spell_num, scrollsack, vibrantscrollsack)
+		scrolltype, scrollid, prefetched_result = findscroll(spell_num, scrollsack, vibrantscrollsack)
 
-		if scrolltype == "none"
+		if scrolltype == "none" || scrollid.nil?
 			echo "No scroll found for #{spell_num} #{spell.name}, skipping."
 			spells_not_found << spell_num
-		elsif checkright =~ /scroll|paper|papyrus|parchment|vellum|palimpsest/
-			castscroll(spell_num, GameObj.right_hand.id, scrollsack, vibrantscrollsack, stackto_duration, refreshto_duration, scrolltype)
-			spells_cast << spell_num
-        elsif checkleft =~ /scroll|paper|papyrus|parchment|vellum|palimpsest/
-			castscroll(spell_num, GameObj.left_hand.id, scrollsack, vibrantscrollsack, stackto_duration, refreshto_duration, scrolltype)
-			spells_cast << spell_num
 		else
-			echo "Error: Found a scroll for #{spell_num} but couldn't recognize it in hand, noun might not be supported."
-			spells_not_found << spell_num
+			castscroll(spell_num, scrollid, scrollsack, vibrantscrollsack, stackto_duration, refreshto_duration, scrolltype, prefetched_result)
+			spells_cast << spell_num
 		end
 
     else
