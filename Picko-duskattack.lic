@@ -103,15 +103,42 @@ UserVars.tdusk[:no_absorb_boosts] = false if UserVars.tdusk[:no_absorb_boosts].n
 
 boosted_exp = false
 
+# Sends cmd and collects every line for up to timeout seconds (or until stop_pattern
+# matches), same shape as cast_and_collect but without the endroll parsing -- used
+# for reading back a container listing.
+def collect_lines(cmd, timeout, stop_pattern = nil)
+  text_lines = []
+  put cmd
+  end_time = Time.now.to_f + timeout
+  loop do
+    line = get?
+    if line.nil?
+      sleep 0.1
+    else
+      text_lines << line
+      break if stop_pattern && line =~ stop_pattern
+    end
+    break if Time.now.to_f >= end_time
+  end
+  text_lines.join(' ')
+end
+
+# Full wand names ("crystal wand", "electrum wand", ...) currently sitting in
+# `container`, parsed straight from a fresh "look in my #{container}" instead of
+# GameObj's cached container contents -- confirmed live that cache can't be trusted:
+# "open my sack" answered "That is already open." (no listing, since it was already
+# open), GameObj's contents were never (re)populated from that, and the script
+# reported "no fresh wands left in my sack" against a sack a manual `l in my sack`
+# showed still held 25 of them, e.g. "Wands [25]: a crystal wand (5), a copper wand
+# (2), ...". Re-parsing this way every call is a little more chatty but can't go stale.
+def wand_names_in(container)
+  text = collect_lines("look in my #{container}", 3, /Total items:|you see nothing|is closed/i)
+  text.scan(/\b(?:a|an)\s+([a-z][a-z' -]*?wand)\b/i).flatten.map(&:strip).uniq
+end
+
 # Makes sure a fresh (non-fire, if avoid_fire) wand is in hand. Returns false (and
 # leaves an echo) if the fresh wand container turns out to have no usable wand-noun
 # items left.
-#
-# Targets a specific item by ##id instead of "get wand from my sack" -- the sack
-# holds many *different* wand types (crystal, copper, starstone, etc, all sharing
-# the generic noun "wand"), so the plain-text get is ambiguous. That ambiguity was
-# previously read as "empty" (dothistimeout just timed out on a response it didn't
-# recognize), when the sack in fact still had two dozen wands in it.
 def get_fresh_wand(avoid_fire = false)
   held = GameObj.right_hand
   if held.noun =~ /#{WAND_NAME}/i
@@ -123,16 +150,17 @@ def get_fresh_wand(avoid_fire = false)
   end
 
   fput "open my #{FRESH_WAND_CONTAINER}"
-  sack = GameObj.inv.find { |i| i.name =~ /#{Regexp.escape(FRESH_WAND_CONTAINER)}/i }
-  candidates = sack ? sack.contents.to_a.select { |item| item.noun =~ /#{WAND_NAME}/i } : []
-  candidates = candidates.reject { |item| item.name =~ FIRE_WAND_PATTERN } if avoid_fire
-  wand = candidates.first
-  unless wand
+  names = wand_names_in(FRESH_WAND_CONTAINER)
+  names = names.reject { |n| n =~ FIRE_WAND_PATTERN } if avoid_fire
+  name = names.first
+  unless name
     echo "Picko-duskattack: no fresh#{avoid_fire ? ' non-fire' : ''} wands left in my #{FRESH_WAND_CONTAINER}."
     return false
   end
 
-  dothistimeout "get ##{wand.id}", 3, /You remove|You slip|You slide|You get/
+  # A full name ("get crystal wand from my sack") is already unambiguous -- no need
+  # for id-targeting.
+  dothistimeout "get #{name} from my #{FRESH_WAND_CONTAINER}", 3, /You remove|You slip|You slide|You get/
   GameObj.right_hand.noun =~ /#{WAND_NAME}/i ? true : false
 end
 
@@ -210,9 +238,19 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
         # spam-cast mode -- same recastability check tdusk.lic/fizzdusk.lic already
         # use elsewhere. Exclusive with the attack this tick so a same-tick RT from
         # casting 515 can't collide with cast_and_collect's own put right after.
+        #
+        # 515's cast RT is 0 seconds, so checkrt/checkcastrt hitting 0 again is no
+        # help distinguishing "already cast, ready for the next action" from "hasn't
+        # even been sent yet" -- only Spell[515].active? tells them apart, and that
+        # flag doesn't flip true instantly. A naked fput returns immediately, so the
+        # very next 0.1s tick could see !Spell[515].active? still false and fire a
+        # second "incant 515" before the first one's confirmation text ever arrived
+        # -- confirmed live: two "incant 515" sent back-to-back with no response in
+        # between, and the second one overextended Picko into shock. cast_and_collect
+        # blocks until the roundtime line actually comes back, closing that window.
         if Spell[515].affordable? && !Spell[599].active? && !Spell[597].active? && !Spell[515].active?
           put "stance offensive" if stance != "offensive"
-          fput "incant 515"
+          cast_and_collect("incant 515")
         elsif Spell[spell_num].affordable? && (heat_resistant || checkmana >= EVOKE_903_MANA_COST)
           # 515 (Rapid Fire) is fizzdusk's own opener515 -- while it's up, cast RT
           # is short enough that stance-dancing (and waiting on an attack) is just
