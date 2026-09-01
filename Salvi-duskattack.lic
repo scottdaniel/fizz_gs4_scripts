@@ -1,27 +1,16 @@
 # Salvi-duskattack.lic
-# Cleric stun-into-DoT routine (experimental, last two rounds of 9/1): incant 302
-# (Smite) in stance offensive while affordable. If it stuns or knocks the target
-# down, immediately follows up with 309 (Condemn -- a damage-over-time spell that
-# should get a bonus from the stunned/prone condition), then holds stance
-# defensive for a flat FOLLOWUP_WAIT_SECONDS instead of the usual wait_for_attack,
-# giving the DoT a moment to work instead of instantly re-engaging. If 302
-# doesn't proc a stun/knockdown (or 309 isn't affordable), it's the normal
-# stance-dance: step into offensive for the cast, then back to defensive,
-# waiting (wait_for_attack) for the monster to actually swing back -- or up to
-# ATTACK_WAIT_TIMEOUT seconds, whichever comes first -- before acting again.
-#
-# Condemn banks an empowered charge every 10 normal casts (tracked server-side,
-# not by this script) -- queried live via the `spell` command ("You have stored
-# enough holy magic for N out of M empowered casts of Condemn..."). Whenever a
-# charge is banked (N > 0), the follow-up uses it (prep 309, then evoke) instead
-# of a plain incant. Empowered is likely more mana-intensive than a plain cast --
-# untested here, so if it turns out too expensive, the normal out-of-mana chain
-# below (pray -> symbol of mana -> 1700) just picks up the slack same as always.
-#
-# Once both prayer and symbol of mana are exhausted, instead of standing idle it
-# spams incant 1700 (fizz-level.lic's own fallback spell for "nothing else
-# affordable" -- costs no mana at all) while waiting for 302 to become affordable
-# again, stance-dancing around each cast the same way.
+# Cleric stance-dance routine: alternates incant 302 (Smite) and incant 306 (Holy
+# Bolt) in stance offensive for maximum damage while either's affordable, then
+# falls back through the same out-of-mana chain the other *-duskattack.lic scripts
+# use: pray up to 3 times (UserVars.fizzdusk[:praycurrent], shared/reset once per
+# arena run by fizzdusk.lic itself), then try symbol of mana if it's off cooldown
+# (never used while on cooldown, so it never costs deeds). No wand fallback here --
+# once both of those are exhausted, instead of standing idle it spams incant 1700
+# (fizz-level.lic's own fallback spell for "nothing else affordable" -- costs no
+# mana at all) while waiting for 302/306 to become affordable again, stance-dancing
+# around each cast the same way, stepping into offensive for the moment it takes to
+# act, then waiting (wait_for_attack) for the monster to actually swing back -- or
+# up to ATTACK_WAIT_TIMEOUT seconds, whichever comes first -- before acting again.
 #
 # If a wound (nerve/head wound, concussion, etc.) blocks spellcasting outright --
 # "You can't think clearly enough to prepare a spell!", no roundtime at all --
@@ -54,6 +43,11 @@ UserVars.fizzdusk[:no_absorb_boosts] = false if UserVars.fizzdusk[:no_absorb_boo
 
 boosted_exp = false
 
+# Alternated in offensive stance, whichever's affordable this tick (falls through
+# to the other one if the one up next isn't affordable, rather than stalling the
+# alternation on a spell that just can't be cast right now).
+ATTACK_SPELLS = [302, 306].freeze unless defined?(ATTACK_SPELLS)
+
 # Spell[302].affordable? only reflects the spell's base registered cost -- against
 # a living target it actually costs 4 mana, so this is checked as a backstop
 # alongside affordable? below (same pattern as Picko-duskattack.lic's
@@ -61,10 +55,12 @@ boosted_exp = false
 # affordable? doesn't know about).
 SPELL_302_MANA_COST = 4 unless defined?(SPELL_302_MANA_COST)
 
-# True if 302 is both known-affordable and actually castable against a living
-# target at the current mana.
-def spell_302_affordable?
-  Spell[302].affordable? && checkmana >= SPELL_302_MANA_COST
+# True if spell_num is both known-affordable and, for 302 specifically, actually
+# castable against a living target at the current mana.
+def spell_affordable?(spell_num)
+  return false unless Spell[spell_num].affordable?
+  return checkmana >= SPELL_302_MANA_COST if spell_num == 302
+  true
 end
 
 # How long to wait in stance defensive for the monster to actually attack before
@@ -72,11 +68,6 @@ end
 # monster did anything -- it just means your own cast roundtime cleared -- so
 # without this, defensive stance barely gets held at all.
 ATTACK_WAIT_TIMEOUT = 5 unless defined?(ATTACK_WAIT_TIMEOUT)
-
-# Flat wait after a stun/knockdown-triggered Condemn follow-up, instead of the
-# usual wait_for_attack -- the DoT needs a moment to work, not an instant
-# re-engage.
-FOLLOWUP_WAIT_SECONDS = 10 unless defined?(FOLLOWUP_WAIT_SECONDS)
 
 # Waits for a line that looks like a monster attacking you -- GS4 attack messages
 # aimed at the player consistently end in "...you!" regardless of the specific verb
@@ -91,15 +82,6 @@ end
 # stance-dance loop just kept re-attempting the same cast forever with nothing
 # to show for it, burning the full 5s cast_and_collect timeout every single tick.
 CANT_CAST_WOUNDED = /can't think clearly enough to prepare a spell/i unless defined?(CANT_CAST_WOUNDED)
-
-# 302's cast result text -- either counts as a proc worth chaining Condemn into.
-STUN_OR_DOWN_REGEX = /is stunned|knocked to the ground/i unless defined?(STUN_OR_DOWN_REGEX)
-
-# "You have stored enough holy magic for N out of M empowered casts of Condemn,
-# with X/10 toward your next charge." -- the game tracks empowerment progress
-# server-side, so this just reads the current count back rather than this
-# script keeping its own cast tally.
-EMPOWERED_CONDEMN_REGEX = /stored enough holy magic for (\d+) out of \d+ empowered casts? of Condemn/i unless defined?(EMPOWERED_CONDEMN_REGEX)
 
 # Sends cast_cmd and collects every line through the roundtime message, since a
 # single dothistimeout match only sees the first matching line, not the whole
@@ -122,95 +104,33 @@ def cast_and_collect(cast_cmd)
   text_lines.join(' ')
 end
 
-# The `spell` command's full response, start and end -- used to scope exactly
-# what gets captured (and hidden, see empowered_condemn_charges) from it.
-SPELL_LISTING_START = /^Your spell lists:/ unless defined?(SPELL_LISTING_START)
-SPELL_LISTING_END   = /^Type SPELL HELP for more options\.?/ unless defined?(SPELL_LISTING_END)
-
-# @return [Integer] banked empowered Condemn charges available right now (0 if
-#   none, or if the listing didn't mention Condemn at all). Uses
-#   Lich::Util.issue_command with quiet: true so the full spell listing -- long,
-#   and irrelevant to the fight -- doesn't get dumped to the game window every
-#   single time this gets checked; only the one line actually needed gets
-#   captured and searched, nothing is displayed.
-def empowered_condemn_charges
-  lines = Lich::Util.issue_command(
-    "spell", SPELL_LISTING_START, SPELL_LISTING_END,
-    include_end: true, timeout: 5, quiet: true, usexml: true
-  )
-  m = lines.join(' ').match(EMPOWERED_CONDEMN_REGEX)
-  m ? m[1].to_i : 0
-end
-
-# Casts Condemn (309) at npc -- empowered (prep + evoke) if a charge is banked,
-# otherwise a plain incant -- and waits out its roundtime. Doesn't touch stance
-# or the post-cast wait; the caller (cast_smite_and_condemn) handles that since
-# this follow-up gets a different wait than a normal cast.
-def cast_condemn(npc)
-  if empowered_condemn_charges > 0
-    fput "prep 309"
-    waitcastrt?
-    waitrt?
-    fput "evoke ##{npc.id}"
-  else
-    fput "incant 309"
-  end
-  waitcastrt?
-  waitrt?
-end
-
 # Casts spell_num in offensive stance, then either heals (if a wound just
 # blocked casting entirely) or waits out the cast's own roundtime, then returns
-# to defensive and waits for the monster's swing. Used for the 1700 no-mana
-# fallback.
+# to defensive and waits for the monster's swing. Shared by the main 302/306
+# attack and the 1700 no-mana fallback -- either can hit the same wall.
 def cast_and_stance_dance(spell_num)
   put "stance offensive" if stance != "offensive"
   text = cast_and_collect("incant #{spell_num}")
 
   if text =~ CANT_CAST_WOUNDED
+    # --spellcast only touches wounds that would prevent spellcasting (see
+    # ;eherbs help), so it heals exactly what's blocking casting instead of
+    # burning herbs on cosmetic wounds that don't matter here.
     Script.run("eherbs", "--spellcast")
   else
     # The cast's own roundtime (both "Cast Roundtime" and the follow-on
     # "Roundtime:") hasn't cleared yet the instant cast_and_collect returns --
     # a stance change sent right into that RT just gets queued ("...wait N
-    # seconds.") and, confirmed live, never actually lands. Waiting it out
-    # first makes the change land immediately and reliably instead of being
-    # silently lost.
+    # seconds.") and, confirmed live, never actually lands: the very next loop
+    # tick sees stance still offensive and re-enters this branch before the
+    # queued change ever fires. Waiting it out first makes the change land
+    # immediately and reliably instead of being silently lost.
     waitrt?
     waitcastrt?
   end
 
   put "stance defensive"
   wait_for_attack
-end
-
-# Casts 302 in offensive stance, chains into Condemn (309) if it procs a
-# stun/knockdown and 309 is affordable, then handles stance/waiting -- a flat
-# FOLLOWUP_WAIT_SECONDS after a Condemn follow-up, the usual wait_for_attack
-# otherwise. --spellcast eherbs the same as cast_and_stance_dance if a wound
-# blocks the 302 cast outright.
-def cast_smite_and_condemn(npc)
-  put "stance offensive" if stance != "offensive"
-  text = cast_and_collect("incant 302")
-
-  if text =~ CANT_CAST_WOUNDED
-    Script.run("eherbs", "--spellcast")
-    put "stance defensive"
-    wait_for_attack
-    return
-  end
-
-  waitrt?
-  waitcastrt?
-
-  if text =~ STUN_OR_DOWN_REGEX && Spell[309].affordable?
-    cast_condemn(npc)
-    put "stance defensive"
-    sleep FOLLOWUP_WAIT_SECONDS
-  else
-    put "stance defensive"
-    wait_for_attack
-  end
 end
 
 while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /animated/ }
@@ -221,6 +141,7 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
 
     put "target ##{npc.id}"
     fput "release" if checkprep != "None"
+    spell_index = 0
 
     #start main attack routine here
     loop do
@@ -254,8 +175,12 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
       end
 
       if checkrt == 0 && checkcastrt == 0 && npc.status !~ /dead|gone/
-        if spell_302_affordable?
-          cast_smite_and_condemn(npc)
+        spell_num = ATTACK_SPELLS[spell_index % ATTACK_SPELLS.length]
+        spell_num = ATTACK_SPELLS[(spell_index + 1) % ATTACK_SPELLS.length] unless spell_affordable?(spell_num)
+
+        if spell_affordable?(spell_num)
+          cast_and_stance_dance(spell_num)
+          spell_index += 1
         elsif UserVars.fizzdusk[:praycurrent] < 3
           # Bump the counter before sending the command, not after -- fizzdusk's
           # wave-transition trigger can force this whole script to be killed and
@@ -270,7 +195,7 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
           fput "symbol of mana"
         else
           # Prays exhausted, symbol of mana unavailable (known but on cooldown, or
-          # not known at all), and out of mana for 302 -- 1700 costs no mana at
+          # not known at all), and out of mana for 302/306 -- 1700 costs no mana at
           # all (it's fizz-level.lic's own fallback for when nothing else is
           # affordable), so keep chipping away with it while mana recovers instead
           # of just standing there.
