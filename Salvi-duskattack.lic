@@ -122,30 +122,23 @@ def cast_and_collect(cast_cmd)
   text_lines.join(' ')
 end
 
-# Sends cmd and collects every line for up to timeout seconds -- same shape as
-# cast_and_collect but with no roundtime/wound stop condition, used for reading
-# back the `spell` command's charge-status listing.
-def collect_lines(cmd, timeout)
-  text_lines = []
-  put cmd
-  end_time = Time.now.to_f + timeout
-  loop do
-    line = get?
-    if line.nil?
-      sleep 0.1
-    else
-      text_lines << line
-    end
-    break if Time.now.to_f >= end_time
-  end
-  text_lines.join(' ')
-end
+# The `spell` command's full response, start and end -- used to scope exactly
+# what gets captured (and hidden, see empowered_condemn_charges) from it.
+SPELL_LISTING_START = /^Your spell lists:/ unless defined?(SPELL_LISTING_START)
+SPELL_LISTING_END   = /^Type SPELL HELP for more options\.?/ unless defined?(SPELL_LISTING_END)
 
 # @return [Integer] banked empowered Condemn charges available right now (0 if
-#   none, or if the listing didn't mention Condemn at all).
+#   none, or if the listing didn't mention Condemn at all). Uses
+#   Lich::Util.issue_command with quiet: true so the full spell listing -- long,
+#   and irrelevant to the fight -- doesn't get dumped to the game window every
+#   single time this gets checked; only the one line actually needed gets
+#   captured and searched, nothing is displayed.
 def empowered_condemn_charges
-  text = collect_lines("spell", 3)
-  m = text.match(EMPOWERED_CONDEMN_REGEX)
+  lines = Lich::Util.issue_command(
+    "spell", SPELL_LISTING_START, SPELL_LISTING_END,
+    include_end: true, timeout: 5, quiet: true, usexml: true
+  )
+  m = lines.join(' ').match(EMPOWERED_CONDEMN_REGEX)
   m ? m[1].to_i : 0
 end
 
