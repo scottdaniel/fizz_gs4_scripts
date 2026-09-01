@@ -1,0 +1,91 @@
+# Salvi-duskattack.lic
+# Cleric stance-dance routine: incant 302 (Holy Bolt) in stance offensive for
+# maximum damage while affordable, then fall back through the same out-of-mana
+# chain the other *-duskattack.lic scripts use: pray up to 3 times (UserVars.
+# fizzdusk[:praycurrent], shared/reset once per arena run by fizzdusk.lic itself),
+# then try symbol of mana if it's off cooldown (never used while on cooldown, so it
+# never costs deeds). No wand fallback here -- once both of those are exhausted it
+# just holds stance defensive, stepping into offensive for the moment it takes to
+# act, then waiting (wait_for_attack) for the monster to actually swing back -- or
+# up to ATTACK_WAIT_TIMEOUT seconds, whichever comes first -- before acting again.
+
+# How long to wait in stance defensive for the monster to actually attack before
+# giving up and acting anyway. checkrt hitting 0 again isn't a real signal the
+# monster did anything -- it just means your own cast roundtime cleared -- so
+# without this, defensive stance barely gets held at all.
+ATTACK_WAIT_TIMEOUT = 5 unless defined?(ATTACK_WAIT_TIMEOUT)
+
+# Waits for a line that looks like a monster attacking you -- GS4 attack messages
+# aimed at the player consistently end in "...you!" regardless of the specific verb
+# ("bites you!", "claws at you!", etc) -- or ATTACK_WAIT_TIMEOUT seconds, whichever
+# comes first. Passive: doesn't send anything, just watches incoming lines.
+def wait_for_attack
+  dothistimeout nil, ATTACK_WAIT_TIMEOUT, /you!\s*$/i
+end
+
+# Sends cast_cmd and collects every line through the roundtime message, since a
+# single dothistimeout match only sees the first matching line, not the whole
+# result block.
+def cast_and_collect(cast_cmd)
+  text_lines = []
+  put cast_cmd
+  end_time = Time.now.to_f + 5
+  loop do
+    line = get?
+    if line.nil?
+      sleep 0.1
+    else
+      text_lines << line
+      break if line =~ /Roundtime: \d+ sec|Cast Roundtime \d+ Seconds?\.?/i
+    end
+    break if Time.now.to_f >= end_time
+  end
+  text_lines.join(' ')
+end
+
+while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /animated/ }
+  GameObj.targets
+         .reject {|foe| foe.status =~ /dead|gone/ }
+         .sample
+         .tap { |npc|
+
+    put "target ##{npc.id}"
+    fput "release" if checkprep != "None"
+
+    #start main attack routine here
+    loop do
+      break if Room.current.id != 24550
+      break if npc.status =~ /dead|gone/
+      waitrt? if npc.status !~ /dead|gone/
+      waitcastrt? if npc.status !~ /dead|gone/
+
+      if checkrt == 0 && checkcastrt == 0 && npc.status !~ /dead|gone/
+        if Spell[302].affordable?
+          put "stance offensive" if stance != "offensive"
+          cast_and_collect("incant 302")
+          put "stance defensive"
+          wait_for_attack
+        elsif UserVars.fizzdusk[:praycurrent] < 3
+          # Bump the counter before sending the command, not after -- fizzdusk's
+          # wave-transition trigger can force this whole script to be killed and
+          # restarted mid-fight, and if that lands between fput returning and the
+          # counter increment running, the increment would be lost, letting a
+          # restarted instance pray a 4th time.
+          UserVars.fizzdusk[:praycurrent] += 1
+          fput "pray"
+        elsif Spell[9813].known? && !Effects::Cooldowns.active?("Symbol of Mana")
+          # Off cooldown only -- Effects::Cooldowns tracks this directly, so this
+          # never touches deeds (same check bigshot.lic/BlackArts.lic use).
+          fput "symbol of mana"
+        else
+          put "stance defensive" if stance != "defensive"
+          wait_for_attack
+        end
+      end
+      sleep 0.1
+    end
+    #end main attack routine here
+  }
+end
+Script.start("foreach", "in room; look item") if UserVars.fizzdusk[:wave_number] != 25
+Script.start("foreach", "in room; get item; stow item") if UserVars.fizzdusk[:wave_number] == 25
