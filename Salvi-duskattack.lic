@@ -1,13 +1,14 @@
 # Salvi-duskattack.lic
-# Cleric stance-dance routine: incant 302 (Holy Bolt) in stance offensive for
-# maximum damage while affordable, then fall back through the same out-of-mana
-# chain the other *-duskattack.lic scripts use: pray up to 3 times (UserVars.
-# fizzdusk[:praycurrent], shared/reset once per arena run by fizzdusk.lic itself),
-# then try symbol of mana if it's off cooldown (never used while on cooldown, so it
-# never costs deeds). No wand fallback here -- once both of those are exhausted it
-# just holds stance defensive, stepping into offensive for the moment it takes to
-# act, then waiting (wait_for_attack) for the monster to actually swing back -- or
-# up to ATTACK_WAIT_TIMEOUT seconds, whichever comes first -- before acting again.
+# Cleric stance-dance routine: alternates incant 302 (Smite) and incant 306 (Holy
+# Bolt) in stance offensive for maximum damage while either's affordable, then
+# falls back through the same out-of-mana chain the other *-duskattack.lic scripts
+# use: pray up to 3 times (UserVars.fizzdusk[:praycurrent], shared/reset once per
+# arena run by fizzdusk.lic itself), then try symbol of mana if it's off cooldown
+# (never used while on cooldown, so it never costs deeds). No wand fallback here --
+# once both of those are exhausted it just holds stance defensive, stepping into
+# offensive for the moment it takes to act, then waiting (wait_for_attack) for the
+# monster to actually swing back -- or up to ATTACK_WAIT_TIMEOUT seconds, whichever
+# comes first -- before acting again.
 #
 # Boost redemption at "must rest" mirrors Picko-duskattack.lic: gated on fizzdusk's
 # own UserVars.fizzdusk[:boost_lte]/[:boost_absorb] toggles (both off by default --
@@ -34,6 +35,11 @@ UserVars.fizzdusk[:no_lte_boosts]    = false if UserVars.fizzdusk[:no_lte_boosts
 UserVars.fizzdusk[:no_absorb_boosts] = false if UserVars.fizzdusk[:no_absorb_boosts].nil?
 
 boosted_exp = false
+
+# Alternated in offensive stance, whichever's affordable this tick (falls through
+# to the other one if the one up next isn't affordable, rather than stalling the
+# alternation on a spell that just can't be cast right now).
+ATTACK_SPELLS = [302, 306].freeze unless defined?(ATTACK_SPELLS)
 
 # How long to wait in stance defensive for the monster to actually attack before
 # giving up and acting anyway. checkrt hitting 0 again isn't a real signal the
@@ -77,6 +83,7 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
 
     put "target ##{npc.id}"
     fput "release" if checkprep != "None"
+    spell_index = 0
 
     #start main attack routine here
     loop do
@@ -110,9 +117,22 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
       end
 
       if checkrt == 0 && checkcastrt == 0 && npc.status !~ /dead|gone/
-        if Spell[302].affordable?
+        spell_num = ATTACK_SPELLS[spell_index % ATTACK_SPELLS.length]
+        spell_num = ATTACK_SPELLS[(spell_index + 1) % ATTACK_SPELLS.length] unless Spell[spell_num].affordable?
+
+        if Spell[spell_num].affordable?
           put "stance offensive" if stance != "offensive"
-          cast_and_collect("incant 302")
+          cast_and_collect("incant #{spell_num}")
+          spell_index += 1
+          # The cast's own roundtime (both "Cast Roundtime" and the follow-on
+          # "Roundtime:") hasn't cleared yet the instant cast_and_collect returns
+          # -- a stance change sent right into that RT just gets queued ("...wait
+          # N seconds.") and, confirmed live, never actually lands: the very next
+          # loop tick sees stance still offensive and re-enters this branch before
+          # the queued change ever fires. Waiting it out first makes the change
+          # land immediately and reliably instead of being silently lost.
+          waitrt?
+          waitcastrt?
           put "stance defensive"
           wait_for_attack
         elsif UserVars.fizzdusk[:praycurrent] < 3
