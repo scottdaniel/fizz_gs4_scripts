@@ -12,6 +12,11 @@
 # act, then waiting (wait_for_attack) for the monster to actually swing back -- or
 # up to ATTACK_WAIT_TIMEOUT seconds, whichever comes first -- before acting again.
 #
+# If a wound (nerve/head wound, concussion, etc.) blocks spellcasting outright --
+# "You can't think clearly enough to prepare a spell!", no roundtime at all --
+# fires ;eherbs --spellcast (only touches wounds that would prevent spellcasting,
+# leaving cosmetic ones alone) instead of retrying the same failed cast forever.
+#
 # Boost redemption at "must rest" mirrors Picko-duskattack.lic: gated on fizzdusk's
 # own UserVars.fizzdusk[:boost_lte]/[:boost_absorb] toggles (both off by default --
 # see ;fizzdusk help), boost longterm tried first when both are on, falling through
@@ -72,9 +77,16 @@ def wait_for_attack
   dothistimeout nil, ATTACK_WAIT_TIMEOUT, /you!\s*$/i
 end
 
+# GS4 shows this when a wound (nerve/head wound, concussion, etc.) blocks
+# spellcasting outright -- no roundtime at all, confirmed live: the normal
+# stance-dance loop just kept re-attempting the same cast forever with nothing
+# to show for it, burning the full 5s cast_and_collect timeout every single tick.
+CANT_CAST_WOUNDED = /can't think clearly enough to prepare a spell/i unless defined?(CANT_CAST_WOUNDED)
+
 # Sends cast_cmd and collects every line through the roundtime message, since a
 # single dothistimeout match only sees the first matching line, not the whole
-# result block.
+# result block. Also stops early on CANT_CAST_WOUNDED, which never gets a
+# roundtime line at all.
 def cast_and_collect(cast_cmd)
   text_lines = []
   put cast_cmd
@@ -85,11 +97,40 @@ def cast_and_collect(cast_cmd)
       sleep 0.1
     else
       text_lines << line
-      break if line =~ /Roundtime: \d+ sec|Cast Roundtime \d+ Seconds?\.?/i
+      break if line =~ /Roundtime: \d+ sec|Cast Roundtime \d+ Seconds?\.?/i || line =~ CANT_CAST_WOUNDED
     end
     break if Time.now.to_f >= end_time
   end
   text_lines.join(' ')
+end
+
+# Casts spell_num in offensive stance, then either heals (if a wound just
+# blocked casting entirely) or waits out the cast's own roundtime, then returns
+# to defensive and waits for the monster's swing. Shared by the main 302/306
+# attack and the 1700 no-mana fallback -- either can hit the same wall.
+def cast_and_stance_dance(spell_num)
+  put "stance offensive" if stance != "offensive"
+  text = cast_and_collect("incant #{spell_num}")
+
+  if text =~ CANT_CAST_WOUNDED
+    # --spellcast only touches wounds that would prevent spellcasting (see
+    # ;eherbs help), so it heals exactly what's blocking casting instead of
+    # burning herbs on cosmetic wounds that don't matter here.
+    Script.run("eherbs", "--spellcast")
+  else
+    # The cast's own roundtime (both "Cast Roundtime" and the follow-on
+    # "Roundtime:") hasn't cleared yet the instant cast_and_collect returns --
+    # a stance change sent right into that RT just gets queued ("...wait N
+    # seconds.") and, confirmed live, never actually lands: the very next loop
+    # tick sees stance still offensive and re-enters this branch before the
+    # queued change ever fires. Waiting it out first makes the change land
+    # immediately and reliably instead of being silently lost.
+    waitrt?
+    waitcastrt?
+  end
+
+  put "stance defensive"
+  wait_for_attack
 end
 
 while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /animated/ }
@@ -138,20 +179,8 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
         spell_num = ATTACK_SPELLS[(spell_index + 1) % ATTACK_SPELLS.length] unless spell_affordable?(spell_num)
 
         if spell_affordable?(spell_num)
-          put "stance offensive" if stance != "offensive"
-          cast_and_collect("incant #{spell_num}")
+          cast_and_stance_dance(spell_num)
           spell_index += 1
-          # The cast's own roundtime (both "Cast Roundtime" and the follow-on
-          # "Roundtime:") hasn't cleared yet the instant cast_and_collect returns
-          # -- a stance change sent right into that RT just gets queued ("...wait
-          # N seconds.") and, confirmed live, never actually lands: the very next
-          # loop tick sees stance still offensive and re-enters this branch before
-          # the queued change ever fires. Waiting it out first makes the change
-          # land immediately and reliably instead of being silently lost.
-          waitrt?
-          waitcastrt?
-          put "stance defensive"
-          wait_for_attack
         elsif UserVars.fizzdusk[:praycurrent] < 3
           # Bump the counter before sending the command, not after -- fizzdusk's
           # wave-transition trigger can force this whole script to be killed and
@@ -170,12 +199,7 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
           # all (it's fizz-level.lic's own fallback for when nothing else is
           # affordable), so keep chipping away with it while mana recovers instead
           # of just standing there.
-          put "stance offensive" if stance != "offensive"
-          cast_and_collect("incant 1700")
-          waitrt?
-          waitcastrt?
-          put "stance defensive"
-          wait_for_attack
+          cast_and_stance_dance(1700)
         end
       end
       sleep 0.1
