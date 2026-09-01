@@ -1,0 +1,12 @@
+#Salvrest
+#gets ready for resting
+
+module Salvrest
+
+#fput "store weapon"
+#fput "ready 2weap"
+
+#temporary spellup pill for tonight (8/31), revert tomorrow
+multifput "stow all", "get bottle", "turn bottle", "eat pill", "stow bottle" if Spell[401].timeleft < 30
+
+end #End of module

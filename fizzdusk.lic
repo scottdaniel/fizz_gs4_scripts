@@ -1481,7 +1481,7 @@ if variable[1].downcase == "help"
     ;e echo UserVars.fizzdusk[:fizzrest_me] = true
 
     Resting Script to Use - Default is fizzrest (Current: #{UserVars.fizzdusk[:resting_script]})
-    ;e echo UserVars.fizzdusk[:resting_script] = 'Salvirest'
+    ;e echo UserVars.fizzdusk[:resting_script] = 'Salvrest'
 
     Starts ;playsongs between runs and stops it (stowing the instrument) right
     before heading back into the arena - Default is set to TRUE (Current: #{UserVars.fizzdusk[:playsongs_me]})
