@@ -41,6 +41,21 @@ boosted_exp = false
 # alternation on a spell that just can't be cast right now).
 ATTACK_SPELLS = [302, 306].freeze unless defined?(ATTACK_SPELLS)
 
+# Spell[302].affordable? only reflects the spell's base registered cost -- against
+# a living target it actually costs 4 mana, so this is checked as a backstop
+# alongside affordable? below (same pattern as Picko-duskattack.lic's
+# EVOKE_903_MANA_COST, for the same reason: incant flavor/target-specific costs
+# affordable? doesn't know about).
+SPELL_302_MANA_COST = 4 unless defined?(SPELL_302_MANA_COST)
+
+# True if spell_num is both known-affordable and, for 302 specifically, actually
+# castable against a living target at the current mana.
+def spell_affordable?(spell_num)
+  return false unless Spell[spell_num].affordable?
+  return checkmana >= SPELL_302_MANA_COST if spell_num == 302
+  true
+end
+
 # How long to wait in stance defensive for the monster to actually attack before
 # giving up and acting anyway. checkrt hitting 0 again isn't a real signal the
 # monster did anything -- it just means your own cast roundtime cleared -- so
@@ -118,9 +133,9 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
 
       if checkrt == 0 && checkcastrt == 0 && npc.status !~ /dead|gone/
         spell_num = ATTACK_SPELLS[spell_index % ATTACK_SPELLS.length]
-        spell_num = ATTACK_SPELLS[(spell_index + 1) % ATTACK_SPELLS.length] unless Spell[spell_num].affordable?
+        spell_num = ATTACK_SPELLS[(spell_index + 1) % ATTACK_SPELLS.length] unless spell_affordable?(spell_num)
 
-        if Spell[spell_num].affordable?
+        if spell_affordable?(spell_num)
           put "stance offensive" if stance != "offensive"
           cast_and_collect("incant #{spell_num}")
           spell_index += 1
