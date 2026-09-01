@@ -136,7 +136,11 @@ module Playsongs
     /The music moves slower and slower until finally, with a last hovering beat, it fades away\. You look up from your \S+ and smile\./,
     /The air suddenly stills as you halt your whirling rhythm as suddenly as you began, silencing your \S+\./,
     /You complete the last beat with a flourish, lowering your \S+\./,
-    /With quiet grace, you allow your \S+'s melody to drop off, ever softer, until there is nothing but the intense silence left in its wake\./
+    /With quiet grace, you allow your \S+'s melody to drop off, ever softer, until there is nothing but the intense silence left in its wake\./,
+    # Confirmed live: without this, play_and_track's read loop never sees a
+    # STOP_REGEX match and just hangs forever after a song actually ended --
+    # playsongs looked "running" but never played again.
+    /You bring your quiet performance to a close with three descending harmonics; these last notes ring on, barely heard, as you let your arms fall to your sides\./
   )
 
   RESTART_PAUSE_SECONDS = 3
