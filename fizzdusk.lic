@@ -242,7 +242,7 @@ UserVars.fizzdusk[:fizzrest_me]     = true      if UserVars.fizzdusk[:fizzrest_m
 UserVars.fizzdusk[:playsongs_me]   = true      if UserVars.fizzdusk[:playsongs_me].nil?
 UserVars.fizzdusk[:fizzprep_me]    = true      if UserVars.fizzdusk[:fizzprep_me].nil?
 UserVars.fizzdusk[:fizzprep_script] = 'fizzprep' if UserVars.fizzdusk[:fizzprep_script].nil?
-UserVars.fizzdusk[:pause_me]       = true      if UserVars.fizzdusk[:pause_me].nil?
+UserVars.fizzdusk[:pause_me]       = false     if UserVars.fizzdusk[:pause_me].nil?
 UserVars.fizzdusk[:enhancive_me]   = false     if UserVars.fizzdusk[:enhancive_me].nil?
 UserVars.fizzdusk[:high_ds]        = false     if UserVars.fizzdusk[:high_ds].nil?
 UserVars.fizzdusk[:attack_script]  = false     if UserVars.fizzdusk[:attack_script].nil?
@@ -252,7 +252,7 @@ UserVars.fizzdusk[:broadcast]      = true      if UserVars.fizzdusk[:broadcast].
 UserVars.fizzdusk[:lootpackage]    = true      if UserVars.fizzdusk[:lootpackage].nil?
 UserVars.fizzdusk[:open_lootsack]  = false     if UserVars.fizzdusk[:open_lootsack].nil?
 UserVars.fizzdusk[:maxvitals]      = false     if UserVars.fizzdusk[:maxvitals].nil?
-UserVars.fizzdusk[:experience]     = false     if UserVars.fizzdusk[:experience].nil?
+UserVars.fizzdusk[:experience]     = 5         if UserVars.fizzdusk[:experience].nil?
 UserVars.fizzdusk[:bardnode]       = true      if UserVars.fizzdusk[:bardnode].nil?
 UserVars.fizzdusk[:node]           = true      if UserVars.fizzdusk[:node].nil?
 UserVars.fizzdusk[:opener515]      = false     if UserVars.fizzdusk[:opener515].nil?
@@ -1487,8 +1487,9 @@ if variable[1].downcase == "help"
     Prep Script to Use - Default is fizzprep (Current: #{UserVars.fizzdusk[:fizzprep_script]})
     ;e echo UserVars.fizzdusk[:fizzprep_script] = 'PickoPrep'
 
-    Pauses Between Runs - Default is set to TRUE (Current: #{UserVars.fizzdusk[:pause_me]})
-    ;e echo UserVars.fizzdusk[:pause_me] = false
+    Pauses Between Runs, waiting on a manual ;u fizzdusk to continue - Default is set
+    to FALSE (Current: #{UserVars.fizzdusk[:pause_me]})
+    ;e echo UserVars.fizzdusk[:pause_me] = true
 
     Auto-Enable Enhancives via INV ENHANCIVE ON/OFF - Default is set to FALSE (Current: #{UserVars.fizzdusk[:enhancive_me]})
     ;e echo UserVars.fizzdusk[:enhancive_me] = true
@@ -1541,7 +1542,7 @@ if variable[1].downcase == "help"
     Whether to pause after each arena run to wait for max vitals before continuing. Default set to FALSE. (Current: #{UserVars.fizzdusk[:maxvitals]})
     ;e echo UserVars.fizzdusk[:maxvitals] = true
 
-    Whether to pause after each arena run to wait for experience to fall below set percent. Set to FALSE to disable. (Current: #{UserVars.fizzdusk[:experience]})
+    Whether to pause after each arena run to wait for experience to fall below set percent. Set to FALSE to disable. Default is 5 (Current: #{UserVars.fizzdusk[:experience]})
     Example: Set to 100 to hunt once no longer at saturated. (at must rest)
     Example: Set to  90 to hunt once no longer at must rest. (at numbed)
     ;e echo UserVars.fizzdusk[:experience] = 90
