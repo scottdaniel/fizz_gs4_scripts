@@ -5,10 +5,13 @@
 # use: pray up to 3 times (UserVars.fizzdusk[:praycurrent], shared/reset once per
 # arena run by fizzdusk.lic itself), then try symbol of mana if it's off cooldown
 # (never used while on cooldown, so it never costs deeds). No wand fallback here --
-# once both of those are exhausted it just holds stance defensive, stepping into
-# offensive for the moment it takes to act, then waiting (wait_for_attack) for the
-# monster to actually swing back -- or up to ATTACK_WAIT_TIMEOUT seconds, whichever
-# comes first -- before acting again.
+# once both of those are exhausted, instead of standing idle it spams incant 1700
+# (fizz-level.lic's own fallback spell for "nothing else affordable" -- costs
+# little to nothing) while waiting for mana to recover. Only once 1700 itself isn't
+# affordable does it finally just hold stance defensive, stepping into offensive
+# for the moment it takes to act, then waiting (wait_for_attack) for the monster to
+# actually swing back -- or up to ATTACK_WAIT_TIMEOUT seconds, whichever comes
+# first -- before acting again.
 #
 # Boost redemption at "must rest" mirrors Picko-duskattack.lic: gated on fizzdusk's
 # own UserVars.fizzdusk[:boost_lte]/[:boost_absorb] toggles (both off by default --
@@ -162,6 +165,18 @@ while GameObj.targets.any? {|npc| npc.status !~ /dead|gone/ && npc.name !~ /anim
           # Off cooldown only -- Effects::Cooldowns tracks this directly, so this
           # never touches deeds (same check bigshot.lic/BlackArts.lic use).
           fput "symbol of mana"
+        elsif Spell[1700].affordable?
+          # Prays exhausted, symbol of mana unavailable (known but on cooldown, or
+          # not known at all), and out of mana for 302/306 -- 1700 costs little to
+          # nothing (it's fizz-level.lic's own fallback for when nothing else is
+          # affordable), so keep chipping away with it while mana recovers instead
+          # of just standing there.
+          put "stance offensive" if stance != "offensive"
+          cast_and_collect("incant 1700")
+          waitrt?
+          waitcastrt?
+          put "stance defensive"
+          wait_for_attack
         else
           put "stance defensive" if stance != "defensive"
           wait_for_attack
