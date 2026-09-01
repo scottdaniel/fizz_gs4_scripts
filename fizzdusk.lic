@@ -1185,8 +1185,8 @@ end
 def stow_in_locker(item)
   fput "get ##{item.id}"
   waitrt?
-  result = dothistimeout("put ##{item.id} in my trunk", 5, /^You put|won't fit|can't fit|no room|too full|doesn't fit/i)
-  fput "put ##{item.id} in my locker" unless result.to_s =~ /^You put/i
+  result = dothistimeout("put ##{item.id} in trunk", 5, /^You put|won't fit|can't fit|no room|too full|doesn't fit/i)
+  fput "put ##{item.id} in locker" unless result.to_s =~ /^You put/i
 end
 
 # Reads eloot's own per-character sell_appraise_gemshop/sell_appraise_pawnshop
