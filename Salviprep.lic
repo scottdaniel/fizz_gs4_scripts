@@ -1,23 +1,26 @@
-#rubprep.lic
+#SalviPrep.lic
+#Cleric version of fizzprep.lic (Salvi).
 
-module Rubprep
+module SalviPrep
+
+# clear hands
+fput "put my #{GameObj.right_hand} in my cloak"
+fput "stow all"
 
 # rub stuff, but only if the spell isn't already active
-# keep the runestaff in hand for the extra mana; just clear the left hand
-fput "stow left" unless GameObj.left_hand.noun.nil?
-fput "ready weapon" if GameObj.right_hand.noun.nil?
-# this one requires MIU which I don't have
-#Script.run("qverb", "rub gold coin") unless Spell[1701].active?
-#pause 3
+Script.run("qverb", "rub gold coin") unless Spell[1701].active?
+pause 3
 Script.run("qverb", "rub small statue") unless Spell[1712].active?
 pause 3
 Script.run("qverb", "rub moonstone cube") unless Spell[1705].active?
 pause 3
-Script.run("qverb", "rub white crystal") unless Spell[509].active?
-pause 3
 Script.run("qverb", "rub quartz orb") unless Spell[1711].active?
+pause 3
+Script.run("qverb", "rub white crystal") unless Spell[509].active?
 pause 3
 Script.run("qverb", "rub black crystal") unless GameObj.loot.find { |i| i.name =~ /#{Char.name} disk/ }
 pause 3
+
+fput "ready weapon"
 
 end #End of module

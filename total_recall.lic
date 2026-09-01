@@ -1,0 +1,329 @@
+=begin
+  total_recall.lic
+
+  Walks every worn and held item, RECALLs each one, and prints a single
+  collated table of the spells and enhancive effects found on each -- the
+  spirit of:
+      ;foreach worn; recall item
+  (plus your held items), but it parses each RECALL response and tables the
+  results instead of dumping raw game text.
+
+  Usage:
+    ;total_recall              scan worn + held items, table spells/enhancives
+    ;total_recall all          also list items where nothing magical was found
+    ;total_recall raw          same scan, but also dump each raw RECALL response
+                               (use this to show me output the parser missed)
+    ;total_recall help         this message
+
+  Notes:
+    * RECALL only reveals spell/enhancive details for items you can actually
+      recall -- for bards that means loresung/unlocked items; other professions
+      get a pared-down view and may see little or nothing here.
+    * Items that RECALL can't speak to are listed under "Not recalled".
+    * The parser keys off the wording RECALL currently uses; if something is
+      obviously missed, run `;total_recall raw` and share the output so the
+      patterns can be tightened.
+
+    tags: inventory, enhancive, spells, utility, recall
+=end
+
+MODE = script.vars[1].to_s.strip.downcase
+RAW     = MODE == "raw"
+SHOWALL = MODE == "all" || RAW
+
+if MODE =~ /^(?:help|\?|-h|--help)$/
+  respond "total_recall -- RECALLs every worn/held item and tables the spells + enhancive effects."
+  respond ""
+  respond "  ;total_recall          scan worn + held items"
+  respond "  ;total_recall all      also list items with nothing found"
+  respond "  ;total_recall raw      also dump each raw RECALL response (for debugging)"
+  respond "  ;total_recall help     this message"
+  respond ""
+  respond "RECALL only details spells/enhancives for items you can recall (bards: loresung/unlocked"
+  respond "items). Other professions may see little here. Run 'raw' mode and share output if the"
+  respond "parser misses something."
+  exit
+end
+
+# RECALL can carry roundtime (loresong recall especially); keep the timeout
+# generous enough to catch the whole response after any RT text.
+RECALL_TIMEOUT = 7
+
+# First line of a RECALL response. Broad on purpose -- covers the bard loresong
+# recall opener, the non-bard property view, and the various "can't" replies.
+# A noun fallback is added per-item below.
+RECALL_START = %r{^(?:
+  As\ you\ recall |
+  You\ recall |
+  You\ (?:sense|feel|remember|focus) |
+  You\ (?:are\ unable\ to\ recall|don't\ recall|do\ not\ recall|can't\ recall|cannot\ recall) |
+  You(?:'ve|\ have)\ (?:never|not)\ |
+  You\ haven't\ (?:learned|loresung) |
+  You\ have\ no\ (?:memory|recollection) |
+  Recall\ what\? |
+  Roundtime
+)}xi
+
+CANT_RECALL = /unable to recall|don't recall|do not recall|can't recall|cannot recall|no (?:memory|recollection)|haven't (?:learned|loresung)|never (?:learned|loresung)|Recall what\?/i
+
+# --- classification patterns (keyed to RECALL's actual wording) --------------
+#   "It is currently imbedded with the Elemental Blade spell."
+#   "It is a magical item which could be imbedded with a spell."   (empty slot)
+SPELL_IMBED     = /imbedded with the (.+?) spell\b/i
+SPELL_EMPTYSLOT = /could be imbedded with a spell/i
+SPELL_CHARGES   = /^\s*It has (\d+) charges?\b/i
+
+#   "It is an enhancive item:"
+#     "It provides a boost of 3 to Sorcerous Lore - Necromancy Bonus."
+#     "This enhancement may not be used by adventurers who have not trained 10 times."
+ENH_BOOST = /provides a boost of (\d+) to (.+?)\.\s*$/i
+ENH_TRAIN = /may not be used by adventurers who have not trained (\d+) times/i
+
+def strip_xml(line)
+  line.to_s.gsub(/<[^>]+>/, "").gsub(/&(gt|lt|amp|quot|apos);/) { { "gt" => ">", "lt" => "<", "amp" => "&", "quot" => '"', "apos" => "'" }[$1] }.rstrip
+end
+
+# Word-wrap a cell to `width` columns, preserving any explicit newlines.
+def wrap_cell(text, width)
+  text.to_s.split("\n").flat_map { |seg|
+    seg = seg.strip
+    next [""] if seg.empty?
+    out = []
+    cur = ""
+    seg.split(/\s+/).each do |w|
+      if cur.empty?
+        cur = w
+      elsif cur.length + 1 + w.length <= width
+        cur = "#{cur} #{w}"
+      else
+        out << cur
+        cur = w
+      end
+      while cur.length > width
+        out << cur[0, width]
+        cur = cur[width..-1]
+      end
+    end
+    out << cur unless cur.empty?
+    out
+  }.join("\n")
+end
+
+def norm_name(name)
+  name.to_s.downcase.sub(/^(?:a|an|some|the)\s+/, "").strip
+end
+
+# Map of normalized item name -> concise worn location, from "inv location".
+def worn_location_map
+  lines = Lich::Util.issue_command(
+    "inventory location",
+    /^You are (?:currently wearing|not wearing)/,
+    /<prompt/,
+    include_end: false, timeout: 5, silent: true, usexml: true, quiet: true
+  )
+  map = {}
+  loc = nil
+  lines.map { |l| strip_xml(l) }.each do |l|
+    next if l.strip.empty?
+    if l =~ /^(?!You are)([A-Za-z][^:]*):\s*$/
+      loc = shorten_location($1)
+    elsif loc && l =~ /^\s+(?:an?|some|the)?\s*(.+?)\s*\((?:non)?functional\)\s*$/i
+      map[norm_name($1)] = loc
+    end
+  end
+  map
+end
+
+# "Attached to your wrist:" -> "wrist", "Hung from a single ear:" -> "ear",
+# "As a pin:" -> "pin", "Additionally equipped:" -> "equipped". Anything that
+# doesn't fit a known lead-in is just returned trimmed of its colon.
+def shorten_location(header)
+  s = header.strip.sub(/:\s*$/, "")
+  s = s.sub(/^(?:As an?|Additionally)\s+/i, "")
+       .sub(/^(?:Worn\s+)?(?:On|Over|Under|In|Around|Atop)\s+your\s+/i, "")
+       .sub(/^(?:Hung|Draped|Slung|Slipped|Pulled|Tied|Strapped|Secured|Fastened|Attached|Clipped|Worn)\s+(?:from|around|over|about|to|on)?\s*(?:a single|your|the)?\s*/i, "")
+  s.strip
+end
+
+def recall_item(item)
+  waitrt?
+  noun_fallback = /^(?:The|An?|Some)\s+.*\b#{Regexp.escape(item.noun.to_s)}\b/i
+  lines = Lich::Util.issue_command(
+    "recall ##{item.id}",
+    Regexp.union(RECALL_START, noun_fallback),
+    /<prompt/,
+    include_end: false, timeout: RECALL_TIMEOUT, silent: true, usexml: true, quiet: true
+  )
+  waitrt?
+  lines.map { |l| strip_xml(l) }.reject(&:empty?)
+end
+
+def parse_recall(lines)
+  spell      = nil    # imbedded spell name
+  spell_slot = false  # item can hold a spell but is currently empty
+  charges    = nil    # magical charges on the imbedded spell
+  boosts     = []     # [amount(Integer), target(String), train_req(Integer or nil)]
+
+  lines.each_with_index do |line, i|
+    if (m = line.match(SPELL_IMBED))
+      spell = m[1].strip
+    elsif line =~ SPELL_EMPTYSLOT
+      spell_slot = true
+    end
+    charges ||= $1.to_i if line =~ SPELL_CHARGES
+
+    next unless (m = line.match(ENH_BOOST))
+    amount = m[1].to_i
+    target = m[2].strip
+    train  = nil
+    # The training-requirement line, when present, always immediately follows.
+    train = $1.to_i if lines[i + 1].to_s =~ ENH_TRAIN
+    boosts << [amount, target, train]
+  end
+
+  { spell: spell, spell_slot: spell_slot, charges: charges, boosts: boosts }
+end
+
+def fmt_spells(parsed)
+  if parsed[:spell]
+    parsed[:charges] ? "#{parsed[:spell]} (#{parsed[:charges]}c)" : parsed[:spell]
+  elsif parsed[:spell_slot]
+    "(empty slot)"
+  else
+    "-"
+  end
+end
+
+def fmt_boosts(boosts)
+  return "-" if boosts.empty?
+  boosts.map { |amt, target, train|
+    s = "+#{amt} #{target}"
+    s << " [req #{train}]" if train
+    s
+  }.join("\n")
+end
+
+# --- gather targets --------------------------------------------------------
+worn = Array(GameObj.inv)
+held = []
+held << [GameObj.right_hand, "right hand"] if GameObj.right_hand&.id
+held << [GameObj.left_hand, "left hand"]   if GameObj.left_hand&.id
+
+loc_map = worn_location_map
+
+targets = []
+seen_ids = {}
+worn.each do |o|
+  next unless o&.id
+  next if seen_ids[o.id]
+  seen_ids[o.id] = true
+  where = loc_map[norm_name(o.name)] ||
+          loc_map.find { |k, _| k.start_with?(norm_name(o.name)) || k.include?(norm_name(o.name)) }&.last ||
+          "worn"
+  targets << [o, where]
+end
+held.each do |o, where|
+  next unless o&.id
+  next if seen_ids[o.id]
+  seen_ids[o.id] = true
+  targets << [o, where]
+end
+
+if targets.empty?
+  respond "total_recall: you aren't wearing or holding anything."
+  exit
+end
+
+respond "total_recall: recalling #{targets.size} item(s) (#{worn.size} worn, #{held.size} held)..."
+
+rows         = []
+all_parsed   = []
+not_recalled = []
+nothing      = []
+
+targets.each do |item, where|
+  lines = recall_item(item)
+
+  if RAW
+    respond ""
+    respond "--- RECALL #{item.name} (##{item.id}, #{where}) ---"
+    if lines.empty?
+      respond "  (no response)"
+    else
+      lines.each { |l| respond "  #{l}" }
+    end
+  end
+
+  if lines.empty?
+    not_recalled << "#{item.name} (no response)"
+    next
+  end
+  if lines.any? { |l| l =~ CANT_RECALL }
+    not_recalled << item.name
+    next
+  end
+
+  parsed = parse_recall(lines)
+  all_parsed << [item, where, parsed]
+
+  has_effects = parsed[:spell] || !parsed[:boosts].empty?
+  unless has_effects
+    nothing << item.name
+    next
+  end
+
+  rows << [item.name, where, fmt_spells(parsed), fmt_boosts(parsed[:boosts])]
+end
+
+# Column widths for the main table (content is word-wrapped to fit).
+W_ITEM = 22
+W_WORN = 10
+W_SPELL = 20
+W_ENH = 24
+
+respond ""
+if rows.empty?
+  respond "total_recall: no spells or enhancive effects found on any recalled item."
+else
+  wrapped = rows.map { |name, where, sp, enh|
+    [wrap_cell(name, W_ITEM), wrap_cell(where, W_WORN), wrap_cell(sp, W_SPELL), wrap_cell(enh, W_ENH)]
+  }
+  table = Terminal::Table.new(
+    :headings => ["Item", "Worn", "Spells", "Enhancive Effects"],
+    :rows     => wrapped,
+    :style    => { :all_separators => true }
+  )
+  Lich::Messaging.mono(table.to_s)
+
+  # Enhancive rollup: total boost per target across every recalled item.
+  totals = Hash.new(0)
+  all_parsed.each { |_item, _where, p| p[:boosts].each { |amt, target, _t| totals[target] += amt } }
+  unless totals.empty?
+    respond ""
+    roll = Terminal::Table.new(
+      :headings => ["Enhancive Target", "Total"],
+      :rows     => totals.sort_by { |target, amt| [-amt, target] }.map { |target, amt| [wrap_cell(target, 28), "+#{amt}"] },
+      :style    => { :all_separators => false }
+    )
+    roll.align_column(1, :right)
+    Lich::Messaging.mono(roll.to_s)
+  end
+
+  respond ""
+  spell_items = rows.count { |r| r[2] != "-" && r[2] != "(empty slot)" }
+  boost_count = all_parsed.sum { |_i, _w, p| p[:boosts].size }
+  respond "total_recall: #{rows.size} item(s) with effects -- #{spell_items} imbedded spell(s), #{boost_count} enhancive boost(s)."
+end
+
+unless not_recalled.empty?
+  respond ""
+  respond "Not recalled (#{not_recalled.size}): #{not_recalled.join(', ')}"
+end
+
+if SHOWALL && !nothing.empty?
+  respond ""
+  respond "Nothing found (#{nothing.size}): #{nothing.join(', ')}"
+elsif !nothing.empty?
+  respond ""
+  respond "total_recall: #{nothing.size} recalled item(s) had no spells/enhancives (use ';total_recall all' to list them)."
+end
