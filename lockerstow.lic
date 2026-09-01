@@ -11,9 +11,10 @@
 #    sell_appraise_gemshop/sell_appraise_pawnshop limit (data/GSIV/<char>/eloot.yaml,
 #    set via ;eloot setup -> Selling tab) gets moved into the locker at
 #    UserVars.fizzdusk[:locker_location] (trunk first, falling back to the locker
-#    itself if the trunk's full). Same cutoff fizzdusk.lic's own check_valuable_loot
-#    uses, so this is a faithful dry run of what would happen automatically
-#    mid-arena.
+#    itself if the trunk's full; walks into a booth via "go open" first unless
+#    UserVars.fizzdusk[:locker_is_house] is set). Same logic fizzdusk.lic's own
+#    check_valuable_loot uses, so this is a faithful dry run of what would happen
+#    automatically mid-arena.
 # 2. Only THEN runs ;eloot sell, to clear out whatever's left. This has to happen
 #    last, not first -- otherwise eloot would be racing this script to sell the
 #    very items it's trying to protect, using the exact same limits.
@@ -21,6 +22,7 @@
 require 'yaml'
 
 UserVars.fizzdusk[:locker_location] = 15948 if UserVars.fizzdusk[:locker_location].nil?
+UserVars.fizzdusk[:locker_is_house] = false if UserVars.fizzdusk[:locker_is_house].nil?
 
 # Loaded once and reused for both the sell_exclude filter and the appraise limits
 # below, so the per-character eloot.yaml only gets read from disk a single time.
@@ -65,6 +67,26 @@ def appraise_value(item)
   value = $1.delete(',').to_i if line.to_s =~ /([,0-9]+) (?:silver|for it if you want to sell|for this if you'd like)/
   fput "put ##{item.id} in my #{Vars.lootsack}"
   value
+end
+
+# Public lockers (the default -- Fizzleworth's is the exception with a house
+# locker) require walking into a specific booth via "go open" before "open locker"
+# does anything at all -- from the Storage Hall, each hallway segment's curtained
+# opening leads to a different booth, sometimes already occupied ("You'll have to
+# wait, NAME is presently using that locker booth."), in which case you move east
+# to the next segment and try again. House lockers (UserVars.fizzdusk
+# [:locker_is_house]) skip this entirely -- "open locker" already works directly
+# from the locker room itself, no booth to walk into. Confirmed live: without this,
+# "open locker" from the Storage Hall just answered "What were you referring to?"
+# and every subsequent put failed with "I could not find what you were referring to."
+def enter_locker_booth
+  return if UserVars.fizzdusk[:locker_is_house]
+
+  10.times do
+    result = dothistimeout("go open", 5, /You step through the curtained opening|You'll have to wait/i)
+    return if result =~ /You step through the curtained opening/i
+    fput "east" if result =~ /You'll have to wait/i
+  end
 end
 
 # Tries the trunk first, falls back to the locker itself if the trunk is full.
@@ -116,9 +138,14 @@ else
       echo "lockerstow: #{valuable.length} item(s) appraised above your eloot sell_appraise limits, moving to locker."
       start_script("go2", [UserVars.fizzdusk[:locker_location].to_s])
       wait_while { running?("go2") }
+      enter_locker_booth
       fput "open locker"
       fput "open my #{Vars.lootsack}"
       valuable.each { |item| stow_in_locker(item) }
+      # Public lockers refuse to let you leave the booth without this ("You must
+      # close your locker before leaving!") -- closing unconditionally is harmless
+      # for house lockers too.
+      fput "close locker"
     end
   end
 end

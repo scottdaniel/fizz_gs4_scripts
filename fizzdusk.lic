@@ -263,6 +263,7 @@ UserVars.fizzdusk[:reentry]        = true      if UserVars.fizzdusk[:reentry].ni
 UserVars.fizzdusk[:encumbrance_limit] = 50     if UserVars.fizzdusk[:encumbrance_limit].nil?
 UserVars.fizzdusk[:locker_check]   = true      if UserVars.fizzdusk[:locker_check].nil?
 UserVars.fizzdusk[:locker_location] = 15948    if UserVars.fizzdusk[:locker_location].nil?
+UserVars.fizzdusk[:locker_is_house] = false    if UserVars.fizzdusk[:locker_is_house].nil?
 UserVars.fizzdusk[:using_bigshot]  = false
 
 UserVars.fizzdusk[:activescripts].delete("duskruin_watch") if UserVars.fizzdusk[:activescripts].include?("duskruin_watch")
@@ -1206,6 +1207,27 @@ def eloot_appraise_limits
   }
 end
 
+# Public lockers (the default for most characters -- Fizzleworth's is the exception
+# with a house locker) require walking into a specific booth via "go open" before
+# "open locker" does anything at all -- from the Storage Hall, each hallway
+# segment's curtained opening leads to a different booth, sometimes already
+# occupied ("You'll have to wait, NAME is presently using that locker booth."), in
+# which case you move east to the next segment and try again. House lockers
+# (UserVars.fizzdusk[:locker_is_house]) skip this entirely -- "open locker" already
+# works directly from the locker room itself, no booth to walk into. Confirmed live:
+# without this, "open locker" from the Storage Hall just answered "What were you
+# referring to?" and every subsequent put failed with "I could not find what you
+# were referring to."
+def enter_locker_booth
+  return if UserVars.fizzdusk[:locker_is_house]
+
+  10.times do
+    result = dothistimeout("go open", 5, /You step through the curtained opening|You'll have to wait/i)
+    return if result =~ /You step through the curtained opening/i
+    fput "east" if result =~ /You'll have to wait/i
+  end
+end
+
 # Once encumbrance hits the same limit that would otherwise block the next run, appraises
 # everything in the lootsack (jewelry at the gemshop, everything else at the pawnshop) and
 # moves anything appraised above eloot's own sell_appraise_gemshop/sell_appraise_pawnshop
@@ -1247,9 +1269,14 @@ def check_valuable_loot
   echo "#{valuable.length} item(s) appraised above your eloot sell_appraise limits, moving to locker."
   start_script("go2", [UserVars.fizzdusk[:locker_location].to_s])
   wait_while { running?("go2") }
+  enter_locker_booth
   fput "open locker"
   fput "open my #{Vars.lootsack}"
   valuable.each { |item| stow_in_locker(item) }
+  # Public lockers refuse to let you leave the booth without this ("You must close
+  # your locker before leaving!") -- closing unconditionally is harmless for house
+  # lockers too.
+  fput "close locker"
 end
 
 # Checks remaining Duskruin entries via "event entries". Returns true if it's safe
@@ -1542,6 +1569,12 @@ if variable[1].downcase == "help"
 
     Room number of the locker to use for over-limit items. Default is 15948. (Current: #{UserVars.fizzdusk[:locker_location]})
     ;e echo UserVars.fizzdusk[:locker_location] = 15948
+
+    Whether locker_location is a house locker (opens directly, OPEN LOCKER works
+    right away) instead of a public one (needs GO OPEN first to walk into a free
+    booth, retrying down the hall if one's occupied). Default is FALSE -- set TRUE
+    only if locker_location is a house locker. (Current: #{UserVars.fizzdusk[:locker_is_house]})
+    ;e echo UserVars.fizzdusk[:locker_is_house] = true
 
     Uses ;BIGSHOT QUICK for hunting logic. So make sure your bigshot is setup correctly.
         Hunting Tab  - quickhunt targets should be:  (?:.*)
