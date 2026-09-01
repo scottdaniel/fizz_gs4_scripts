@@ -238,7 +238,15 @@ UserVars.fizzdusk[:waggle_script]  = 'ewaggle' if UserVars.fizzdusk[:waggle_scri
 # restear_me was renamed to fizzrest_me when restear.lic became fizzrest.lic --
 # carry over an existing setting instead of silently resetting to the default.
 UserVars.fizzdusk[:fizzrest_me]    = UserVars.fizzdusk[:restear_me] unless UserVars.fizzdusk[:restear_me].nil?
-UserVars.fizzdusk[:fizzrest_me]     = true      if UserVars.fizzdusk[:fizzrest_me].nil?
+# Off by default -- a resting script is specific to a character's own combat
+# setup (fizzrest.lic's "ready 2weap" only makes sense for a 2-weapon fighter
+# like Fizzleworth/Picko), so a brand new character shouldn't silently start
+# running one it never asked for. resting_script names which one to run,
+# defaulting to fizzrest itself so already-configured characters (who already
+# have fizzrest_me explicitly set and never touched this new setting) see no
+# change in behavior.
+UserVars.fizzdusk[:fizzrest_me]     = false     if UserVars.fizzdusk[:fizzrest_me].nil?
+UserVars.fizzdusk[:resting_script] = 'fizzrest' if UserVars.fizzdusk[:resting_script].nil?
 UserVars.fizzdusk[:playsongs_me]   = true      if UserVars.fizzdusk[:playsongs_me].nil?
 UserVars.fizzdusk[:fizzprep_me]    = true      if UserVars.fizzdusk[:fizzprep_me].nil?
 UserVars.fizzdusk[:fizzprep_script] = 'fizzprep' if UserVars.fizzdusk[:fizzprep_script].nil?
@@ -1384,7 +1392,7 @@ def return_to_arena(group_size)
     end
   end
   Script.run(UserVars.fizzdusk[:waggle_script]) if UserVars.fizzdusk[:waggle_me]
-  Script.run("fizzrest") if UserVars.fizzdusk[:fizzrest_me] && Script.exists?("fizzrest")
+  Script.run(UserVars.fizzdusk[:resting_script]) if UserVars.fizzdusk[:fizzrest_me] && Script.exists?(UserVars.fizzdusk[:resting_script])
 
   if UserVars.fizzdusk[:playsongs_me] && Script.exists?("playsongs")
     # A stuck/zombie prior instance (e.g. a botched instrument argument leaving it
@@ -1468,9 +1476,12 @@ if variable[1].downcase == "help"
     Waggle Script to Use - Default is set to waggle (Current: #{UserVars.fizzdusk[:waggle_script]})
     ;e echo UserVars.fizzdusk[:waggle_script] = 'ewaggle'
 
-    Runs fizzrest.lic right after waggling to get the runestaff back in hand for
-    resting boosts - Default is set to TRUE (Current: #{UserVars.fizzdusk[:fizzrest_me]})
-    ;e echo UserVars.fizzdusk[:fizzrest_me] = false
+    Runs a resting script right after waggling (e.g. to get a weapon back in hand
+    for resting boosts) - Default is set to FALSE (Current: #{UserVars.fizzdusk[:fizzrest_me]})
+    ;e echo UserVars.fizzdusk[:fizzrest_me] = true
+
+    Resting Script to Use - Default is fizzrest (Current: #{UserVars.fizzdusk[:resting_script]})
+    ;e echo UserVars.fizzdusk[:resting_script] = 'Salvirest'
 
     Starts ;playsongs between runs and stops it (stowing the instrument) right
     before heading back into the arena - Default is set to TRUE (Current: #{UserVars.fizzdusk[:playsongs_me]})
