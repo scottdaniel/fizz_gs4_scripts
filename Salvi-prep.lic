@@ -3,6 +3,15 @@
 
 module SalviPrep
 
+# Stop playing before gearing up for combat -- kills the instrument along
+# with the script (playsongs.lic's before_dying stows it). Kill is async,
+# so wait for it to actually finish before "clear hands" below sends its
+# own fput commands, to avoid the two scripts racing on the same hands.
+if Script.running?("playsongs")
+  Script.kill("playsongs")
+  wait_while { Script.running?("playsongs") }
+end
+
 # clear hands
 fput "put my #{GameObj.right_hand} in my cloak"
 fput "stow all"

@@ -47,4 +47,8 @@ end
 Script.run("ewaggle")
 Script.run("timequit")
 
+# Music while safe/resting -- Salvi-prep.lic kills this again before combat
+# resumes, which also stows the instrument (see playsongs.lic's before_dying).
+Script.start("playsongs") unless Script.running?("playsongs")
+
 end #End of module
