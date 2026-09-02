@@ -6,6 +6,44 @@ Script.run("eherbs")
 Script.run("eloot", "sell")
 Script.run("undead_bounty", "kill zombie")
 Script.run("Salvi-buyitems")
+
+# Pulls kept combat wands (per eloot's own sell_exclude list) out of the backpack
+# and into the greatcloak for waving. "wand" is no longer a STOW LIST target, so
+# freshly looted/bought wands land in the backpack with everything else instead
+# of auto-routing straight into the greatcloak -- which used to bypass eloot's
+# sell logic entirely (confirmed: eloot's own "wand" sell_container setting is
+# listed but never actually swept by anything in eloot.lic, so a wand that
+# landed there via STOW LIST would just sit forever, sellable or not). Sweeping
+# from the backpack after eloot's sell pass (and after Salvi-buyitems, in case
+# that bought any wands too) means eloot gets first look at every wand, and only
+# the ones actually worth keeping make it into the greatcloak.
+require 'yaml'
+
+def self.eloot_wand_keep_regex
+  path = File.join(DATA_DIR, XMLData.game, Char.name, "eloot.yaml")
+  settings = YAML.load_file(path) rescue nil
+  list = settings.is_a?(Hash) ? Array(settings[:sell_exclude]) : []
+  return nil if list.empty?
+  Regexp.union(list.map { |entry| /\b#{entry}\b/i })
+end
+
+keep_regex = eloot_wand_keep_regex
+if keep_regex
+  fput "open my backpack"
+  # "open" is a no-op ("That is already open.") once it's already open, so it
+  # can't be trusted alone to (re)populate GameObj's cached contents -- "look
+  # in" always forces a fresh listing regardless of open state.
+  fput "look in my backpack"
+  backpack = GameObj.inv.find { |i| i.name =~ /backpack/i }
+  if backpack
+    wands = backpack.contents.to_a.select { |item| item.noun =~ /wand/i && item.name =~ keep_regex }
+    unless wands.empty?
+      fput "open my greatcloak"
+      wands.each { |item| fput "put ##{item.id} in my greatcloak" }
+    end
+  end
+end
+
 Script.run("ewaggle")
 Script.run("timequit")
 
