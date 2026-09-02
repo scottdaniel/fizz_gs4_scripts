@@ -4,6 +4,14 @@
 module Salvrest
 
 #keep those spells going!
-multifput "stow all", "get bottle", "turn bottle", "eat pill", "stow bottle" if Spell[401].timeleft < 30
+# Spell[401].timeleft is Lich's own internally-tracked duration -- it only gets
+# updated by a background sync thread matching the game's live Active Spells
+# feed back to Lich's spell list by name, and that sync can silently never
+# populate a given spell (no error, just stays at its class default of 0,
+# which is always < 30). Confirmed live: fired right after a Dreavening should
+# have put Elemental Defense I (401) at ~4:10 remaining. Effects::Spells.time_left
+# reads straight from the game's live Active Spells dialog feed instead, same
+# pattern eloot.lic/ewaggle.lic/BlackArts.lic/bigshot.lic already use for this.
+multifput "stow all", "get bottle", "turn bottle", "eat pill", "stow bottle" if Effects::Spells.time_left("Elemental Defense I") < 30
 
 end #End of module
