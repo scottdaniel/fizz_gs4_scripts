@@ -39,6 +39,10 @@
   classes) -- a one-handed instrument doesn't bother a bard. Turn it on
   with:
           ;vars set playsongs_pause_for_bigshot=true
+  When on, this only pauses while Bigshot is actually in a hunting-like
+  state (per its own $bigshot_status) -- not the whole time Bigshot
+  happens to be running, so it stays playing while Bigshot is just resting
+  in town between hunts.
 
   Usage:  ;playsongs                (defaults to tambourine, played soft)
           ;playsongs lute           (play a different instrument instead)
@@ -213,14 +217,28 @@ module Playsongs
   # default instrument: ;vars set playsongs_pause_for_bigshot=true
   PAUSE_FOR_BIGSHOT = UserVars.playsongs_pause_for_bigshot.to_s =~ /^(true|yes|1)$/i ? true : false
 
+  # Bigshot sets the global $bigshot_status as it goes -- :ready, :resting,
+  # and :rest_stop mean it isn't actively hunting/casting right now (e.g.
+  # resting in town square), so there's no need to keep a hand free for
+  # those. Anything else (:hunting, :boundary_building, ...) is treated as
+  # needing the hand, same as an unrecognized future status would be --
+  # safer to pause and miss a beat than to sit there uncastable mid-fight.
+  BIGSHOT_IDLE_STATUSES = %i[ready resting rest_stop].freeze
+
   # Scripts that need your hands/attention -- playsongs auto-pauses (same as
   # a manual "playsongs pause") for as long as a running script matches one
   # of these, and auto-resumes once it finishes, no command needed either
   # way. arg_pattern nil means any invocation of that script name matches;
-  # otherwise at least one of the script's args must match the pattern.
+  # status_check, if given, is an extra proc that must return true for the
+  # match to actually count as blocking (checked only once a name/arg match
+  # is already found).
   EXCLUSIVE_SCRIPTS = [
     { name: 'eloot', arg_pattern: /sell/i } # only "eloot sell", not eloot alone
-  ] + (PAUSE_FOR_BIGSHOT ? [{ name: 'bigshot', arg_pattern: nil }] : [])
+  ] + (PAUSE_FOR_BIGSHOT ? [{
+    name: 'bigshot',
+    arg_pattern: nil,
+    status_check: -> { !$bigshot_status.nil? && !BIGSHOT_IDLE_STATUSES.include?($bigshot_status) }
+  }] : [])
 
   STATS_FILE = File.join(DATA_DIR, XMLData.game, Char.name, 'playsongs_stats.yaml')
 
@@ -251,10 +269,13 @@ module Playsongs
         s.name == spec[:name] &&
           (spec[:arg_pattern].nil? || s.vars.any? { |v| v.to_s =~ spec[:arg_pattern] })
       end
+      next unless match
+      next if spec[:status_check] && !spec[:status_check].call
+
       # vars[0] is the whole args string joined back together (e.g. "sell"),
       # and vars[1..] are the individual tokens -- using the full vars array
       # here double-counts a single-word arg ("eloot sell sell").
-      return [match.name, *match.vars[1..]].join(' ') if match
+      return [match.name, *match.vars[1..]].join(' ')
     end
     nil
   end
@@ -362,7 +383,7 @@ module Playsongs
     respond "Keeps playing an instrument (#{STYLE} style) in a loop, timing each song and counting rank-ups."
     respond "Also runs PLAY SKILL every #{SKILL_CHECK_INTERVAL} completed songs and saves the real skill level as a second confirmation of the rank-up count."
     respond "Auto-pauses while eloot sell is running (not eloot alone), no command needed."
-    respond "Bigshot auto-pause: #{PAUSE_FOR_BIGSHOT ? 'ON' : 'off'} (toggle with ;vars set playsongs_pause_for_bigshot=true/false) -- only matters for classes that need a hand free to cast while hunting."
+    respond "Bigshot auto-pause: #{PAUSE_FOR_BIGSHOT ? 'ON' : 'off'} (toggle with ;vars set playsongs_pause_for_bigshot=true/false) -- when on, only pauses while Bigshot is actually hunting, not while it's resting in town."
     respond "Any pause stows the instrument; resuming gets it back out."
     respond ''
     respond 'Commands (typed directly, no leading semicolon):'
