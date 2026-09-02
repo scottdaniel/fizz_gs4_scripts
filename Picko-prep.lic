@@ -7,13 +7,20 @@ module PickoPrep
 fput "put my #{GameObj.right_hand} in my cloak"
 fput "stow all"
 
-# rub stuff, but only if the spell isn't already active
-Script.run("qverb", "rub gold coin") unless Spell[1701].active?
-pause 3
-Script.run("qverb", "rub small statue") unless Spell[1712].active?
-pause 3
-Script.run("qverb", "rub moonstone cube") unless Spell[1705].active?
-pause 3
+# rub stuff, but only if the spell isn't already active -- and only pause
+# after ones that actually ran, instead of always eating 3s per item
+unless Spell[1701].active?
+  Script.run("qverb", "rub gold coin")
+  pause 3
+end
+unless Spell[1712].active?
+  Script.run("qverb", "rub small statue")
+  pause 3
+end
+unless Spell[1705].active?
+  Script.run("qverb", "rub moonstone cube")
+  pause 3
+end
 
 # cast protective spells from scrolls -- spell list lives in UserVars.scroll_buff_spells
 # (shared with scrollinv.lic's "Buff Scrolls" categorization). Must be set via:
