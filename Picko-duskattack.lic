@@ -1,6 +1,6 @@
 # Picko-duskattack.lic
 # Picko now runs the shared fizzdusk.lic (not stock tdusk.lic -- confirmed live via
-# the "[custom/fizzdusk]" prompt, opener515: true, and fizzprep_script: "PickoPrep"
+# the "[custom/fizzdusk]" prompt, opener515: true, and fizzprep_script: "Picko-prep"
 # in a UserVars.fizzdusk dump), so every shared counter here lives in
 # UserVars.fizzdusk, same namespace fizzdusk.lic itself reads and resets. It used to
 # read UserVars.tdusk -- left stale at whatever it was from actual stock-tdusk days,

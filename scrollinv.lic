@@ -29,7 +29,7 @@ SCROLL_NAME_EXCLUDE = /\A(?:a |an |some )?(?:birth certificate parchment|amnesty
 READ_TIMEOUT = 4
 
 # Prep/buff spells worth tracking separately, from a UserVars list you maintain
-# yourself (same one fizzprep.lic reads for its scrollbuff3 call) -- set with:
+# yourself (same one Fizzleworth-prep.lic reads for its scrollbuff3 call) -- set with:
 #   ;vars set scroll_buff_spells=202 211 215 ...
 def buff_spells
   UserVars.scroll_buff_spells.to_s.scan(/\d+/).map(&:to_i)
@@ -55,7 +55,7 @@ def usage
   respond ""
   respond "\"Buff Scrolls\" is whatever spell numbers you list in scroll_buff_spells -- set it with:"
   respond "    ;vars set scroll_buff_spells=202 211 215 219 303 ..."
-  respond "(the same var fizzprep.lic reads for its scrollbuff3 call, so keeping it up to"
+  respond "(the same var Fizzleworth-prep.lic reads for its scrollbuff3 call, so keeping it up to"
   respond "date there keeps this script's categorization in sync automatically)."
 end
 
@@ -138,7 +138,7 @@ end
 priority_spells = buff_spells
 if priority_spells.empty?
   respond "scrollinv: you must define your buff spell list - ;vars set scroll_buff_spells=<spell numbers>"
-  respond "  (same var fizzprep.lic reads for its scrollbuff3 call)"
+  respond "  (same var Fizzleworth-prep.lic reads for its scrollbuff3 call)"
   exit
 end
 

@@ -1,10 +1,10 @@
-#FizzleW_prerest.lic
+#Fizzleworth-prerest.lic
 
-module FizzleW_prerest
+module FizzleworthPrerest
 
 Script.run("eherbs")
 Script.run("eloot", "sell")
-Script.run("fizzrest")
+Script.run("Fizzleworth-rest")
 Script.run("undead_bounty", "kill")
 #Script.run("buyitems")
 Script.run("ewaggle")

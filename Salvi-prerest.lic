@@ -1,13 +1,12 @@
-#Picko_prerest.lic
+#Salvi-prerest.lic
 
-module Picko_prerest
+module SalviPrerest
 
 Script.run("eherbs")
 Script.run("eloot", "sell")
 Script.run("undead_bounty", "kill zombie")
-#Script.run("buyitems")
+Script.run("Salvi-buyitems")
 Script.run("ewaggle")
 Script.run("timequit")
-Script.run("playsongs")
 
 end #End of module

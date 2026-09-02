@@ -1,6 +1,6 @@
-#fizzprep_sever.lic
+#Fizzleworth-prep-sever.lic
 
-module Fizzprep_sever
+module FizzleworthPrepSever
 
 # rub stuff
 multifput "store weapon", "stow all"

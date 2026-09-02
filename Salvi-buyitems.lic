@@ -1,0 +1,112 @@
+#Salvi-buyitems.lic
+
+# Withdraws 10,000 silver from the bank, then buys rub-items from the
+# pawnshop's arcana/magic table: quartz orb, crystal amulet, black crystal,
+# white crystal, small statue, moonstone cube. Each item is stowed right
+# after it's bought. Deposits whatever silver is left back at the bank
+# before returning to town.
+#
+# Detects the town via Room.current.location and looks up how to reach that
+# pawnshop's arcana/magic table in TOWN_CONFIG. Add an entry for any town not
+# already listed (Room.current.location tells you the exact key to use).
+
+module SalviBuyitems
+
+TOWN_CONFIG = {
+	"the town of River's Rest" => { table_cmd: "north", table_name: "arcana table" },
+}
+DEFAULT_TABLE_CMD = "go door"
+DEFAULT_TABLE_NAME = "magic table"
+
+def self.town_config
+	town = Room.current.location
+	config = TOWN_CONFIG[town]
+	if config.nil?
+		echo "No known pawnshop layout for '#{town}' -- guessing '#{DEFAULT_TABLE_CMD}' / '#{DEFAULT_TABLE_NAME}'. Add an entry to TOWN_CONFIG if that's wrong."
+		config = { table_cmd: DEFAULT_TABLE_CMD, table_name: DEFAULT_TABLE_NAME }
+	end
+	config
+end
+
+ITEMS = [
+    "gold coin",
+	"quartz orb",
+	"black crystal",
+	"white crystal",
+	"small statue",
+	"moonstone cube",
+    "alabaster wand",
+    "willow wand"
+]
+
+# "look on <table>" replies across multiple lines, e.g.:
+#   On the magic table:
+#   Special [20]: a crumpled scroll, a heavy quartz orb, ..., a white crystal
+#   Total items: 20
+# so read until the "Total items:" line (or a "nothing here" reply) instead
+# of returning after just the first line.
+def self.table_contents(table_name)
+	fput "look on #{table_name}"
+	lines = []
+	end_time = Time.now.to_f + 5
+	loop do
+		line = get?
+		if line.nil?
+			break if Time.now.to_f > end_time
+			sleep 0.1
+			next
+		end
+		lines << line
+		break if line =~ /^Total items:/i || line =~ /don't see|nothing (here|on)/i
+	end
+	lines.join(' ')
+end
+
+BUY_SUCCESS = /You decide to purchase/
+BUY_HANDS_FULL = /hands are full/
+BUY_FAILURE = /#{BUY_HANDS_FULL}|don't have enough|don't see|can't afford/
+
+def self.order_and_buy(item_name)
+	buy_result = dothistimeout "buy #{item_name}", 5, /#{BUY_SUCCESS}|#{BUY_FAILURE}/
+	if buy_result =~ BUY_HANDS_FULL
+		fput "stow left"
+		buy_result = dothistimeout "buy #{item_name}", 5, /#{BUY_SUCCESS}|#{BUY_FAILURE}/
+	end
+	if buy_result =~ BUY_SUCCESS
+		fput "stow my #{item_name}"
+	else
+		echo "Failed to buy '#{item_name}': #{buy_result}"
+	end
+end
+
+if Char.percent_encumbrance > 0
+	echo "You're already #{Char.encumbrance} encumbrance (#{Char.percent_encumbrance}%) -- stow or drop something before running this."
+	exit
+end
+
+Script.run("go2", "bank")
+have_money = dothistimeout "withdraw 10000 silver", 5, /10,000 silvers/
+if !have_money
+	echo "Couldn't withdraw 10,000 silver from the bank -- stopping."
+	exit
+end
+
+Script.run("go2", "pawnshop")
+config = town_config
+fput config[:table_cmd]
+
+contents = table_contents(config[:table_name]) || ""
+ITEMS.each do |item|
+	if contents =~ /#{item}/i
+		order_and_buy(item)
+	else
+		echo "'#{item}' isn't on the #{config[:table_name]}, skipping."
+	end
+end
+
+Script.run("go2", "bank")
+fput "deposit all"
+
+Script.run("go2", "town")
+
+end #End of module

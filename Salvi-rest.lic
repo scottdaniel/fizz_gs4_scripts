@@ -1,7 +1,7 @@
-#Salvrest
+#Salvi-rest.lic
 #gets ready for resting
 
-module Salvrest
+module SalviRest
 
 #keep those spells going!
 # Spell[401].timeleft is Lich's own internally-tracked duration -- it only gets

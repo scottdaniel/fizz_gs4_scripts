@@ -239,17 +239,21 @@ UserVars.fizzdusk[:waggle_script]  = 'ewaggle' if UserVars.fizzdusk[:waggle_scri
 # carry over an existing setting instead of silently resetting to the default.
 UserVars.fizzdusk[:fizzrest_me]    = UserVars.fizzdusk[:restear_me] unless UserVars.fizzdusk[:restear_me].nil?
 # Off by default -- a resting script is specific to a character's own combat
-# setup (fizzrest.lic's "ready 2weap" only makes sense for a 2-weapon fighter
-# like Fizzleworth/Picko), so a brand new character shouldn't silently start
-# running one it never asked for. resting_script names which one to run,
-# defaulting to fizzrest itself so already-configured characters (who already
-# have fizzrest_me explicitly set and never touched this new setting) see no
-# change in behavior.
+# setup (Fizzleworth-rest.lic's "ready 2weap" only makes sense for a 2-weapon
+# fighter like Fizzleworth/Picko), so a brand new character shouldn't silently
+# start running one it never asked for. resting_script names which one to run,
+# defaulting to Fizzleworth-rest itself so already-configured characters (who
+# already have fizzrest_me explicitly set and never touched this new setting)
+# see no change in behavior.
 UserVars.fizzdusk[:fizzrest_me]     = false     if UserVars.fizzdusk[:fizzrest_me].nil?
-UserVars.fizzdusk[:resting_script] = 'fizzrest' if UserVars.fizzdusk[:resting_script].nil?
+# fizzrest.lic was renamed to Fizzleworth-rest.lic -- repoint an existing setting.
+UserVars.fizzdusk[:resting_script] = 'Fizzleworth-rest' if UserVars.fizzdusk[:resting_script] == 'fizzrest'
+UserVars.fizzdusk[:resting_script] = 'Fizzleworth-rest' if UserVars.fizzdusk[:resting_script].nil?
 UserVars.fizzdusk[:playsongs_me]   = true      if UserVars.fizzdusk[:playsongs_me].nil?
 UserVars.fizzdusk[:fizzprep_me]    = true      if UserVars.fizzdusk[:fizzprep_me].nil?
-UserVars.fizzdusk[:fizzprep_script] = 'fizzprep' if UserVars.fizzdusk[:fizzprep_script].nil?
+# fizzprep.lic was renamed to Fizzleworth-prep.lic -- repoint an existing setting.
+UserVars.fizzdusk[:fizzprep_script] = 'Fizzleworth-prep' if UserVars.fizzdusk[:fizzprep_script] == 'fizzprep'
+UserVars.fizzdusk[:fizzprep_script] = 'Fizzleworth-prep' if UserVars.fizzdusk[:fizzprep_script].nil?
 UserVars.fizzdusk[:pause_me]       = false     if UserVars.fizzdusk[:pause_me].nil?
 UserVars.fizzdusk[:enhancive_me]   = false     if UserVars.fizzdusk[:enhancive_me].nil?
 UserVars.fizzdusk[:high_ds]        = false     if UserVars.fizzdusk[:high_ds].nil?
@@ -1480,8 +1484,8 @@ if variable[1].downcase == "help"
     for resting boosts) - Default is set to FALSE (Current: #{UserVars.fizzdusk[:fizzrest_me]})
     ;e echo UserVars.fizzdusk[:fizzrest_me] = true
 
-    Resting Script to Use - Default is fizzrest (Current: #{UserVars.fizzdusk[:resting_script]})
-    ;e echo UserVars.fizzdusk[:resting_script] = 'Salvrest'
+    Resting Script to Use - Default is Fizzleworth-rest (Current: #{UserVars.fizzdusk[:resting_script]})
+    ;e echo UserVars.fizzdusk[:resting_script] = 'Salvi-rest'
 
     Starts ;playsongs between runs and stops it (stowing the instrument) right
     before heading back into the arena - Default is set to TRUE (Current: #{UserVars.fizzdusk[:playsongs_me]})
@@ -1495,8 +1499,8 @@ if variable[1].downcase == "help"
     from scrolls - Default is set to TRUE (Current: #{UserVars.fizzdusk[:fizzprep_me]})
     ;e echo UserVars.fizzdusk[:fizzprep_me] = false
 
-    Prep Script to Use - Default is fizzprep (Current: #{UserVars.fizzdusk[:fizzprep_script]})
-    ;e echo UserVars.fizzdusk[:fizzprep_script] = 'PickoPrep'
+    Prep Script to Use - Default is Fizzleworth-prep (Current: #{UserVars.fizzdusk[:fizzprep_script]})
+    ;e echo UserVars.fizzdusk[:fizzprep_script] = 'Picko-prep'
 
     Auto-Enable Enhancives via INV ENHANCIVE ON/OFF - Default is set to FALSE (Current: #{UserVars.fizzdusk[:enhancive_me]})
     ;e echo UserVars.fizzdusk[:enhancive_me] = true

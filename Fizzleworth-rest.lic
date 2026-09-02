@@ -1,7 +1,7 @@
-#fizzrest
+#Fizzleworth-rest.lic
 #gets ready for resting
 
-module Fizzrest
+module FizzleworthRest
 
 fput "store weapon"
 fput "ready 2weap"

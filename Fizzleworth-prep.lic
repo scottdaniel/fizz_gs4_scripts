@@ -1,6 +1,6 @@
-#fizzprep.lic
+#Fizzleworth-prep.lic
 
-module Fizzprep
+module FizzleworthPrep
 
 # rub stuff
 fput "put my #{GameObj.right_hand} in my cloak"
