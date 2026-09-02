@@ -5,9 +5,13 @@ module FizzleworthPrerest
 Script.run("eherbs")
 Script.run("eloot", "sell")
 Script.run("Fizzleworth-rest")
-Script.run("undead_bounty", "kill")
+#Script.run("undead_bounty", "kill")
 #Script.run("buyitems")
 Script.run("ewaggle")
 Script.run("timequit")
+
+# Music while safe/resting -- Fizzleworth-prep.lic kills this again before combat
+# resumes, which also stows the instrument (see playsongs.lic's before_dying).
+Script.start("playsongs") unless Script.running?("playsongs")
 
 end #End of module

@@ -8,6 +8,11 @@ Script.run("undead_bounty", "kill zombie")
 #Script.run("buyitems")
 Script.run("ewaggle")
 Script.run("timequit")
-Script.run("playsongs")
+
+# Music while safe/resting -- Picko-prep.lic kills this again before combat
+# resumes, which also stows the instrument (see playsongs.lic's before_dying).
+# NOTE: was Script.run("playsongs"), which would have hung here forever --
+# .run blocks until the script exits, and playsongs never exits on its own.
+Script.start("playsongs") unless Script.running?("playsongs")
 
 end #End of module
