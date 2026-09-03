@@ -15,8 +15,8 @@
 # Two-way decision, based on current mana:
 #
 #   mana > MANA_FLOOR:   incant 301 in stance offensive, then Condemn (309) --
-#                        empowered (prep 309 -> evoke) whenever a charge is
-#                        banked, plain incant otherwise -- then drop to stance
+#                        an empowered evoke every EMPOWER_EVERY (10) plain casts,
+#                        a plain incant otherwise -- then drop to stance
 #                        defensive and hold while the DoT ticks (bailing early if
 #                        the target dies): CONDEMN_WAIT for a plain cast, the
 #                        shorter EMPOWERED_CONDEMN_WAIT for an empowered one.
@@ -44,6 +44,13 @@ MANA_FLOOR = 10 unless defined?(MANA_FLOOR)
 CONDEMN_WAIT           = 10 unless defined?(CONDEMN_WAIT)
 EMPOWERED_CONDEMN_WAIT = 3  unless defined?(EMPOWERED_CONDEMN_WAIT)
 
+# Condemn banks an empowered charge server-side every N normal casts. Rather than
+# querying `spell` every cycle (slow, >2s), just tally casts locally: every
+# EMPOWER_EVERY plain incants, the next Condemn is an evoke. The tally lives in a
+# global so it survives this script being re-invoked each attack pass; it resets
+# to 0 on a Lich restart, which at worst mistimes one evoke before it re-syncs.
+EMPOWER_EVERY = 10 unless defined?(EMPOWER_EVERY)
+
 # Wand config is read straight from bigshot's own loaded settings (UserVars.op)
 # so it always tracks whatever profile is active -- Fresh/Dead wand container and
 # the wand type(s) from the Attacking tab. The "wand" field is comma-separated
@@ -62,17 +69,6 @@ DEAD_WAND_CONTAINER  = (_op["dead_wand_container"].to_s.strip.empty?  ? "bag"   
 # spellcasting outright -- no roundtime at all, so a naive retry loop just
 # burns the whole cast timeout every tick with nothing to show for it.
 CANT_CAST_WOUNDED = /can't think clearly enough to prepare a spell/i unless defined?(CANT_CAST_WOUNDED)
-
-# "You have stored enough holy magic for N out of M empowered casts of Condemn,
-# with X/10 toward your next charge." -- the game tracks empowerment progress
-# server-side, so this just reads the current count back off the `spell`
-# listing rather than keeping its own cast tally.
-EMPOWERED_CONDEMN_REGEX = /stored enough holy magic for (\d+) out of \d+ empowered casts? of Condemn/i unless defined?(EMPOWERED_CONDEMN_REGEX)
-
-# Scope of the `spell` command's response, used to capture (and hide) exactly
-# the block that carries the empowered-Condemn line.
-SPELL_LISTING_START = /^Your spell lists:/ unless defined?(SPELL_LISTING_START)
-SPELL_LISTING_END   = /^Type SPELL HELP for more options\.?/ unless defined?(SPELL_LISTING_END)
 
 # --- helpers --------------------------------------------------------------
 
@@ -117,32 +113,23 @@ def cast_and_collect(cast_cmd)
   text_lines.join(' ')
 end
 
-# @return [Integer] banked empowered Condemn charges available right now (0 if
-#   none, or if the listing didn't mention Condemn). quiet: true so the long,
-#   fight-irrelevant spell listing isn't dumped to the window every call.
-def empowered_condemn_charges
-  lines = Lich::Util.issue_command(
-    "spell", SPELL_LISTING_START, SPELL_LISTING_END,
-    include_end: true, timeout: 5, quiet: true, usexml: true
-  )
-  m = lines.join(' ').match(EMPOWERED_CONDEMN_REGEX)
-  m ? m[1].to_i : 0
-rescue
-  0
-end
-
-# Casts Condemn (309) at foe -- empowered (prep + evoke) if a charge is banked,
-# otherwise a plain incant -- and waits out its roundtime.
+# Casts Condemn (309) at foe -- an empowered evoke once EMPOWER_EVERY plain
+# incants have been logged (then the tally resets), a plain incant otherwise --
+# and waits out its roundtime.
 # @return [Boolean] true if the empowered (evoke) path was used.
 def cast_condemn(foe)
-  empowered = empowered_condemn_charges > 0
+  $salvi_condemn_casts ||= 0
+  empowered = $salvi_condemn_casts >= EMPOWER_EVERY
+
   if empowered
     fput "prep 309"
     waitcastrt?
     waitrt?
     fput "evoke ##{foe.id}"
+    $salvi_condemn_casts = 0
   else
     fput "incant 309"
+    $salvi_condemn_casts += 1
   end
   waitcastrt?
   waitrt?
