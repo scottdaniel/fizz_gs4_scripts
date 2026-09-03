@@ -14,45 +14,44 @@
 #
 # Decision each pass:
 #
-#   mind at/near saturation:  don't cast at all -- flag bigshot to rest (see the
-#                             overexertion guard below).
+#   mana >= 301 + 309 cost:  incant 301 in stance offensive, then Condemn (309) --
+#                            an empowered evoke every EMPOWER_EVERY (10) plain
+#                            casts, a plain incant otherwise -- then drop to
+#                            stance defensive and hold while the DoT ticks
+#                            (bailing early if the target dies): CONDEMN_WAIT for
+#                            a plain cast, the shorter EMPOWERED_CONDEMN_WAIT for
+#                            an empowered one.
 #
-#   mana > MANA_FLOOR and     incant 301 in stance offensive, then Condemn (309)
-#   301 actually affordable:  if 309 is affordable too -- an empowered evoke
-#                             every EMPOWER_EVERY (10) plain casts *when there's
-#                             mana for the pricier empowered cast*, a plain
-#                             incant otherwise -- then drop to stance defensive
-#                             and hold while the DoT ticks (bailing early if the
-#                             target dies): CONDEMN_WAIT for a plain cast, the
-#                             shorter EMPOWERED_CONDEMN_WAIT for an empowered one.
+#   otherwise (low mana):    cast Symbol of Mana if it's known and off cooldown
+#                            (cooldown-only check -- never spends deeds),
+#                            otherwise wave a wand at the target (auto-draws a
+#                            fresh wand from the fresh-wand container, retires a
+#                            spent one to the dead-wand container; if there are
+#                            no wands left it flags bigshot to rest).
 #
-#   otherwise (low mana):     cast Symbol of Mana if it's known and off cooldown
-#                             (cooldown-only check -- never spends deeds),
-#                             otherwise wave a wand at the target (auto-draws a
-#                             fresh wand from the fresh-wand container, retires a
-#                             spent one to the dead-wand container; if there are
-#                             no wands left it flags bigshot to rest).
+# OVEREXERTION: casting a spell without its full mana cost in hand doesn't fail
+# cleanly -- the cast goes through and hurts you ("You have overextended
+# yourself!  You feel yourself going into shock!"). So every cast here is gated
+# on the LIVE checkmana against that spell's real cost, and the 301->309 combo
+# only starts with room for both. Costs come from Lich's effect-list.xml: 301
+# (Prayer of Holding) scales with caster level and caps at 4; 309 (Condemn) is a
+# flat 9. incant / prep+cast / prep+evoke all cost the same.
 #
 # If a wound blocks spellcasting outright ("You can't think clearly enough to
 # prepare a spell!" -- no roundtime at all), fires ;eherbs --spellcast once
 # instead of retrying the dead cast, same as Salvi-duskattack.lic.
-#
-# Overexertion guard: casting once your head is at "must rest"/"saturated" (or
-# within MIND_CEILING of it) risks nervous-system damage -- the cast goes through
-# but you hurt yourself. If the mind is that full this skips the attack entirely,
-# flags bigshot to rest, and exits. bigshot is paused while this runs, so its own
-# rest threshold can't catch a mid-routine spike -- this has to self-police.
 
 # --- knobs -------------------------------------------------------------------
 
-# Attack while mana is strictly above this; fall back to Symbol of Mana / wands
-# at or below it.
-MANA_FLOOR = 10 unless defined?(MANA_FLOOR)
+# Real mana costs, read from Lich's spell data (effect-list.xml) so they track
+# whatever the game actually charges; the fallbacks are the current known values
+# in case the lookup comes back empty.
+SPELL_301_MANA = (Spell[301].mana_cost.to_i.positive? ? Spell[301].mana_cost.to_i : 4) unless defined?(SPELL_301_MANA)
+SPELL_309_MANA = (Spell[309].mana_cost.to_i.positive? ? Spell[309].mana_cost.to_i : 9) unless defined?(SPELL_309_MANA)
 
-# Stop casting (rest instead) at or above this mind fullness, or as soon as the
-# game itself says must-rest/saturated -- whichever comes first. Leaves headroom
-# for the cast itself to nudge the mind up without tipping into the danger zone.
-MIND_CEILING = 85 unless defined?(MIND_CEILING)
+# Mana needed to safely open: enough for the 301 cast AND the 309 that follows,
+# so 309 never fires into an empty tank.
+COMBO_MANA = (SPELL_301_MANA + SPELL_309_MANA) unless defined?(COMBO_MANA)
 
 # Flat hold in stance defensive after Condemn goes off, letting the DoT work
 # instead of instantly re-engaging. The empowered (evoke) cast lands harder and
@@ -66,12 +65,6 @@ EMPOWERED_CONDEMN_WAIT = 3  unless defined?(EMPOWERED_CONDEMN_WAIT)
 # global so it survives this script being re-invoked each attack pass; it resets
 # to 0 on a Lich restart, which at worst mistimes one evoke before it re-syncs.
 EMPOWER_EVERY = 10 unless defined?(EMPOWER_EVERY)
-
-# An empowered (prep + evoke) Condemn costs more mana than a plain incant --
-# Spell[309].affordable? only knows the base cost, so require this multiple of it
-# in hand before taking the empowered path. Short of that, cast a plain incant
-# and keep the tally where it is (try the evoke again next pass).
-EMPOWERED_MANA_MULT = 2.0 unless defined?(EMPOWERED_MANA_MULT)
 
 # Wand config is read straight from bigshot's own loaded settings (UserVars.op)
 # so it always tracks whatever profile is active -- Fresh/Dead wand container and
@@ -93,20 +86,6 @@ DEAD_WAND_CONTAINER  = (_op["dead_wand_container"].to_s.strip.empty?  ? "bag"   
 CANT_CAST_WOUNDED = /can't think clearly enough to prepare a spell/i unless defined?(CANT_CAST_WOUNDED)
 
 # --- helpers --------------------------------------------------------------
-
-# True when the mind is too full to keep casting without risking nerve damage --
-# either the game has hit "must rest"/"saturated" (checkfried) or we're within
-# MIND_CEILING of it.
-def mind_too_full?
-  checkfried || percentmind(MIND_CEILING)
-end
-
-# Tell bigshot to rest and stop here -- used when the mind is too full to cast.
-def rest_for_mind
-  echo "mind at #{percentmind}% (#{checkmind}) -- resting before I overexert."
-  $bigshot_should_rest = true
-  $rest_reason = "mind near saturation (overexertion risk)"
-end
 
 # Monster-agnostic death check: bigshot itself never text-matches kill messages
 # (they vary per creature) -- it reads GameObj status, which Lich core keeps
@@ -149,43 +128,42 @@ def cast_and_collect(cast_cmd)
   text_lines.join(' ')
 end
 
-# True if there's enough mana in hand for the pricier empowered Condemn.
-def empowered_309_affordable?
-  base = Spell[309].mana_cost.to_i
-  base <= 0 ? Spell[309].affordable? : checkmana >= (base * EMPOWERED_MANA_MULT).ceil
-end
-
 # Casts Condemn (309) at foe -- an empowered evoke once EMPOWER_EVERY plain
-# incants have been logged AND there's mana for it (else a plain incant, tally
-# untouched, try the evoke next pass), a plain incant otherwise -- and waits out
-# its roundtime.
-# @return [Boolean] true if the empowered (evoke) path was actually used.
+# incants have been logged (then the tally resets), a plain incant otherwise --
+# and waits out its roundtime. Costs SPELL_309_MANA either way; the caller has
+# already checked the mana, this re-checks against the LIVE value one more time
+# right before the cast so nothing slips through.
+# @return [Boolean] true if the empowered (evoke) path was used.
 def cast_condemn(foe)
+  return false if checkmana < SPELL_309_MANA
+
   $salvi_condemn_casts ||= 0
-  empowered = $salvi_condemn_casts >= EMPOWER_EVERY && empowered_309_affordable?
+  empowered = $salvi_condemn_casts >= EMPOWER_EVERY
 
   if empowered
     fput "prep 309"
     waitcastrt?
     waitrt?
+    return false if checkmana < SPELL_309_MANA   # last gate before the evoke
     fput "evoke ##{foe.id}"
     $salvi_condemn_casts = 0
   else
     fput "incant 309"
-    # only advance the tally on a real plain cast, not on a deferred evoke
-    $salvi_condemn_casts += 1 if $salvi_condemn_casts < EMPOWER_EVERY
+    $salvi_condemn_casts += 1
   end
   waitcastrt?
   waitrt?
   empowered
 end
 
-# incant 301 in stance offensive, chain into Condemn, then hold defensive for
-# CONDEMN_WAIT. Heals with ;eherbs --spellcast (touches only casting-blocking
+# incant 301 in stance offensive, chain into Condemn, then hold defensive while
+# the DoT ticks. Heals with ;eherbs --spellcast (touches only casting-blocking
 # wounds) if a wound blocks the 301 cast outright.
 def attack_sequence(foe)
   fput "release" if checkprep != "None"
   fput "stance offensive" if stance != "offensive"
+
+  return fput("stance defensive") if checkmana < SPELL_301_MANA
 
   text = cast_and_collect("incant 301")
   if text =~ CANT_CAST_WOUNDED
@@ -203,18 +181,10 @@ def attack_sequence(foe)
     return
   end
 
-  # 301 just nudged the mind up -- re-check before chaining Condemn so a spike
-  # into the danger zone doesn't cost a nerve wound.
-  if mind_too_full?
-    fput "stance defensive"
-    rest_for_mind
-    return
-  end
-
-  # Don't chain Condemn unless it's genuinely affordable -- forcing a cast you
-  # can't pay for is the overcast that hurts. If 301 spent us below it, just
-  # hold and let the next pass (or a rest) sort the mana out.
-  unless Spell[309].affordable?
+  # 301 just spent its mana -- re-check the LIVE value before chaining 309.
+  # Casting it short overextends you (nerve damage), so if we can't cover it,
+  # just hold and let the next pass (or a rest) sort the mana out.
+  if checkmana < SPELL_309_MANA
     fput "stance defensive"
     return
   end
@@ -292,14 +262,8 @@ waitcastrt?
 
 exit if target_dead?(foe)
 
-if mind_too_full?
-  # Head's too full to cast safely -- rest instead of risking a nerve wound.
-  # Wands would be mind-free, but a saturated mind means it's time to rest
-  # anyway, and resting recovers mana too.
-  rest_for_mind
-elsif checkmana > MANA_FLOOR && Spell[301].affordable?
-  # Both gates: the MANA_FLOOR the routine is designed around, and 301's real
-  # registered cost -- so we never open with a spell we can't actually pay for.
+if checkmana >= COMBO_MANA
+  # Enough for the full 301 -> 309 combo without overextending on either.
   attack_sequence(foe)
 elsif Spell[9813].known? && !Effects::Cooldowns.active?("Symbol of Mana")
   # Off-cooldown check only -- never touches deeds (same check bigshot.lic and
