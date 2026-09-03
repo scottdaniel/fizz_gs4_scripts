@@ -451,6 +451,16 @@ module Playsongs
       fput "swap"
       false
     else
+      # Neither hand holds it. GET fails silently if both hands are already
+      # full of something else (e.g. a wand left over from Bigshot's wave
+      # routine, alongside a weapon) -- happened after resting picked back
+      # up with hands never cleared since the last combat cycle. Only the
+      # left hand needs to be free for this; leave the right hand (and
+      # whatever it's holding) alone.
+      if checkleft
+        echo "Stowing #{checkleft} to make room for #{INSTRUMENT}."
+        fput "stow left"
+      end
       get_instrument
       false
     end
