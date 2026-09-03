@@ -14,7 +14,9 @@
 #   mana > MANA_FLOOR:   incant 301 in stance offensive, then Condemn (309) --
 #                        empowered (prep 309 -> evoke) whenever a charge is
 #                        banked, plain incant otherwise -- then drop to stance
-#                        defensive and sleep CONDEMN_WAIT while the DoT ticks.
+#                        defensive and hold while the DoT ticks: CONDEMN_WAIT for
+#                        a plain cast, the shorter EMPOWERED_CONDEMN_WAIT for an
+#                        empowered one.
 #
 #   mana <= MANA_FLOOR:  cast Symbol of Mana if it's known and off cooldown
 #                        (cooldown-only check -- never spends deeds), otherwise
@@ -34,8 +36,10 @@
 MANA_FLOOR = 10 unless defined?(MANA_FLOOR)
 
 # Flat hold in stance defensive after Condemn goes off, letting the DoT work
-# instead of instantly re-engaging.
-CONDEMN_WAIT = 10 unless defined?(CONDEMN_WAIT)
+# instead of instantly re-engaging. The empowered (evoke) cast lands harder and
+# doesn't need the same long pause, so it gets its own shorter wait.
+CONDEMN_WAIT           = 10 unless defined?(CONDEMN_WAIT)
+EMPOWERED_CONDEMN_WAIT = 3  unless defined?(EMPOWERED_CONDEMN_WAIT)
 
 # Wand config is read straight from bigshot's own loaded settings (UserVars.op)
 # so it always tracks whatever profile is active -- Fresh/Dead wand container and
@@ -105,8 +109,10 @@ end
 
 # Casts Condemn (309) at foe -- empowered (prep + evoke) if a charge is banked,
 # otherwise a plain incant -- and waits out its roundtime.
+# @return [Boolean] true if the empowered (evoke) path was used.
 def cast_condemn(foe)
-  if empowered_condemn_charges > 0
+  empowered = empowered_condemn_charges > 0
+  if empowered
     fput "prep 309"
     waitcastrt?
     waitrt?
@@ -116,6 +122,7 @@ def cast_condemn(foe)
   end
   waitcastrt?
   waitrt?
+  empowered
 end
 
 # incant 301 in stance offensive, chain into Condemn, then hold defensive for
@@ -141,10 +148,10 @@ def attack_sequence(foe)
     return
   end
 
-  cast_condemn(foe)
+  empowered = cast_condemn(foe)
 
   fput "stance defensive"
-  sleep CONDEMN_WAIT
+  sleep(empowered ? EMPOWERED_CONDEMN_WAIT : CONDEMN_WAIT)
 end
 
 # The wand noun bigshot is currently on (shared $bigshot_wand index into the
