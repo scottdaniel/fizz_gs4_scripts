@@ -7,16 +7,19 @@
 # bigshot pauses itself, runs this once against the target it already has
 # locked, then resumes to loot / wander / retarget -- so this does exactly ONE
 # attack decision per call and returns; bigshot re-invokes it every pass while
-# the target is still up.
+# the target is still up. The moment the target dies -- at any point, including
+# mid-hold after Condemn -- the script returns so bigshot resumes and fires its
+# loot routine. Death is read off GameObj status (what bigshot itself uses), not
+# a per-creature kill-message regex.
 #
 # Two-way decision, based on current mana:
 #
 #   mana > MANA_FLOOR:   incant 301 in stance offensive, then Condemn (309) --
 #                        empowered (prep 309 -> evoke) whenever a charge is
 #                        banked, plain incant otherwise -- then drop to stance
-#                        defensive and hold while the DoT ticks: CONDEMN_WAIT for
-#                        a plain cast, the shorter EMPOWERED_CONDEMN_WAIT for an
-#                        empowered one.
+#                        defensive and hold while the DoT ticks (bailing early if
+#                        the target dies): CONDEMN_WAIT for a plain cast, the
+#                        shorter EMPOWERED_CONDEMN_WAIT for an empowered one.
 #
 #   mana <= MANA_FLOOR:  cast Symbol of Mana if it's known and off cooldown
 #                        (cooldown-only check -- never spends deeds), otherwise
@@ -72,6 +75,27 @@ SPELL_LISTING_START = /^Your spell lists:/ unless defined?(SPELL_LISTING_START)
 SPELL_LISTING_END   = /^Type SPELL HELP for more options\.?/ unless defined?(SPELL_LISTING_END)
 
 # --- helpers --------------------------------------------------------------
+
+# Monster-agnostic death check: bigshot itself never text-matches kill messages
+# (they vary per creature) -- it reads GameObj status, which Lich core keeps
+# current from the room/combat XML. A dead creature reads "dead" while the corpse
+# lingers, then "gone" once it decays or is looted.
+def target_dead?(foe)
+  return true if foe.nil?
+  return true if foe.status.to_s =~ /dead|gone/
+  !GameObj.targets.any? { |t| t.id.to_i == foe.id.to_i && t.status.to_s !~ /dead|gone/ }
+end
+
+# Sleeps up to `seconds`, but bails out early (checked ~4x/sec) the moment the
+# target is dead -- so a kill during the post-Condemn hold ends the routine right
+# away and hands control back to bigshot, which then loots.
+def hold_unless_dead(seconds, foe)
+  deadline = Time.now.to_f + seconds
+  until Time.now.to_f >= deadline
+    return if target_dead?(foe)
+    sleep 0.25
+  end
+end
 
 # Sends cast_cmd and collects every line through the roundtime message (a single
 # dothistimeout match only sees the first matching line, not the whole result
@@ -143,7 +167,7 @@ def attack_sequence(foe)
 
   # 301 may have finished the target off -- don't Condemn a corpse or sit out
   # the DoT wait for nothing.
-  if foe.status =~ /dead|gone/
+  if target_dead?(foe)
     fput "stance defensive"
     return
   end
@@ -151,7 +175,7 @@ def attack_sequence(foe)
   empowered = cast_condemn(foe)
 
   fput "stance defensive"
-  sleep(empowered ? EMPOWERED_CONDEMN_WAIT : CONDEMN_WAIT)
+  hold_unless_dead(empowered ? EMPOWERED_CONDEMN_WAIT : CONDEMN_WAIT, foe)
 end
 
 # The wand noun bigshot is currently on (shared $bigshot_wand index into the
@@ -209,17 +233,17 @@ end
 # --- main ----------------------------------------------------------------
 
 foe = GameObj.targets.find { |t| t.id.to_i == XMLData.current_target_id.to_i } if XMLData.current_target_id
-foe ||= GameObj.targets.find { |t| t.status !~ /dead|gone/ && t.name !~ /animated/ }
+foe ||= GameObj.targets.find { |t| t.status.to_s !~ /dead|gone/ && t.name !~ /animated/ }
 
-if foe.nil? || foe.status =~ /dead|gone/
-  # nothing to do -- hand control straight back to bigshot
-  exit
-end
+# nothing (live) to hit -- hand control straight back to bigshot, which loots
+exit if target_dead?(foe)
 
 fput "target ##{foe.id}" unless XMLData.current_target_id.to_i == foe.id.to_i
 
 waitrt?
 waitcastrt?
+
+exit if target_dead?(foe)
 
 if checkmana > MANA_FLOOR
   attack_sequence(foe)
