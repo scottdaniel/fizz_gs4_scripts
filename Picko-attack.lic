@@ -56,8 +56,8 @@ MANA_FLOOR = [SPELL_903_MANA + 1, 4].max unless defined?(MANA_FLOOR)
 # are only the fallback if the profile leaves them blank.
 _op = (defined?(UserVars) && UserVars.op.is_a?(Hash)) ? UserVars.op : {}
 WAND_NOUN = (_op["wand"].to_s.split(/[,|]\s*/).map(&:strip).reject(&:empty?).first || "wand") unless defined?(WAND_NOUN)
-FRESH_WAND_CONTAINER = (_op["fresh_wand_container"].to_s.strip.empty? ? "sack"     : _op["fresh_wand_container"].to_s.strip) unless defined?(FRESH_WAND_CONTAINER)
-DEAD_WAND_CONTAINER  = (_op["dead_wand_container"].to_s.strip.empty?  ? "knapsack" : _op["dead_wand_container"].to_s.strip)  unless defined?(DEAD_WAND_CONTAINER)
+FRESH_WAND_CONTAINER = (_op["fresh_wand_container"].to_s.strip.empty? ? "sack" : _op["fresh_wand_container"].to_s.strip) unless defined?(FRESH_WAND_CONTAINER)
+DEAD_WAND_CONTAINER  = (_op["dead_wand_container"].to_s.strip.empty?  ? "bag"  : _op["dead_wand_container"].to_s.strip)  unless defined?(DEAD_WAND_CONTAINER)
 
 # --- patterns --------------------------------------------------------------
 
