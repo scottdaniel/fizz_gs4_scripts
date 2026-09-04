@@ -51,11 +51,13 @@ MANA_FLOOR = [SPELL_903_MANA + 1, 4].max unless defined?(MANA_FLOOR)
 
 # Wand config is read straight from bigshot's own loaded settings (UserVars.op)
 # so it always tracks whatever profile is active -- Fresh/Dead wand container and
-# the wand noun from the Attacking tab. The "wand" field may be comma- or
-# pipe-separated (e.g. "coral|electrum"); the first token is used. Values here
-# are only the fallback if the profile leaves them blank.
+# the wand type(s) from the Attacking tab. The "wand" field may be comma- or
+# pipe-separated (e.g. "coral|electrum"); WAND_PATTERN matches any of them, or
+# any wand at all if it's blank. Container values here are the fallback if the
+# profile leaves them blank.
 _op = (defined?(UserVars) && UserVars.op.is_a?(Hash)) ? UserVars.op : {}
-WAND_NOUN = (_op["wand"].to_s.split(/[,|]\s*/).map(&:strip).reject(&:empty?).first || "wand") unless defined?(WAND_NOUN)
+_wand_tokens = _op["wand"].to_s.split(/[,|]\s*/).map(&:strip).reject(&:empty?)
+WAND_PATTERN = (_wand_tokens.empty? ? /\bwand\b/i : /#{_wand_tokens.map { |t| Regexp.escape(t) }.join('|')}/i) unless defined?(WAND_PATTERN)
 FRESH_WAND_CONTAINER = (_op["fresh_wand_container"].to_s.strip.empty? ? "sack" : _op["fresh_wand_container"].to_s.strip) unless defined?(FRESH_WAND_CONTAINER)
 DEAD_WAND_CONTAINER  = (_op["dead_wand_container"].to_s.strip.empty?  ? "bag"  : _op["dead_wand_container"].to_s.strip)  unless defined?(DEAD_WAND_CONTAINER)
 
@@ -120,37 +122,56 @@ def attack_903(foe)
   fput "stance defensive"
 end
 
-# True if the fresh container still holds a wand -- LOOK IN it and scan the
-# contents line ("In the <container> you see ..."). An empty container answers
-# "Get what?" to every blind `get`, so without this pre-check the routine just
-# spins on that forever.
-def fresh_wand_available?
-  text = dothistimeout("look in my #{FRESH_WAND_CONTAINER}", 3,
-                       /In (?:the|your) .+ you see|can't look in|isn't open/i).to_s
-  (text =~ /#{Regexp.escape(WAND_NOUN)}/i || text =~ /\bwand/i) ? true : false
+# Wand-type names currently in the fresh container, parsed from a full multi-line
+# LOOK IN. Containers that categorize their contents print several lines --
+#   In the mail large sack:
+#   Wands [20]: a slender blue wand, a copper wand (2), a drake wand (3), ...
+#   Total items: 20
+# -- while a plain container prints one "In the <c> you see ..." line; a single
+# dothistimeout would only ever see the first line, so collect the whole block.
+# Filtered to WAND_PATTERN (the profile's wand type(s), or any wand).
+def fresh_wand_names
+  fput "open my #{FRESH_WAND_CONTAINER}"
+  lines = []
+  put "look in my #{FRESH_WAND_CONTAINER}"
+  deadline = Time.now.to_f + 3
+  until Time.now.to_f >= deadline
+    line = get?
+    if line.nil?
+      sleep 0.05
+      next
+    end
+    lines << line
+    break if line =~ /^Total items:|^In .+ you see |There (?:is|are) nothing|is closed|can't look/i
+  end
+  lines.join(' ')
+       .scan(/\b(?:an?) ([a-z][a-z' -]*?wand)\b/i)
+       .flatten.map(&:strip).uniq
+       .select { |n| n =~ WAND_PATTERN }
 end
 
 # Tell bigshot to rest -- out of mana and out of wands, nothing left to do.
 def rest_out_of_wands
-  echo "out of mana and no wands left in #{FRESH_WAND_CONTAINER} -- resting."
+  echo "out of mana and no usable wands in #{FRESH_WAND_CONTAINER} -- resting."
   $bigshot_should_rest = true
   $rest_reason = "Out of mana, no wands"
 end
 
-# One wand wave at foe. If neither hand holds a wand, confirms the fresh
-# container still has one (LOOK IN, not a blind GET) and draws it; a spent wand
-# (no d100 roll on the wave) is retired to the dead container. Nothing to wave
-# and nothing to draw -> flag bigshot to rest.
+# One wand wave at foe. If neither hand holds a wand, reads the fresh container
+# (full multi-line LOOK IN, not a blind GET) and draws a specific wand by name; a
+# spent wand (no d100 roll on the wave) is retired to the dead container. Nothing
+# to wave and nothing to draw -> flag bigshot to rest.
 def wave_wand(foe)
-  in_hand = [GameObj.right_hand, GameObj.left_hand].compact.any? { |o| o.name.to_s =~ /\bwand\b/i }
+  in_hand = [GameObj.right_hand, GameObj.left_hand].compact.find { |o| o.name.to_s =~ /\bwand\b/i }
 
   unless in_hand
-    unless fresh_wand_available?
+    name = fresh_wand_names.first
+    if name.nil?
       rest_out_of_wands
       return
     end
 
-    r = dothistimeout("get #{WAND_NOUN} from my #{FRESH_WAND_CONTAINER}", 3,
+    r = dothistimeout("get #{name} from my #{FRESH_WAND_CONTAINER}", 3,
                       /You (?:remove|slip|slide|get|pull)|Get what\?|What were you referring to|I could not find/i)
     unless r =~ /You (?:remove|slip|slide|get|pull)/i
       rest_out_of_wands
@@ -162,10 +183,11 @@ def wave_wand(foe)
   result = cast_and_collect("wave my wand at ##{foe.id}")
   fput "stance defensive"
 
-  # bigshot's own cmd_wand heuristic: no d100 roll seen -> the wand is dry.
-  if result !~ /d100|You hurl/i
-    fput "put my wand in my #{DEAD_WAND_CONTAINER}"
-  end
+  # A wand that fired -- even one the target fully resisted -- still shows a
+  # combat roll or a roundtime. A genuinely depleted wand gives neither
+  # ("Nothing happens."), so only then retire it to the dead container.
+  fired = result =~ /d100|You hurl|Roundtime: \d+ sec|Cast Roundtime \d+ Seconds?/i
+  fput "put my wand in my #{DEAD_WAND_CONTAINER}" unless fired
 end
 
 # --- main ----------------------------------------------------------------
