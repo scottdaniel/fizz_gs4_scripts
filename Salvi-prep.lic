@@ -12,8 +12,11 @@ if Script.running?("playsongs")
   wait_while { Script.running?("playsongs") }
 end
 
-# clear hands
-fput "put my #{GameObj.right_hand} in my cloak"
+# clear hands -- "store weapon" routes the runestaff to the readied sheath per
+# the in-game STORE config (STORE SET WEAPON SHEATH); "stow all" mops up anything
+# left in the off-hand. Replaces the old hardcoded "put ... in my cloak" that
+# ignored the sheath and let stray items fall through to the backpack.
+fput "store weapon"
 fput "stow all"
 
 # rub stuff, but only if the spell isn't already active -- and only pause
