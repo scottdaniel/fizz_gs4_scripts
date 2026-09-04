@@ -458,8 +458,11 @@ module Playsongs
       # left hand needs to be free for this; leave the right hand (and
       # whatever it's holding) alone.
       if checkleft
-        echo "Stowing #{checkleft} to make room for #{INSTRUMENT}."
-        fput "stow left"
+        echo "Putting #{checkleft} away to make room for #{INSTRUMENT}."
+        # STORE, not STOW -- so a readied weapon that landed here goes to its
+        # sheath, not the default stow container; STOW mops up anything else.
+        fput "store left"
+        fput "stow left" if checkleft
       end
       get_instrument
       false
@@ -478,8 +481,13 @@ module Playsongs
     loop do
       line = get
       if line =~ TWO_HANDED_REGEX
-        echo "#{INSTRUMENT} needs both hands -- stowing right hand and retrying."
-        fput "stow right"
+        echo "#{INSTRUMENT} needs both hands -- putting the right hand away and retrying."
+        # STORE (not STOW): routes a readied weapon to its sheath per the
+        # in-game STORE config instead of dumping the runestaff in the default
+        # stow container. Fall back to STOW for anything STORE doesn't handle so
+        # the hand always ends up clear (otherwise this retries forever).
+        fput "store right"
+        fput "stow right" if checkright
         started_at = Time.now
         fput "play my #{INSTRUMENT} #{STYLE}"
         next
