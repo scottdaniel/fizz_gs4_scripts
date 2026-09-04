@@ -52,12 +52,15 @@ MANA_FLOOR = [SPELL_903_MANA + 1, 4].max unless defined?(MANA_FLOOR)
 # Wand config is read straight from bigshot's own loaded settings (UserVars.op)
 # so it always tracks whatever profile is active -- Fresh/Dead wand container and
 # the wand type(s) from the Attacking tab. The "wand" field may be comma- or
-# pipe-separated (e.g. "coral|electrum"); WAND_PATTERN matches any of them, or
-# any wand at all if it's blank. Container values here are the fallback if the
-# profile leaves them blank.
+# pipe-separated (e.g. "coral|electrum"). WAND_PATTERN just checks the fresh
+# container actually holds a matching wand; WAND_GET is the noun handed to GET --
+# a single adjective + "wand" (GS chokes on double adjectives like "slender blue
+# wand", so we never name the full thing). Container values here are the fallback
+# if the profile leaves them blank.
 _op = (defined?(UserVars) && UserVars.op.is_a?(Hash)) ? UserVars.op : {}
 _wand_tokens = _op["wand"].to_s.split(/[,|]\s*/).map(&:strip).reject(&:empty?)
 WAND_PATTERN = (_wand_tokens.empty? ? /\bwand\b/i : /#{_wand_tokens.map { |t| Regexp.escape(t) }.join('|')}/i) unless defined?(WAND_PATTERN)
+WAND_GET = (_wand_tokens.empty? || _wand_tokens.first =~ /\bwand\b/i ? "wand" : "#{_wand_tokens.first} wand") unless defined?(WAND_GET)
 FRESH_WAND_CONTAINER = (_op["fresh_wand_container"].to_s.strip.empty? ? "sack" : _op["fresh_wand_container"].to_s.strip) unless defined?(FRESH_WAND_CONTAINER)
 DEAD_WAND_CONTAINER  = (_op["dead_wand_container"].to_s.strip.empty?  ? "bag"  : _op["dead_wand_container"].to_s.strip)  unless defined?(DEAD_WAND_CONTAINER)
 
@@ -122,15 +125,14 @@ def attack_903(foe)
   fput "stance defensive"
 end
 
-# Wand-type names currently in the fresh container, parsed from a full multi-line
-# LOOK IN. Containers that categorize their contents print several lines --
+# True if the fresh container holds a wand matching WAND_PATTERN, read from a
+# full multi-line LOOK IN. Containers that categorize their contents print
 #   In the mail large sack:
 #   Wands [20]: a slender blue wand, a copper wand (2), a drake wand (3), ...
 #   Total items: 20
 # -- while a plain container prints one "In the <c> you see ..." line; a single
 # dothistimeout would only ever see the first line, so collect the whole block.
-# Filtered to WAND_PATTERN (the profile's wand type(s), or any wand).
-def fresh_wand_names
+def fresh_wand_present?
   fput "open my #{FRESH_WAND_CONTAINER}"
   lines = []
   put "look in my #{FRESH_WAND_CONTAINER}"
@@ -144,10 +146,7 @@ def fresh_wand_names
     lines << line
     break if line =~ /^Total items:|^In .+ you see |There (?:is|are) nothing|is closed|can't look/i
   end
-  lines.join(' ')
-       .scan(/\b(?:an?) ([a-z][a-z' -]*?wand)\b/i)
-       .flatten.map(&:strip).uniq
-       .select { |n| n =~ WAND_PATTERN }
+  lines.join(' ') =~ WAND_PATTERN ? true : false
 end
 
 # Tell bigshot to rest -- out of mana and out of wands, nothing left to do.
@@ -157,21 +156,21 @@ def rest_out_of_wands
   $rest_reason = "Out of mana, no wands"
 end
 
-# One wand wave at foe. If neither hand holds a wand, reads the fresh container
-# (full multi-line LOOK IN, not a blind GET) and draws a specific wand by name; a
-# spent wand (no d100 roll on the wave) is retired to the dead container. Nothing
-# to wave and nothing to draw -> flag bigshot to rest.
+# One wand wave at foe. If neither hand holds a wand, confirms the fresh
+# container has one (full multi-line LOOK IN, not a blind GET) and draws it with
+# a plain "get <WAND_GET>"; a spent wand (no roll/roundtime on the wave) is
+# retired to the dead container. Nothing to wave, nothing to draw -> flag
+# bigshot to rest.
 def wave_wand(foe)
   in_hand = [GameObj.right_hand, GameObj.left_hand].compact.find { |o| o.name.to_s =~ /\bwand\b/i }
 
   unless in_hand
-    name = fresh_wand_names.first
-    if name.nil?
+    unless fresh_wand_present?
       rest_out_of_wands
       return
     end
 
-    r = dothistimeout("get #{name} from my #{FRESH_WAND_CONTAINER}", 3,
+    r = dothistimeout("get #{WAND_GET} from my #{FRESH_WAND_CONTAINER}", 3,
                       /You (?:remove|slip|slide|get|pull)|Get what\?|What were you referring to|I could not find/i)
     unless r =~ /You (?:remove|slip|slide|get|pull)/i
       rest_out_of_wands
