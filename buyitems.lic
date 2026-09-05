@@ -1,10 +1,14 @@
 #buyitems.lic
 
-# Withdraws 10,000 silver from the bank, then buys rub-items from the
-# pawnshop's arcana/magic table: quartz orb, crystal amulet, black crystal,
-# white crystal, small statue, moonstone cube. Each item is stowed right
-# after it's bought. Deposits whatever silver is left back at the bank
-# before returning to town.
+# Withdraws 10,000 silver from the bank, then buys whichever rub-items are
+# listed in UserVars.items_to_buy from the pawnshop's arcana/magic table.
+# Each item is stowed right after it's bought. Deposits whatever silver is
+# left back at the bank before returning to town.
+#
+# UserVars are per-character, so one copy of this script works for every
+# character -- just set each character's own item list once:
+#
+#   ;vars set items_to_buy=quartz orb, crystal amulet, black crystal, white crystal, small statue, moonstone cube
 #
 # Detects the town via Room.current.location and looks up how to reach that
 # pawnshop's arcana/magic table in TOWN_CONFIG. Add an entry for any town not
@@ -13,6 +17,7 @@
 module Buyitems
 
 TOWN_CONFIG = {
+	"Icemule Trace" => { table_cmd: "out", table_name: "magic table" },
 	"the town of River's Rest" => { table_cmd: "north", table_name: "arcana table" },
 }
 DEFAULT_TABLE_CMD = "go door"
@@ -28,14 +33,12 @@ def self.town_config
 	config
 end
 
-ITEMS = [
-	"quartz orb",
-	"crystal amulet",
-	"black crystal",
-	"white crystal",
-	"small statue",
-	"moonstone cube"
-]
+if UserVars.items_to_buy.to_s.strip.empty?
+	echo "No items configured -- set your item list first, e.g.:"
+	echo "  ;vars set items_to_buy=quartz orb, crystal amulet, black crystal, white crystal, small statue, moonstone cube"
+	exit
+end
+ITEMS = UserVars.items_to_buy.split(',').map(&:strip).reject(&:empty?)
 
 # "look on <table>" replies across multiple lines, e.g.:
 #   On the magic table:
