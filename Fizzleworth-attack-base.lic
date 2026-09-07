@@ -1,0 +1,287 @@
+# Fizzleworth-attack-base.lic
+# Bigshot custom attack routine for Fizzleworth (Sorcerer) -- sorcerer offense
+# ONLY, no Energy Wings at all. Drop it into a bigshot hunting-commands list
+# as a single command:
+#
+#   script Fizzleworth-attack-base
+#
+# This is the "wings off" half of an A/B pair with Fizzleworth-attack-wing.lic
+# (identical sorcerer rotation, plus the full wing kit and
+# Fizzleworth-wingguard.lic running alongside it). Swap which one is in the
+# hunting-commands line between hunting blocks to compare kills / damage
+# dealt / damage taken / deaths with and without the wing kit -- both scripts
+# tag every line with their own name in the log ([custom/Fizzleworth-attack-base]
+# vs [custom/Fizzleworth-attack-wing]), so a combined log is still easy to
+# split back apart afterward. Keep the two files' offense logic in sync by
+# hand if you change one -- there's no shared library here.
+#
+# Makes sure Fizzleworth-wingguard.lic is NOT running (every pass -- so it gets
+# shut off within one pass even if it was left running from a wing-kit hunt),
+# so plugging this script into a profile is the only setup needed on this side
+# of the comparison. Fizzleworth-attack-wing.lic is responsible for starting it
+# back up when THAT script is what's active instead.
+#
+# bigshot pauses itself, runs this once against the target it already has
+# locked, then resumes to loot / wander / retarget -- so this does exactly ONE
+# attack decision per call and returns. bigshot re-invokes it every pass while
+# the target is still up. The moment the target dies -- at any point, including
+# mid-hold after Energy Maelstrom -- the script returns so bigshot loots. Death
+# is read off GameObj status (what bigshot itself uses), not a kill-message
+# regex.
+#
+# --- offense (per target, mana-gated) ------------------------------------
+#
+# Everything below casts from stance DEFENSIVE and never leaves it. Web is an
+# SMRv2 spell attack, and per https://gswiki.play.net/SMR: "typically stance
+# is not a factor for any spell based SMRv2 abilities" -- attacker stance does
+# nothing for its landing chance, so there's no reason to ever go offensive
+# for it (or for Maelstrom/Tether, which bigshot's own old rotation already
+# cast from guarded with no trouble). The game will still clamp you to guarded
+# for the moment of any cast's own roundtime -- that's automatic and not
+# fought here, it's just not something this script triggers on purpose.
+#
+#   1. Web (118) -- recast until the SMR endroll is >= WEB_ENDROLL (101) or
+#      WEB_MAX_TRIES is hit -- snares / knocks prone. Landed once per target,
+#      then skipped on later passes (a $fizz_webbed_id tracker), so bigshot
+#      re-invoking every pass doesn't re-web and thrash mana.
+#   2. Energy Maelstrom (710) -- prep + cast at the target. A DoT, like 309.
+#   3. Tenebrous Tether (706) -- roots the target so it can't close while the
+#      Maelstrom ticks. Landed once per target ($fizz_tethered_id), and only
+#      attempted on a pass where Maelstrom actually confirmed cast (no point
+#      rooting a target with no DoT running on it).
+#   4. Hold up to MAELSTROM_WAIT (10s) for the DoT, bailing early the instant
+#      the target dies OR the room fills past FLEE_HINT (bigshot is about to
+#      flee -- don't sit still for the DoT).
+#
+# Low mana -> Symbol of Mana (off-cooldown, and only with deeds to spare).
+# That's the only mid-fight lever; otherwise it just keeps the target webbed
+# and returns for sac4mana / bigshot's own oom rest to sort the mana out.
+#
+# OVEREXERTION: casting a spell without its full mana cost in hand doesn't fail
+# cleanly in GS4 -- the cast goes through and hurts you ("You have overextended
+# yourself!  You feel yourself going into shock!"). So every cast is gated on
+# the LIVE checkmana against that spell's real cost: TARGETED Web 118 = 5 (the
+# effect-list.xml value of 10 is the untargeted/room cast -- don't trust the
+# lookup here), Energy Maelstrom 710 = 10, Tenebrous Tether 706 = 6. This is a
+# pure mana check -- no mind-%/rest guard (bigshot handles rest-on-mind itself).
+#
+# Extra mana only ever comes from Symbol of Mana (off-cooldown, deeds-gated) or
+# the sac4mana hunting-script -- there is NO pray-for-mana here (that was a
+# Duskruin-arena-only thing in Fizzleworth-duskattack.lic).
+#
+# If a wound blocks casting outright ("You can't think clearly enough to
+# prepare a spell!" -- no roundtime at all) it fires ;eherbs --spellcast once
+# instead of retrying the dead cast, same as the other Fizzleworth scripts.
+
+# --- knobs -----------------------------------------------------------------
+
+# Targeted Web is a flat 5 -- effect-list.xml's 10 is the untargeted cast, so
+# it's hardcoded rather than looked up. Maelstrom / Tether track the lookup
+# with their known values as fallback.
+SPELL_WEB_MANA       = 5 unless defined?(SPELL_WEB_MANA)
+SPELL_MAELSTROM_MANA = (Spell[710].mana_cost.to_i.positive? ? Spell[710].mana_cost.to_i : 10) unless defined?(SPELL_MAELSTROM_MANA)
+SPELL_TETHER_MANA    = (Spell[706].mana_cost.to_i.positive? ? Spell[706].mana_cost.to_i : 6)  unless defined?(SPELL_TETHER_MANA)
+
+# Web is an SMR attack; the endroll is the `== +N` on its "SMR SvD:" line.
+# Keep recasting until it lands at least this high (bigshot's old "until 101").
+WEB_ENDROLL   = 101 unless defined?(WEB_ENDROLL)
+WEB_MAX_TRIES = 3   unless defined?(WEB_MAX_TRIES)
+
+# Flat hold in stance defensive after Energy Maelstrom lands, letting the DoT
+# work instead of instantly re-engaging (mirrors Salvi-attack's Condemn hold).
+MAELSTROM_WAIT = 10 unless defined?(MAELSTROM_WAIT)
+
+# Living-target count past which bigshot is about to flee (mirrors the profile's
+# flee_count) -- don't sit still holding for the DoT once the room's this full.
+FLEE_HINT = 7 unless defined?(FLEE_HINT)
+
+# The reactive wing companion has no place in the no-wings arm of the A/B test.
+WINGGUARD_SCRIPT_NAME = "Fizzleworth-wingguard" unless defined?(WINGGUARD_SCRIPT_NAME)
+
+# --- patterns ------------------------------------------------------------
+
+CANT_CAST_WOUNDED = /can't think clearly enough to prepare a spell/i unless defined?(CANT_CAST_WOUNDED)
+
+# --- helpers -----------------------------------------------------------
+
+# Monster-agnostic death check -- bigshot itself never text-matches kill
+# messages (they vary per creature); it reads GameObj status, kept current by
+# Lich core from the room/combat XML. Dead reads "dead" while the corpse
+# lingers, then "gone" once it decays or is looted.
+def target_dead?(foe)
+  return true if foe.nil?
+  return true if foe.status.to_s =~ /dead|gone/
+  !GameObj.targets.any? { |t| t.id.to_i == foe.id.to_i && t.status.to_s !~ /dead|gone/ }
+end
+
+def living_targets
+  GameObj.targets.count { |t| t.status.to_s !~ /dead|gone/ }
+end
+
+# Sleeps up to `seconds`, checked ~4x/sec, bailing the instant the target dies
+# (hand back to bigshot so it loots) or the room fills past FLEE_HINT (bigshot
+# is about to flee -- stop holding still for the DoT).
+def hold_for_dot(seconds, foe)
+  deadline = Time.now.to_f + seconds
+  until Time.now.to_f >= deadline
+    return if target_dead?(foe)
+    return if living_targets >= FLEE_HINT
+    sleep 0.25
+  end
+end
+
+# Sends `cmd` and collects every line through the roundtime/resolution message
+# (a single dothistimeout match only sees the first matching line, not the
+# whole result block). Stops early on the wound-block message, which never gets
+# a roundtime line.
+def cast_collect(cmd, timeout = 6)
+  lines = []
+  put cmd
+  deadline = Time.now.to_f + timeout
+  loop do
+    line = get?
+    if line.nil?
+      sleep 0.1
+    else
+      lines << line
+      break if line =~ /Roundtime: \d+ sec|Cast Roundtime \d+ Sec|can't think clearly enough to prepare|Warded off|Warding failed|is rooted in place/i
+    end
+    break if Time.now.to_f >= deadline
+  end
+  lines.join("\n")
+end
+
+# --- offense ---------------------------------------------------------
+
+def go_defensive
+  fput "stance defensive" if stance != "defensive"
+end
+
+# Web until the endroll clears WEB_ENDROLL (or WEB_MAX_TRIES). Landed once per
+# target -- caller passes a foe whose id differs from $fizz_webbed_id. Cast
+# from whatever stance main already set (defensive) -- see the file header on
+# why Web never goes offensive.
+def land_web(foe)
+  return if $fizz_webbed_id == foe.id.to_i
+  tries = 0
+  while tries < WEB_MAX_TRIES
+    return if target_dead?(foe)
+    return if checkmana < SPELL_WEB_MANA
+    waitcastrt?
+    waitrt?
+    text = cast_collect("incant 118")
+    if text =~ CANT_CAST_WOUNDED
+      Script.run("eherbs", "--spellcast")
+      return
+    end
+    tries += 1
+    roll = (text =~ /==\s*\+?(-?\d+)/ ? Regexp.last_match(1).to_i : nil)
+    break if (roll && roll >= WEB_ENDROLL) || text =~ /becomes ensnared|is rooted in place/i
+    sleep 0.2
+  end
+  # Mark it handled either way -- a mob whose TD we just can't roll past isn't
+  # worth burning the same 3 casts on again next pass.
+  $fizz_webbed_id = foe.id.to_i
+end
+
+# prep 710 + cast at foe, from stance defensive (doesn't need offensive to
+# connect). @return true only if the prep actually confirmed ready AND the
+# cast went out -- never blind-fires "cast" off an unconfirmed prep. Caller
+# gates Tenebrous Tether on this return value -- tethering a target with no
+# Maelstrom running on it isn't worth much.
+def land_maelstrom(foe)
+  return false if target_dead?(foe)
+  return false if checkmana < SPELL_MAELSTROM_MANA
+  fput "release" if checkprep != "None"
+  waitcastrt?
+  waitrt?
+  text = dothistimeout("prep 710", 6, /Your spell is ready|can't think clearly enough to prepare/i).to_s
+  if text =~ CANT_CAST_WOUNDED
+    Script.run("eherbs", "--spellcast")
+    return false
+  end
+  return false unless text =~ /Your spell is ready/i   # prep never confirmed -- don't cast blind
+  return false if target_dead?(foe)
+  return false if checkmana < SPELL_MAELSTROM_MANA   # last gate before the cast
+  fput "cast ##{foe.id}"
+  waitcastrt?
+  waitrt?
+  true
+end
+
+# Tenebrous Tether, once per target ($fizz_tethered_id), also from defensive.
+def land_tether(foe)
+  return if $fizz_tethered_id == foe.id.to_i
+  return if target_dead?(foe)
+  return if checkmana < SPELL_TETHER_MANA
+  waitcastrt?
+  waitrt?
+  cast_collect("incant 706")
+  $fizz_tethered_id = foe.id.to_i
+  waitcastrt?
+  waitrt?
+end
+
+# Only lever available mid-fight -- Symbol of Mana, off-cooldown and only when
+# there are deeds to spare (mirrors Fizzleworth-duskattack). Otherwise nothing:
+# sac4mana (a hunting-script) and bigshot's own oom rest handle the rest.
+def recover_mana
+  return unless !Effects::Cooldowns.active?("Symbol of Mana") && Experience.deeds > 3
+  fput "symbol of mana"
+  waitrt?
+end
+
+# --- main ----------------------------------------------------------
+
+# Opposite of Fizzleworth-attack-wing.lic: this is the no-wings arm of the A/B
+# test, so make sure the reactive wing companion isn't quietly still running
+# from a previous wing-kit hunting block.
+Script.kill(WINGGUARD_SCRIPT_NAME) if Script.running?(WINGGUARD_SCRIPT_NAME)
+
+$fizz_target      = nil unless defined?($fizz_target)
+$fizz_webbed_id   = nil unless defined?($fizz_webbed_id)
+$fizz_tethered_id = nil unless defined?($fizz_tethered_id)
+
+foe = GameObj.targets.find { |t| t.id.to_i == XMLData.current_target_id.to_i } if XMLData.current_target_id
+foe ||= GameObj.targets.find { |t| t.status.to_s !~ /dead|gone/ && t.name !~ /animated/ }
+
+# nothing (live) to hit -- hand straight back to bigshot, which loots
+exit if target_dead?(foe)
+
+# fresh target -> reset the per-target "already landed" trackers
+if $fizz_target != foe.id.to_i
+  $fizz_target      = foe.id.to_i
+  $fizz_webbed_id   = nil
+  $fizz_tethered_id = nil
+end
+
+fput "target ##{foe.id}" unless XMLData.current_target_id.to_i == foe.id.to_i
+waitrt?
+waitcastrt?
+exit if target_dead?(foe)
+
+# Stay defensive as much as possible -- see the file header on why nothing
+# below ever needs offensive. Set once, up front, rather than around each
+# cast: nothing in this script leaves defensive once we're in it, so there's
+# nothing to keep restoring.
+go_defensive
+
+# can't even afford Web -- recover and let bigshot's oom rest take over
+if checkmana < SPELL_WEB_MANA
+  recover_mana
+  exit
+end
+
+land_web(foe)
+
+got_dot = false
+unless target_dead?(foe)
+  got_dot = land_maelstrom(foe)
+  # Tether only after Maelstrom actually confirmed cast this pass -- rooting a
+  # target with no DoT running on it isn't worth the mana or the roundtime.
+  land_tether(foe) if got_dot && !target_dead?(foe)
+end
+
+hold_for_dot(MAELSTROM_WAIT, foe) if got_dot
+
+recover_mana if !target_dead?(foe) && checkmana < SPELL_MAELSTROM_MANA

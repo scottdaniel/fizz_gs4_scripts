@@ -1,0 +1,392 @@
+# Fizzleworth-attack-wing.lic
+# Bigshot custom attack routine for Fizzleworth (Sorcerer) -- sorcerer offense
+# PLUS Energy Wings, paired with Fizzleworth-wingguard.lic. Drop it into a
+# bigshot hunting-commands list as a single command:
+#
+#   script Fizzleworth-attack-wing
+#
+# This is the "wings on" half of an A/B pair with Fizzleworth-attack-base.lic
+# (identical sorcerer rotation, no wings at all, and it makes sure
+# Fizzleworth-wingguard.lic is NOT running). Swap which one is in the
+# hunting-commands line between hunting blocks to compare kills / damage
+# dealt / damage taken / deaths with and without the wing kit -- both scripts
+# tag every line with their own name in the log ([custom/Fizzleworth-attack-wing]
+# vs [custom/Fizzleworth-attack-base]), so a combined log is still easy to
+# split back apart afterward. Keep the two files' offense logic in sync by
+# hand if you change one -- there's no shared library here, same as
+# Fizzleworth-wingguard.lic's copy of the prep-message list.
+#
+# Owns Fizzleworth-wingguard.lic's lifecycle: starts it if it isn't already
+# running (every pass -- self-healing if it ever dies mid-hunt), so plugging
+# this script into a profile is the only setup needed. Fizzleworth-attack-base
+# is responsible for killing it when THAT script is what's active instead.
+#
+# bigshot pauses itself, runs this once against the target it already has
+# locked, then resumes to loot / wander / retarget -- so this does exactly ONE
+# attack decision per call and returns. bigshot re-invokes it every pass while
+# the target is still up. The moment the target dies -- at any point, including
+# mid-hold after Energy Maelstrom -- the script returns so bigshot loots. Death
+# is read off GameObj status (what bigshot itself uses), not a kill-message
+# regex.
+#
+# --- offense (per target, mana-gated) ------------------------------------
+#
+# Everything below casts from stance DEFENSIVE and never leaves it. Web is an
+# SMRv2 spell attack, and per https://gswiki.play.net/SMR: "typically stance
+# is not a factor for any spell based SMRv2 abilities" -- attacker stance does
+# nothing for its landing chance, so there's no reason to ever go offensive
+# for it (or for Maelstrom/Tether, which bigshot's own old rotation already
+# cast from guarded with no trouble). The game will still clamp you to guarded
+# for the moment of any cast's own roundtime -- that's automatic and not
+# fought here, it's just not something this script triggers on purpose.
+#
+#   1. Web (118) -- recast until the SMR endroll is >= WEB_ENDROLL (101) or
+#      WEB_MAX_TRIES is hit -- snares / knocks prone. Landed once per target,
+#      then skipped on later passes (a $fizz_webbed_id tracker), so bigshot
+#      re-invoking every pass doesn't re-web and thrash mana the way the old
+#      energywings setup did.
+#   2. Energy Maelstrom (710) -- prep + cast at the target. A DoT, like 309.
+#   3. Tenebrous Tether (706) -- roots the target so it can't close while the
+#      Maelstrom ticks. Landed once per target ($fizz_tethered_id), and only
+#      attempted on a pass where Maelstrom actually confirmed cast (no point
+#      rooting a target with no DoT running on it).
+#   4. Hold up to MAELSTROM_WAIT (10s) for the DoT, bailing early the instant
+#      the target dies OR the room fills past FLEE_HINT (bigshot is about to
+#      flee -- don't sit still for the DoT).
+#
+# Low mana -> Symbol of Mana (off-cooldown, and only with deeds to spare).
+# That's the only mid-fight lever; otherwise it just keeps the target webbed
+# and returns for sac4mana / bigshot's own oom rest to sort the mana out.
+#
+# --- wings: DEFENSIVE + swarm-scaled AOE, no single-target beam ---------
+#
+# Auto-detects the worn wing-shaped pin (dark => dark mode, pale => light).
+# One wing action per pass, fired BEFORE the casts, picking the biggest tool
+# the current crowd justifies (per https://gswiki.play.net/Energy_Wings):
+#
+#   * living targets >= SWARM_AOE (6), AOE off cooldown        -> fold my wing pin
+#     (Blinding Reprisal / Rain of Thorns -- up to 10 targets)
+#   * >= SWARM_AOE, bleeding, guard off cooldown                -> push my wing pin
+#     (Wings of Warding / Carrion Guard -- DS/TD/HP buff)
+#   * >= SWARM_MULTI (3), multi off cooldown                    -> knock my wing pin
+#     (Blast of Brilliance / Barbed Sweep -- up to 5 targets)
+#   * otherwise, defensive tap off cooldown                     -> tap my wing pin
+#     (Luminous Flight / Shadow Mantle)
+#
+# The single-target beam (turn my wing pin -- Radiant Pulse / Shadow Barb) is
+# the ONE ability deliberately left out: it fought the sorcerer rotation for
+# the same target and roundtime, and its `incant 118` precast double-cast Web.
+# `knock` doesn't have that problem -- it's a real AOE, not a single-target
+# duplicate -- so it's in. Every wing verb here goes through a hard
+# WING_VERB_TIMEOUT so a silently-on-cooldown ability can never freeze the
+# routine (energywings' "No game response for 60s to 'tap my wing pin'" hangs,
+# which stalled bigshot for a full minute each).
+#
+# The reactive pull -- Prismatic Aegis / Crawling Shadow when an enemy preps a
+# spell -- lives in Fizzleworth-wingguard.lic, an always-on companion, because
+# it needs a live line listener a one-shot script can't run. Its own
+# `with_paused_scripts` pauses THIS script's name while a pull resolves, so the
+# two never have commands in flight at once -- keep that pause list in sync if
+# this file gets renamed again.
+#
+# OVEREXERTION: casting a spell without its full mana cost in hand doesn't fail
+# cleanly in GS4 -- the cast goes through and hurts you ("You have overextended
+# yourself!  You feel yourself going into shock!"). So every cast is gated on
+# the LIVE checkmana against that spell's real cost: TARGETED Web 118 = 5 (the
+# effect-list.xml value of 10 is the untargeted/room cast -- don't trust the
+# lookup here), Energy Maelstrom 710 = 10, Tenebrous Tether 706 = 6. This is a
+# pure mana check -- no mind-%/rest guard (bigshot handles rest-on-mind itself).
+#
+# Extra mana only ever comes from Symbol of Mana (off-cooldown, deeds-gated) or
+# the sac4mana hunting-script -- there is NO pray-for-mana here (that was a
+# Duskruin-arena-only thing in Fizzleworth-duskattack.lic).
+#
+# If a wound blocks casting outright ("You can't think clearly enough to
+# prepare a spell!" -- no roundtime at all) it fires ;eherbs --spellcast once
+# instead of retrying the dead cast, same as the other Fizzleworth scripts.
+
+# --- knobs -----------------------------------------------------------------
+
+# Targeted Web is a flat 5 -- effect-list.xml's 10 is the untargeted cast, so
+# it's hardcoded rather than looked up. Maelstrom / Tether track the lookup
+# with their known values as fallback.
+SPELL_WEB_MANA       = 5 unless defined?(SPELL_WEB_MANA)
+SPELL_MAELSTROM_MANA = (Spell[710].mana_cost.to_i.positive? ? Spell[710].mana_cost.to_i : 10) unless defined?(SPELL_MAELSTROM_MANA)
+SPELL_TETHER_MANA    = (Spell[706].mana_cost.to_i.positive? ? Spell[706].mana_cost.to_i : 6)  unless defined?(SPELL_TETHER_MANA)
+
+# Web is an SMR attack; the endroll is the `== +N` on its "SMR SvD:" line.
+# Keep recasting until it lands at least this high (bigshot's old "until 101").
+WEB_ENDROLL   = 101 unless defined?(WEB_ENDROLL)
+WEB_MAX_TRIES = 3   unless defined?(WEB_MAX_TRIES)
+
+# Flat hold in stance defensive after Energy Maelstrom lands, letting the DoT
+# work instead of instantly re-engaging (mirrors Salvi-attack's Condemn hold).
+MAELSTROM_WAIT = 10 unless defined?(MAELSTROM_WAIT)
+
+# Living-target counts that unlock the two AOE tiers -- per the Energy Wings
+# wiki, "knock" (Blast of Brilliance / Barbed Sweep) hits up to 5 targets,
+# "fold" (Blinding Reprisal / Rain of Thorns) up to 10. Set with an eye on
+# bigshot's own "flee if enemy count is >" (profile flee_count) -- you want
+# SWARM_AOE a notch below it so there's a window where the big AOE fires
+# before bigshot bails. As a squishy sorcerer that means: knock at 3-5, fold at
+# 6+, let bigshot flee at 7+.
+SWARM_MULTI = 3 unless defined?(SWARM_MULTI)
+SWARM_AOE   = 6 unless defined?(SWARM_AOE)
+FLEE_HINT   = 7 unless defined?(FLEE_HINT)
+
+WING_VERB_TIMEOUT = 4 unless defined?(WING_VERB_TIMEOUT)
+
+# Fizzleworth-wingguard.lic pauses THIS script by name while a pull resolves --
+# its PAUSE_WHILE_PULLING list has to say "Fizzleworth-attack-wing" for that to
+# work, which is why this filename matters.
+WINGGUARD_SCRIPT_NAME = "Fizzleworth-wingguard" unless defined?(WINGGUARD_SCRIPT_NAME)
+
+# --- patterns ------------------------------------------------------------
+
+CANT_CAST_WOUNDED = /can't think clearly enough to prepare a spell/i unless defined?(CANT_CAST_WOUNDED)
+
+# --- helpers -----------------------------------------------------------
+
+# Monster-agnostic death check -- bigshot itself never text-matches kill
+# messages (they vary per creature); it reads GameObj status, kept current by
+# Lich core from the room/combat XML. Dead reads "dead" while the corpse
+# lingers, then "gone" once it decays or is looted.
+def target_dead?(foe)
+  return true if foe.nil?
+  return true if foe.status.to_s =~ /dead|gone/
+  !GameObj.targets.any? { |t| t.id.to_i == foe.id.to_i && t.status.to_s !~ /dead|gone/ }
+end
+
+def living_targets
+  GameObj.targets.count { |t| t.status.to_s !~ /dead|gone/ }
+end
+
+# Sleeps up to `seconds`, checked ~4x/sec, bailing the instant the target dies
+# (hand back to bigshot so it loots) or the room fills past FLEE_HINT (bigshot
+# is about to flee -- stop holding still for the DoT).
+def hold_for_dot(seconds, foe)
+  deadline = Time.now.to_f + seconds
+  until Time.now.to_f >= deadline
+    return if target_dead?(foe)
+    return if living_targets >= FLEE_HINT
+    sleep 0.25
+  end
+end
+
+# Sends `cmd` and collects every line through the roundtime/resolution message
+# (a single dothistimeout match only sees the first matching line, not the
+# whole result block). Stops early on the wound-block message, which never gets
+# a roundtime line.
+def cast_collect(cmd, timeout = 6)
+  lines = []
+  put cmd
+  deadline = Time.now.to_f + timeout
+  loop do
+    line = get?
+    if line.nil?
+      sleep 0.1
+    else
+      lines << line
+      break if line =~ /Roundtime: \d+ sec|Cast Roundtime \d+ Sec|can't think clearly enough to prepare|Warded off|Warding failed|is rooted in place/i
+    end
+    break if Time.now.to_f >= deadline
+  end
+  lines.join("\n")
+end
+
+# --- wings ------------------------------------------------------------
+
+def wing_pin
+  GameObj.inv.find { |i| i && i.name =~ /\A(?:dark|pale)\s+wing-shaped\s+pin\z/i }
+end
+
+def wing_mode
+  pin = wing_pin
+  return nil unless pin
+  return "dark"  if pin.name =~ /\Adark\s+wing-shaped\s+pin\z/i
+  return "light" if pin.name =~ /\Apale\s+wing-shaped\s+pin\z/i
+  nil
+end
+
+def wings_ready?(name)
+  !Effects::Cooldowns.active?(name)
+end
+
+# Fire a wing verb with a hard timeout, then wait out any roundtime it caused.
+# dothistimeout returns after `WING_VERB_TIMEOUT` no matter what, so even when
+# `success_re` never matches (ability silently on cooldown, wing state already
+# up) we're back in a few seconds -- not stalled for 60 like energywings' fput.
+def wing_fire(verb, success_re)
+  dothistimeout(verb, WING_VERB_TIMEOUT, success_re)
+  waitrt?
+  waitcastrt?
+end
+
+def do_wings(mode, _foe)
+  return if defined?(hidden?) && hidden?
+  count = living_targets
+
+  tap, multi, aoe, guard =
+    if mode == "dark"
+      ["Shadow Mantle", "Barbed Sweep", "Rain of Thorns", "Carrion Guard"]
+    else
+      ["Luminous Flight", "Blast of Brilliance", "Blinding Reprisal", "Wings of Warding"]
+    end
+
+  if count >= SWARM_AOE && wings_ready?(aoe)
+    echo "Fizzleworth-attack-wing: swarmed (#{count}) -- #{aoe}"
+    wing_fire("fold my wing pin", /#{aoe}|wings flare|feathers|brilliant light|thorns|Roundtime/i)
+  elsif count >= SWARM_AOE && bleeding? && wings_ready?(guard)
+    echo "Fizzleworth-attack-wing: swarmed (#{count}) + bleeding -- #{guard}"
+    wing_fire("push my wing pin", /#{guard}|wings|warding|carrion|Roundtime/i)
+  elsif count >= SWARM_MULTI && wings_ready?(multi)
+    echo "Fizzleworth-attack-wing: #{count} targets -- #{multi}"
+    wing_fire("knock my wing pin", /#{multi}|wings|brilliance|barbed|Roundtime/i)
+  elsif wings_ready?(tap)
+    wing_fire("tap my wing pin", /surges through your|beat powerfully|wings|lifting you|Roundtime/i)
+  end
+end
+
+# --- offense ---------------------------------------------------------
+
+def go_defensive
+  fput "stance defensive" if stance != "defensive"
+end
+
+# Web until the endroll clears WEB_ENDROLL (or WEB_MAX_TRIES). Landed once per
+# target -- caller passes a foe whose id differs from $fizz_webbed_id. Cast
+# from whatever stance main already set (defensive) -- see the file header on
+# why Web never goes offensive.
+def land_web(foe)
+  return if $fizz_webbed_id == foe.id.to_i
+  tries = 0
+  while tries < WEB_MAX_TRIES
+    return if target_dead?(foe)
+    return if checkmana < SPELL_WEB_MANA
+    waitcastrt?
+    waitrt?
+    text = cast_collect("incant 118")
+    if text =~ CANT_CAST_WOUNDED
+      Script.run("eherbs", "--spellcast")
+      return
+    end
+    tries += 1
+    roll = (text =~ /==\s*\+?(-?\d+)/ ? Regexp.last_match(1).to_i : nil)
+    break if (roll && roll >= WEB_ENDROLL) || text =~ /becomes ensnared|is rooted in place/i
+    sleep 0.2
+  end
+  # Mark it handled either way -- a mob whose TD we just can't roll past isn't
+  # worth burning the same 3 casts on again next pass.
+  $fizz_webbed_id = foe.id.to_i
+end
+
+# prep 710 + cast at foe, from stance defensive (doesn't need offensive to
+# connect). @return true only if the prep actually confirmed ready AND the
+# cast went out -- never blind-fires "cast" off an unconfirmed prep (a
+# congested moment, e.g. wingguard's pull landing mid-pass, can eat the "Your
+# spell is ready" line within the timeout without the prep having failed
+# outright). Caller gates Tenebrous Tether on this return value -- tethering a
+# target with no Maelstrom running on it isn't worth much.
+def land_maelstrom(foe)
+  return false if target_dead?(foe)
+  return false if checkmana < SPELL_MAELSTROM_MANA
+  fput "release" if checkprep != "None"
+  waitcastrt?
+  waitrt?
+  text = dothistimeout("prep 710", 6, /Your spell is ready|can't think clearly enough to prepare/i).to_s
+  if text =~ CANT_CAST_WOUNDED
+    Script.run("eherbs", "--spellcast")
+    return false
+  end
+  return false unless text =~ /Your spell is ready/i   # prep never confirmed -- don't cast blind
+  return false if target_dead?(foe)
+  return false if checkmana < SPELL_MAELSTROM_MANA   # last gate before the cast
+  fput "cast ##{foe.id}"
+  waitcastrt?
+  waitrt?
+  true
+end
+
+# Tenebrous Tether, once per target ($fizz_tethered_id), also from defensive.
+def land_tether(foe)
+  return if $fizz_tethered_id == foe.id.to_i
+  return if target_dead?(foe)
+  return if checkmana < SPELL_TETHER_MANA
+  waitcastrt?
+  waitrt?
+  cast_collect("incant 706")
+  $fizz_tethered_id = foe.id.to_i
+  waitcastrt?
+  waitrt?
+end
+
+# Only lever available mid-fight -- Symbol of Mana, off-cooldown and only when
+# there are deeds to spare (mirrors Fizzleworth-duskattack). Otherwise nothing:
+# sac4mana (a hunting-script) and bigshot's own oom rest handle the rest.
+def recover_mana
+  return unless !Effects::Cooldowns.active?("Symbol of Mana") && Experience.deeds > 3
+  fput "symbol of mana"
+  waitrt?
+end
+
+# --- main ----------------------------------------------------------
+
+# This script owns wingguard's lifecycle -- self-healing every pass in case it
+# ever dies mid-hunt. Fizzleworth-attack-base.lic does the opposite (kills it),
+# so whichever attack script bigshot is actually running determines whether
+# the reactive wing shield is up, with no separate toggle to remember.
+Script.start(WINGGUARD_SCRIPT_NAME) unless Script.running?(WINGGUARD_SCRIPT_NAME)
+
+$fizz_target      = nil unless defined?($fizz_target)
+$fizz_webbed_id   = nil unless defined?($fizz_webbed_id)
+$fizz_tethered_id = nil unless defined?($fizz_tethered_id)
+
+foe = GameObj.targets.find { |t| t.id.to_i == XMLData.current_target_id.to_i } if XMLData.current_target_id
+foe ||= GameObj.targets.find { |t| t.status.to_s !~ /dead|gone/ && t.name !~ /animated/ }
+
+# nothing (live) to hit -- hand straight back to bigshot, which loots
+exit if target_dead?(foe)
+
+# fresh target -> reset the per-target "already landed" trackers
+if $fizz_target != foe.id.to_i
+  $fizz_target      = foe.id.to_i
+  $fizz_webbed_id   = nil
+  $fizz_tethered_id = nil
+end
+
+fput "target ##{foe.id}" unless XMLData.current_target_id.to_i == foe.id.to_i
+waitrt?
+waitcastrt?
+exit if target_dead?(foe)
+
+# Stay defensive as much as possible -- see the file header on why nothing
+# below ever needs offensive. Set once, up front, rather than around each
+# cast: nothing in this script leaves defensive once we're in it, so there's
+# nothing to keep restoring.
+go_defensive
+
+# wings first -- an AOE wants to land while the mob is still grouped up, and the
+# defensive tap/guard is worth having up before the casting roundtime.
+mode = wing_mode
+do_wings(mode, foe) if mode
+exit if target_dead?(foe)
+
+# can't even afford Web -- recover and let bigshot's oom rest take over
+if checkmana < SPELL_WEB_MANA
+  recover_mana
+  exit
+end
+
+land_web(foe)
+
+got_dot = false
+unless target_dead?(foe)
+  got_dot = land_maelstrom(foe)
+  # Tether only after Maelstrom actually confirmed cast this pass -- rooting a
+  # target with no DoT running on it isn't worth the mana or the roundtime.
+  land_tether(foe) if got_dot && !target_dead?(foe)
+end
+
+hold_for_dot(MAELSTROM_WAIT, foe) if got_dot
+
+recover_mana if !target_dead?(foe) && checkmana < SPELL_MAELSTROM_MANA

@@ -2,11 +2,22 @@
 
 module FizzleworthPrerest
 
+# Fizzleworth-wingguard.lic's lifecycle is NOT managed here -- it's owned by
+# whichever Fizzleworth attack script is plugged into bigshot's hunting-commands
+# (Fizzleworth-attack-wing.lic starts it, Fizzleworth-attack-base.lic kills it,
+# each on its own next pass), so an A/B test between the two doesn't need this
+# rest script to also guess which side is currently running.
+
+# Always-on: clears stationary sticky-web hazards during travel before we walk
+# into one (bigshot / go2 only wait webs out). Variant-independent. Restarted
+# here in case it ever dies mid-run.
+Script.start("Fizzleworth-webward") unless Script.running?("Fizzleworth-webward")
+
 Script.run("eherbs")
 Script.run("eloot", "sell")
 Script.run("Fizzleworth-rest")
-#Script.run("undead_bounty", "kill")
-#Script.run("buyitems")
+Script.run("undead_bounty", "kill")
+Script.run("buyitems")
 Script.run("ewaggle")
 Script.run("timequit")
 

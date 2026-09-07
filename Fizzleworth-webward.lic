@@ -1,0 +1,123 @@
+# Fizzleworth-webward.lic
+# Always-on companion. Clears a stationary sticky-web room hazard BEFORE
+# Fizzleworth walks into it.
+#
+# Neither bigshot nor go2 dispels webs -- they only wait them out. bigshot's
+# `checkwebbed` handling just `sleep`s until the web fades; go2 prints
+# "You're currently webbed! Waiting until you're no longer webbed!" and sits
+# there. `flee_webs` only makes bigshot *leave a hunting room* that has a web
+# object; it does nothing during go2 travel. So a sorcerer travelling the Den
+# of Rot tunnel runs face-first into the "gigantic sticky web" there, eats a
+# ~10s entangle ("You can't do that while entangled in a web"), waits it out,
+# and walks straight into it again -- observed 2026-09-05, base hunt 1, on the
+# travel out to rest.
+#
+# You can't invoke / prep / channel anything WHILE entangled, so the web has to
+# be cleared before you move onto it. This watches GameObj.loot for a web
+# object (same signal bigshot's flee_webs uses) and, out of combat and while
+# not already webbed, pauses go2 / bigshot and clears it:
+#
+#   1. Untrammel (209) from the reserve-slot scroll -- `invoke 209`, `cast web`.
+#      No mana (scroll charge). Tried first.
+#   2. Elemental Dispel (417) -- `prep 417`, `channel web`. 17 mana. Fallback
+#      if the scroll is out or Untrammel didn't take.
+#
+# If both fail MAX_ATTEMPTS times it gives up and lets go2 wait the web out the
+# slow way -- no worse than today.
+#
+# Start it always-on: it's added to Fizzleworth-prerest.lic, or
+# `;autostart add Fizzleworth-webward`. Idle cost is one GameObj.loot scan per
+# game line; it only touches the game when a web is actually in the room.
+
+module FizzleworthWebward
+module_function
+
+UNTRAMMEL        = 209 unless defined?(UNTRAMMEL)
+ELEM_DISPEL      = 417 unless defined?(ELEM_DISPEL)
+ELEM_DISPEL_MANA = (Spell[417].mana_cost.to_i.positive? ? Spell[417].mana_cost.to_i : 17) unless defined?(ELEM_DISPEL_MANA)
+CLEAR_TIMEOUT    = 4 unless defined?(CLEAR_TIMEOUT)
+MAX_ATTEMPTS     = 3 unless defined?(MAX_ATTEMPTS)
+# go2 is the one that actually walks onto the web; bigshot is usually just
+# parked waiting on go2, but pause it too so nothing moves mid-dispel.
+PAUSE_WHILE_CLEARING = %w[go2 bigshot] unless defined?(PAUSE_WHILE_CLEARING)
+
+WEB_GONE = /web (?:dissolves|dissipates|unravels|falls apart|shrivels|withers|shudders|melts|is destroyed|vanishes)|dispel the|You dispel|strands (?:part|unravel|dissolve)/i unless defined?(WEB_GONE)
+
+def web_in_room
+  GameObj.loot.find { |o| o && o.noun.to_s =~ /\Aweb/i && o.name.to_s =~ /web/i }
+end
+
+def in_combat?
+  GameObj.targets.any? { |t| t && t.status.to_s !~ /dead|gone/ }
+end
+
+# Pause the movement scripts for the duration of the block; only unpause the
+# ones this call actually paused.
+def with_paused
+  mine = PAUSE_WHILE_CLEARING.select { |s| Script.running?(s) && !Script.paused?(s) }
+  mine.each { |s| Script.pause(s) }
+  yield
+ensure
+  mine.to_a.each { |s| Script.unpause(s) if Script.paused?(s) }
+end
+
+def try_untrammel
+  r = dothistimeout("invoke #{UNTRAMMEL}", 3,
+        /Your spell is ready|faint slick sheen|nebulous shape|You (?:invoke|recite|trace|gesture)|(?:no|any) charges|can't seem to invoke|lack/i)
+  return false unless r =~ /Your spell is ready|faint slick sheen|nebulous shape|You (?:invoke|recite|trace|gesture)/i
+  dothistimeout("cast web", CLEAR_TIMEOUT, Regexp.union(WEB_GONE, /Cast Roundtime|Roundtime: \d+/i))
+  waitcastrt?
+  waitrt?
+  web_in_room.nil?
+end
+
+def try_elem_dispel
+  return false if checkmana < ELEM_DISPEL_MANA
+  pr = dothistimeout("prep #{ELEM_DISPEL}", 4, /Your spell is ready|can't think clearly enough to prepare/i)
+  return false unless pr =~ /Your spell is ready/i
+  dothistimeout("channel web", CLEAR_TIMEOUT, Regexp.union(WEB_GONE, /Cast Roundtime|Roundtime: \d+/i))
+  waitcastrt?
+  waitrt?
+  web_in_room.nil?
+end
+
+def clear_web
+  attempts = 0
+  while attempts < MAX_ATTEMPTS
+    return true  if web_in_room.nil?     # gone
+    return false if checkwebbed          # too late -- can't act, let go2 wait
+    attempts += 1
+    waitrt?
+    waitcastrt?
+    return true if try_untrammel
+    return true if try_elem_dispel
+    sleep 0.3
+  end
+  echo "Fizzleworth-webward: couldn't clear the web after #{MAX_ATTEMPTS} tries -- leaving it for go2 to wait out."
+  false
+end
+
+def run
+  echo "Fizzleworth-webward: watching for sticky-web hazards."
+  handled_id = nil
+  while (line = get)
+    Script.current.kill if checkdead
+    next if in_combat?
+    next if checkwebbed
+    web = web_in_room
+    if web.nil?
+      handled_id = nil
+      next
+    end
+    next if web.id == handled_id          # already tried this exact web
+    ok = false
+    with_paused { ok = clear_web }
+    echo "Fizzleworth-webward: web cleared." if ok
+    handled_id = web.id
+  end
+rescue StandardError => e
+  echo "Fizzleworth-webward error: #{e.class} #{e.message}"
+end
+end
+
+FizzleworthWebward.run
