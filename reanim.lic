@@ -56,7 +56,14 @@
 
   Set DEBUG = true/false at the top of the script to toggle status messages.
 
-  Usage:  ;reanim
+  Usage:  ;reanim              kill + reanimate + arm one target
+          ;reanim #<id>        same, explicit target (bigshot passes this)
+          ;reanim die          end-of-hunt teardown: strip the spare weapon
+                               off the animate and back onto verlok, then
+                               "tell anim die" -- so we don't drag an
+                               animated corpse (or lose the weapon) into
+                               town. No-op if no animate is up. Wire it into
+                               bigshot's resting_commands.
   Stop:   n/a (single pass, exits when done)
 =end
 
@@ -167,7 +174,59 @@ def arm_animate(noun, old)
 	echo "[reanim] WARNING: animate may not have picked up the #{noun} -- check it."
 end
 
+def have_animate?
+	return true if (Spell[ANIMATE_SPELL].active? rescue false)
+	GameObj.npcs.any? { |n| n && n.name.to_s =~ /\banimate/i }
+rescue StandardError
+	false
+end
+
+# End-of-hunt teardown: get the spare weapon off the animate and back onto
+# verlok so it isn't lost, then dismiss the animate so we don't drag an
+# animated corpse into town.  Weapon nouns come from LOOK (real held weapons,
+# minus innate ones like the inciter's whip); OLD_WEAPON is the fallback.
+def dismiss_animate(noun, old)
+	unless have_animate?
+		debug("no animate up -- nothing to dismiss")
+		return
+	end
+
+	held  = animate_held_nouns
+	drops = (held.nil? ? [old] : held).reject { |w| INNATE_WEAPONS.include?(w) }.uniq
+
+	drops.each do |w|
+		dothistimeout("tell anim drop #{w}", 3,
+			/drops (?:a|an|the)|not (?:holding|carrying)|isn't (?:holding|carrying)|could not find|empty[- ]handed/i)
+		sleep 0.4
+		next unless weapon_on_ground(w)
+
+		r = dothistimeout("tell verlok to get #{w}", 3,
+			/picks up|snatches|grasps|retriev|reaches down|takes hold of|obeys|obliges|could not find|can't|cannot|refuses/i)
+		sleep 0.4
+		if weapon_on_ground(w)
+			# verlok wouldn't/couldn't -- pick it up ourselves and hand it over
+			debug("verlok didn't grab the #{w} (#{r.inspect}); doing it by hand")
+			dothistimeout("get #{w}", 3, /You (?:pick up|get)|already|What were you/i)
+			sleep 0.3
+			dothistimeout("give #{w} to verlok", 3, /grudgingly accepts|hands? the .* to|refuses|isn't interested/i)
+			sleep 0.3
+		end
+	end
+
+	fput "tell anim die"
+	sleep 1
+	echo "[reanim] animate still present after 'tell anim die' -- check it." if have_animate?
+end
+
 args = script.vars[1..-1].to_a.compact.map(&:to_s).reject(&:empty?)
+
+# ;reanim die  /  ;reanim --dismiss  -- end-of-hunt teardown, no killing.
+# Wire it into bigshot's resting_commands (Fizzleworth-prerest) so the animate
+# and its weapon don't come to town with us.
+if args.any? { |a| a =~ /\A-{0,2}(?:die|dismiss|cleanup|teardown)\z/i }
+	dismiss_animate(WEAPON, OLD_WEAPON)
+	exit
+end
 
 explicit_target = args.find { |a| a.start_with?("#") }
 
