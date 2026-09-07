@@ -42,10 +42,17 @@
 #
 # OVEREXERTION: every cast gated on live checkmana >= that spell's real cost
 # (703 = 3, Grasp 709 = 9, Pain 711 = 11, Dark Catalyst 719 = 19; see
-# effect-list.xml). Low mana -> Symbol of Mana (off-cooldown, deeds-gated)
-# only; sac4mana + bigshot's oom rest handle the rest. Wound-block ("can't
-# think clearly enough") -> ;eherbs --spellcast once. (;reanim does its own
-# mana gating via Spell#affordable?.)
+# effect-list.xml). Wound-block ("can't think clearly enough") -> ;eherbs
+# --spellcast once. (;reanim does its own mana gating via Spell#affordable?.)
+#
+# MANA: this rotation is brutally mana-hungry (Dark Catalyst is 19/cast and
+# Pain-to-death on inciters is 11 x several) and sac4mana's harvest never gets
+# a window because it skips while an attack script is running and this one
+# never idles -- observed 2026-09-07, hunt died at 2min with sac4mana never
+# firing. So recovery is done INLINE here, top of every pass while mana is
+# below SACRIFICE_AT: `sacrifice mana` first (~89, spends 1 shadow essence),
+# then Symbol of Mana. When shadow essence runs out there's nothing left to do
+# but let bigshot's oom rest take over.
 
 # --- knobs -----------------------------------------------------------------
 
@@ -58,6 +65,11 @@ SPELL_719_MANA = (Spell[719].mana_cost.to_i.positive? ? Spell[719].mana_cost.to_
 # which we hand off to bigshot's flee (should match the profile's flee_count).
 SWARM_709 = 2 unless defined?(SWARM_709)
 FLEE_AT   = 4 unless defined?(FLEE_AT)
+
+# Top mana off (inline `sacrifice mana`) at the start of any pass where it's
+# below this -- has to be high enough to cover a full pass (Corrupt 3 + Dark
+# Catalyst 19, or Pain-to-death ~33-55) plus the reanim path.
+SACRIFICE_AT = 45 unless defined?(SACRIFICE_AT)
 
 # Which mobs Dark Catalyst won't one-shot -> route them through reanim / Pain.
 INCITER_RE     = /Ivasian inciter/i unless defined?(INCITER_RE)
@@ -192,10 +204,39 @@ def pain_to_death(foe)
   end
 end
 
+# Sacrifice (Mana) has its own cooldown, independent of the other sacrifice
+# abilities -- match sac4mana's loose name check rather than trusting an exact
+# Effects::Cooldowns key.
+def sacrifice_on_cooldown?
+  Effects::Cooldowns.to_h.keys.any? { |k| k.to_s =~ /sacrifice\s*\(\s*mana\s*\)/i }
+rescue StandardError
+  false
+end
+
+def shadow_essence
+  Resources.shadow_essence.to_i
+rescue StandardError
+  0
+end
+
+# Inline mana top-off: `sacrifice mana` (~89, costs 1 shadow essence) if it's
+# off cooldown and there's essence, then Symbol of Mana. @return true if it
+# actually recovered something.
 def recover_mana
-  return unless !Effects::Cooldowns.active?("Symbol of Mana") && Experience.deeds > 3
-  fput "symbol of mana"
-  waitrt?
+  if shadow_essence.positive? && !sacrifice_on_cooldown?
+    waitcastrt?
+    waitrt?
+    r = dothistimeout("sacrifice mana", 4,
+          /mana surge into you|overwhelm you with shadow essence|don't have (?:enough|any)/i)
+    waitrt?
+    return true if r.to_s =~ /mana surge into you|overwhelm you with shadow essence/i
+  end
+  if !Effects::Cooldowns.active?("Symbol of Mana") && Experience.deeds > 3
+    fput "symbol of mana"
+    waitrt?
+    return true
+  end
+  false
 end
 
 # --- main ----------------------------------------------------------
@@ -227,13 +268,16 @@ exit if living_targets >= FLEE_AT
 
 go_stance
 
+# top mana off before committing to a pass -- sac4mana can't get a window in
+# this rotation (see the header), so this is the only recovery that happens.
+recover_mana if checkmana < SACRIFICE_AT
+
 # area control first, so everything's staggered before the single-target work
 cast_grasp if living_targets >= SWARM_709
 exit if target_dead?(foe)
 
 if checkmana < SPELL_703_MANA
-  recover_mana
-  exit
+  exit   # still dry after recover_mana -- hand back to bigshot's oom rest
 end
 
 if inciter?(foe)
@@ -250,4 +294,4 @@ else
   cast_catalyst(foe) unless target_dead?(foe)
 end
 
-recover_mana if !target_dead?(foe) && checkmana < SPELL_711_MANA
+recover_mana if !target_dead?(foe) && checkmana < SACRIFICE_AT
