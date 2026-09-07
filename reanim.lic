@@ -114,6 +114,6 @@ else
 		sleep 0.3
 		fput "tell anim attack"
 		sleep 0.3
-		fput "tell verlok to drop claid"
+		fput "tell verlok to drop katana"
 	end
 end

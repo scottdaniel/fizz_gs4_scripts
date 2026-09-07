@@ -29,14 +29,19 @@ def self.town_config
 end
 
 ITEMS = [
-    "gold coin",
-	"quartz orb",
-	"black crystal",
+#    "gold coin",
+#	"quartz orb",
+#	"black crystal",
+#	"small statue",
 	"white crystal",
-	"small statue",
-	"moonstone cube",
+#	"moonstone cube",
     "alabaster wand",
-    "willow wand"
+    "willow wand",
+    "drake wand",
+    "coral wand",
+    "ebony wand",
+    "electrum wand",
+    "golden wand"
 ]
 
 # "look on <table>" replies across multiple lines, e.g.:

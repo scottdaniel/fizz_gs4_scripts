@@ -1,0 +1,45 @@
+=begin
+  4hourquit.lic
+
+  Exits the game four hours after this script is started.
+
+  Usage:
+    ;4hourquit          # quits 4 hours from now
+    ;4hourquit 90       # quits 90 minutes from now
+=end
+
+no_pause_all
+no_kill_all
+
+minutes = (Script.current.vars[1] || '240').to_f
+minutes = 240.0 if minutes <= 0
+
+quit_at = Time.now + (minutes * 60)
+
+echo "4hourquit started - will exit the game at #{quit_at.strftime('%H:%M:%S')} (#{minutes.round} minutes from now)"
+
+loop do
+  remaining = quit_at - Time.now
+  break if remaining <= 0
+
+  # Sleep in reasonable chunks so ;kill 4hourquit stays responsive
+  pause [remaining, 30].min
+end
+
+echo "4hourquit - time elapsed, disengaging and exiting the game at #{Time.now.strftime('%H:%M:%S')}"
+
+# Get on our feet and clear roundtime before quitting, then send exit. Retry a
+# few times in case lingering RT defers the logout; once the frontend
+# disconnects the extra fputs are harmless no-ops.
+5.times do |attempt|
+  begin
+    3.times { break if standing?; fput('stand'); pause 1 }
+    waitrt?
+  rescue StandardError => e
+    echo "4hourquit - stand error (ignored): #{e.message}"
+  end
+
+  echo "4hourquit - exit attempt #{attempt + 1}"
+  fput('exit')
+  pause 15
+end

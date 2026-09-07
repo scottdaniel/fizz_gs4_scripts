@@ -2,10 +2,65 @@
 
 module PickoPrerest
 
-Script.run("eherbs")
-Script.run("eloot", "sell")
-Script.run("undead_bounty", "kill zombie")
+#Script.run("eherbs")
+#Script.run("eloot", "sell")
+#Script.run("undead_bounty", "kill zombie")
 #Script.run("buyitems")
+
+# Sweep every wand out of the default stow container into the active bigshot
+# profile's fresh-wand container, staged for waving. "wand" is no longer a STOW
+# LIST target, so freshly looted wands (and any a spellcast routine or playsongs'
+# hand-clearing left behind) pile up in the default container with everything
+# else. eloot's sell pass (line 6) has already run by this point, so any wand
+# still sitting there is a keeper by definition -- no keep list to re-derive.
+#
+# Hand the whole get/put loop to ;foreach: it re-looks the container and works
+# off fresh item IDs each pass. Doing it by hand off GameObj#contents didn't --
+# the cached IDs went stale and every `put` came back "I could not find what
+# you were referring to".
+#
+# Destination tracks bigshot's loaded profile (UserVars.op) so it stays in sync
+# with what Picko-duskattack.lic / bigshot draw from; sack is the fallback.
+fresh_wand_container = (defined?(UserVars) && UserVars.op.is_a?(Hash) ? UserVars.op["fresh_wand_container"].to_s.strip : "")
+fresh_wand_container = "sack" if fresh_wand_container.empty?
+
+# Default stow container per Lich's STOW LIST, not a hardcoded name -- that's
+# where STOW (and anything that falls back to it) actually drops things.
+stow_default = nil
+if defined?(StowList) && StowList.respond_to?(:stow_list)
+  begin
+    StowList.check(silent: true, quiet: true) if StowList.respond_to?(:checked?) && !StowList.checked?
+    stow_default = StowList.stow_list[:default]
+  rescue StandardError
+    stow_default = nil
+  end
+end
+stow_default ||= GameObj.inv.find { |i| i.name =~ /cloak/i }
+
+if stow_default.respond_to?(:id) && stow_default.name.to_s !~ /\b#{Regexp.escape(fresh_wand_container)}\b/i
+  # Clear both hands first -- ;foreach's "get item" needs a free hand, and
+  # Picko routinely comes out of a hunt with the runestaff still in the right
+  # hand and a live/spent wand in the left. Without this the very first "get"
+  # fails ("You need a free hand to pick that up"), which cascades into every
+  # "put" failing too ("I could not find what you were referring to") --
+  # confirmed live, took a second prerest pass to actually clear anything.
+  # A held wand goes straight to the fresh container (it's already a keeper);
+  # anything else (the runestaff) uses STORE, not STOW, so it lands in its
+  # sheath instead of wherever plain STOW would send it.
+  { "right" => checkright, "left" => checkleft }.each do |hand, noun|
+    next unless noun
+    if noun =~ /wand/i
+      fput "put my #{noun} in my #{fresh_wand_container}"
+    else
+      fput "store #{hand}"
+    end
+  end
+
+  fput "open ##{stow_default.id}"
+  fput "open my #{fresh_wand_container}"
+  Script.run("foreach", "wand in ##{stow_default.id}; get item; put item in my #{fresh_wand_container}")
+end
+
 Script.run("ewaggle")
 Script.run("timequit")
 
