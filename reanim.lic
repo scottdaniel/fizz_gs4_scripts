@@ -4,7 +4,7 @@
         game: gemstone
         tags: necromancer, reanimate, animate dead, combat
     requires: Lich > 5.14.2
-     version: 0.2
+     version: 0.4
         note: Written with assistance from Claude (Anthropic).
 
   Kills a target with repeated Pain (711), then reanimates the corpse with
@@ -28,8 +28,27 @@
        dead/gone (with a short pause after the last Pain cast to avoid
        reading a stale pre-death status), so it won't appraise a live NPC.
     3) Prep and cast Animate Dead (730) on the corpse.
-    4) "tell anim follow", "tell anim attack", and "tell verlok to drop
-       claid" so the new animate has a weapon to fight with.
+    4) "tell anim follow", "tell anim attack", then arm it:
+       a) LOOK at the animate. If it's already wielding a <WEAPON>, done.
+          Otherwise "tell anim drop" each other held weapon -- GET fails
+          while its hands are full, and doing this FIRST means the weapon
+          isn't on the ground yet to get grabbed back or confused with.
+          Innate natural weapons (reanim_innate_weapons, default "whip" --
+          an Ivasian inciter's "green leather whip" is part of the creature,
+          not an inventory item, so it can't be dropped) are left alone.
+       b) tell verlok (your minor demon) to drop a spare WEAPON (skipped if
+          one's already lying here).
+       c) "tell anim get <WEAPON>", looping until the weapon has actually
+          left the ground (retries -- re-clearing hands each time -- then
+          warns). Animates only sometimes auto-snatch an upgrade.
+
+  reanim_weapon (UserVar, plain noun, default "katana") is what the animate
+  should wield:  ;vars set reanim_weapon=broadsword
+  reanim_old_weapon (default "weapon") is only a fallback for when LOOK
+  can't be parsed.
+  reanim_innate_weapons (default "whip") is a comma/space list of natural-
+  weapon nouns the animate physically can't drop -- don't try:
+  ;vars set reanim_innate_weapons=whip,claw
 
   Both 711 and 730 are cast via Spell#cast, which queues through Lich's
   shared cast lock instead of raw release/incant fput -- the same fix
@@ -48,9 +67,104 @@ IGNORE_NPCS = /verlok/i   # your own minor demon -- never a valid target
 PAIN_SPELL          = 711
 ANIMATE_SPELL       = 730
 MAX_PAIN_ATTEMPTS   = 15
+WEAPON_PICKUP_TRIES = 4
+
+# Weapon nouns -- ;vars set reanim_weapon=<noun> / reanim_old_weapon=<noun>
+UserVars.reanim_weapon     = "katana" if UserVars.reanim_weapon.to_s.strip.empty?
+UserVars.reanim_old_weapon = "weapon" if UserVars.reanim_old_weapon.to_s.strip.empty?
+UserVars.reanim_innate_weapons = "whip" if UserVars.reanim_innate_weapons.to_s.strip.empty?
+WEAPON     = UserVars.reanim_weapon.to_s.strip
+OLD_WEAPON = UserVars.reanim_old_weapon.to_s.strip
+# natural weapons the animate can't drop (part of the creature, not inventory)
+INNATE_WEAPONS = UserVars.reanim_innate_weapons.to_s.downcase.split(/[,\s]+/).reject(&:empty?)
 
 def debug(msg)
 	echo "[DBG] #{msg}" if DEBUG
+end
+
+def weapon_on_ground(noun)
+	GameObj.loot.find { |o| o && o.name.to_s =~ /\b#{Regexp.escape(noun)}\b/i }
+end
+
+# LOOK at the animate (by id, so it can't match a live mob of the same type)
+# and return the noun(s) of what it's HELDING, dropping "(worn)" items. GS4
+# phrases this as:
+#   "He has a green leather whip and a pair of tight leather armbands (worn)."
+# -> ["whip"].  [] = confirmed empty-handed.  nil = LOOK couldn't be parsed.
+def animate_held_nouns
+	mine = GameObj.npcs.find { |n| n && n.name.to_s =~ /\banimate/i }
+	tgt  = mine ? "##{mine.id}" : "animate"
+	lines = Lich::Util.issue_command("look #{tgt}",
+	          /\b(?:has|have)\b|empty[- ]handed|hands? (?:are|is) empty|nothing in (?:its|his|her|their)/i,
+	          include_end: false, silent: true) rescue []
+	return [] if lines.any? { |l| l =~ /empty[- ]handed|hands? (?:are|is) empty|nothing in (?:its|his|her|their)/i }
+
+	line = lines.find { |l| l =~ /\b(?:has|have)\s+(?:a|an|some|two|three|four|several|a pair of)\b/i &&
+	                        l !~ /good shape|appears to be|wound|scar|bruis|blood|injur|gash|slice/i }
+	return nil unless line
+
+	m = line.match(/\b(?:has|have)\s+(.+?)\.?\s*$/i)
+	return nil unless m
+	m[1].split(/\s*,\s*|\s+and\s+/i)
+	    .reject { |item| item =~ /\(worn\)/i }
+	    .map    { |item| item.sub(/\s*\([^)]*\)\s*$/, "").strip.split(/\s+/).last.to_s.downcase }
+	    .reject(&:empty?)
+	    .uniq
+rescue StandardError
+	nil
+end
+
+# tell the animate to drop whatever it's holding (from LOOK, or the UserVar
+# fallback if LOOK couldn't be parsed), skipping the one we want it to keep.
+def clear_animate_hands(noun, old)
+	held = animate_held_nouns
+	held = [old] if held.nil?               # LOOK unparseable -> UserVar fallback
+	held.reject { |w| w == noun.downcase || INNATE_WEAPONS.include?(w) }.each do |w|
+		fput "tell anim drop #{w}"
+		sleep 0.4
+	end
+	held
+end
+
+# Get WEAPON into the animate's hands: clear its hands FIRST (before any weapon
+# is on the ground to grab back), have verlok drop one, then "tell anim get
+# WEAPON" -- verifying the weapon has actually left the ground before
+# returning.
+def arm_animate(noun, old)
+	held = animate_held_nouns               # (a)
+	if held && held.include?(noun.downcase)
+		debug("animate already wielding a #{noun} -- nothing to do")
+		return
+	end
+	clear_animate_hands(noun, old)
+
+	unless weapon_on_ground(noun)           # (b)
+		r = dothistimeout("tell verlok to drop #{noun}", 3,
+			/drops (?:a|an|the) .*#{Regexp.escape(noun)}|could not find|isn't holding|not holding|does(?:n't| not) have/i)
+		if r.to_s =~ /could not find|isn't holding|not holding|does(?:n't| not) have/i
+			debug("verlok has no #{noun} to drop and none on the ground -- animate is unarmed")
+			return
+		end
+		sleep 0.5   # let the drop land in GameObj.loot
+	end
+
+	WEAPON_PICKUP_TRIES.times do |i|      # (c)
+		unless weapon_on_ground(noun)
+			debug("#{noun} is off the ground -- animate has it")
+			return
+		end
+		gr = dothistimeout("tell anim get #{noun}", 4,
+			/snatches up|picks up|retriev|reaches down|takes hold of|obeys|obliges|hands full|cannot|can't|refuses/i)
+		waitrt?
+		sleep 1
+		unless weapon_on_ground(noun)
+			debug("animate picked up the #{noun} (try #{i + 1})")
+			return
+		end
+		clear_animate_hands(noun, old)   # hands filled back up? re-clear and retry
+		debug("#{noun} still on the ground after try #{i + 1}: get=#{gr.inspect}")
+	end
+	echo "[reanim] WARNING: animate may not have picked up the #{noun} -- check it."
 end
 
 args = script.vars[1..-1].to_a.compact.map(&:to_s).reject(&:empty?)
@@ -114,6 +228,6 @@ else
 		sleep 0.3
 		fput "tell anim attack"
 		sleep 0.3
-		fput "tell verlok to drop katana"
+		arm_animate(WEAPON, OLD_WEAPON)
 	end
 end
