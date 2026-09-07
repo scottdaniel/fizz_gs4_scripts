@@ -1,0 +1,253 @@
+# Fizzleworth-attack-cat.lic
+# Bigshot custom attack routine for Fizzleworth (Sorcerer) -- a third variant
+# for the wings-compare experiment (see gs4-wings-compare). Drop it into a
+# bigshot hunting-commands list as a single command:
+#
+#   script Fizzleworth-attack-cat
+#
+# Like Fizzleworth-attack-base it uses NO Energy Wings, and it kills
+# Fizzleworth-wingguard every pass (same as base) so plugging this into a
+# profile is the only setup needed. Completely different rotation from base:
+#
+#   1. Grasp of the Grave (709) -- ONLY when >= SWARM_709 (2) living targets
+#      in the room. Area maneuver, knocks all non-flying creatures prone /
+#      staggered. `incant 709`. Bigshot flees at 4+ (its flee_count) -- this
+#      script also just returns at >= FLEE_AT so bigshot takes the flee.
+#
+#   2a. Ivasian inciter (non-magical -- Dark Catalyst barely dents it):
+#       - no animate up yet  -> `;reanim #<id>`, which Pain-711s it to death
+#         and then Animate-Dead-730s the corpse into a buddy that tanks/
+#         attacks for us. `keep one up` -- so any inciter, any time we have
+#         no animate, triggers this.
+#       - animate already up -> just `incant 711` (Pain) to death: 20-35% max
+#         HP per cast + 3-7s roundtime on it, which is the point (locks it out
+#         of its kicks / thorn maneuver).
+#
+#   2b. Everything else (pestilent vision / magna vereri / dark-eyed incubus --
+#       the actual casters):
+#       - Corrupt Essence (703), once per target ($cat_silenced_id). CS vs TD;
+#         on a failed ward, a "blood red haze" BLOCKS their spellcasting ~15s
+#         (their casts still drain their mana, just fizzle). 3 mana.
+#       - Dark Catalyst (719) -- the kill. CS vs TD, 5 sequential crits;
+#         "magical and semi-magical creatures have a high chance of being
+#         killed with a single cast", refunds 1-14 mana on a hit. 19 mana.
+#         Recast every pass until down.
+#
+# No Web / Maelstrom / Tether, no wand, no wings.
+#
+# STANCE: casts from defensive, set once per pass, same as Fizzleworth-attack-
+# base -- kept identical for the A/B/C comparison even though 703/719 are
+# CS-vs-TD wards that would get a better CS from guarded. Change GO_STANCE
+# below to "guarded" if you'd rather trade the DS for ward rate.
+#
+# OVEREXERTION: every cast gated on live checkmana >= that spell's real cost
+# (703 = 3, Grasp 709 = 9, Pain 711 = 11, Dark Catalyst 719 = 19; see
+# effect-list.xml). Low mana -> Symbol of Mana (off-cooldown, deeds-gated)
+# only; sac4mana + bigshot's oom rest handle the rest. Wound-block ("can't
+# think clearly enough") -> ;eherbs --spellcast once. (;reanim does its own
+# mana gating via Spell#affordable?.)
+
+# --- knobs -----------------------------------------------------------------
+
+SPELL_703_MANA = (Spell[703].mana_cost.to_i.positive? ? Spell[703].mana_cost.to_i : 3)  unless defined?(SPELL_703_MANA)
+SPELL_709_MANA = (Spell[709].mana_cost.to_i.positive? ? Spell[709].mana_cost.to_i : 9)  unless defined?(SPELL_709_MANA)
+SPELL_711_MANA = (Spell[711].mana_cost.to_i.positive? ? Spell[711].mana_cost.to_i : 11) unless defined?(SPELL_711_MANA)
+SPELL_719_MANA = (Spell[719].mana_cost.to_i.positive? ? Spell[719].mana_cost.to_i : 19) unless defined?(SPELL_719_MANA)
+
+# Living-target count that unlocks Grasp of the Grave (709), and the count at
+# which we hand off to bigshot's flee (should match the profile's flee_count).
+SWARM_709 = 2 unless defined?(SWARM_709)
+FLEE_AT   = 4 unless defined?(FLEE_AT)
+
+# Which mobs Dark Catalyst won't one-shot -> route them through reanim / Pain.
+INCITER_RE     = /Ivasian inciter/i unless defined?(INCITER_RE)
+REANIM_SCRIPT  = "reanim" unless defined?(REANIM_SCRIPT)   # ;reanim: Pain-to-death + Animate Dead 730 (see its own readme)
+ANIMATE_SPELL  = 730 unless defined?(ANIMATE_SPELL)
+PAIN_MAX_TRIES = 5 unless defined?(PAIN_MAX_TRIES)
+
+GO_STANCE = "defensive" unless defined?(GO_STANCE)
+
+WINGGUARD_SCRIPT_NAME = "Fizzleworth-wingguard" unless defined?(WINGGUARD_SCRIPT_NAME)
+
+# --- patterns ------------------------------------------------------------
+
+CANT_CAST_WOUNDED = /can't think clearly enough to prepare a spell/i unless defined?(CANT_CAST_WOUNDED)
+
+# --- helpers -----------------------------------------------------------
+
+def target_dead?(foe)
+  return true if foe.nil?
+  return true if foe.status.to_s =~ /dead|gone/
+  !GameObj.targets.any? { |t| t.id.to_i == foe.id.to_i && t.status.to_s !~ /dead|gone/ }
+end
+
+def living_targets
+  GameObj.targets.count { |t| t.status.to_s !~ /dead|gone/ }
+end
+
+def go_stance
+  fput "stance #{GO_STANCE}" if stance != GO_STANCE
+end
+
+# Sends `cmd` and collects every line through the roundtime/resolution message
+# (a single dothistimeout match only sees the first matching line). Stops early
+# on the wound-block message, which never gets a roundtime line.
+def cast_collect(cmd, timeout = 6)
+  lines = []
+  put cmd
+  deadline = Time.now.to_f + timeout
+  loop do
+    line = get?
+    if line.nil?
+      sleep 0.1
+    else
+      lines << line
+      break if line =~ /Roundtime: \d+ sec|Cast Roundtime \d+ Sec|can't think clearly enough to prepare|Warded off|Warding failed|resist/i
+    end
+    break if Time.now.to_f >= deadline
+  end
+  lines.join("\n")
+end
+
+# Grasp of the Grave -- area knockdown, only worth it with a crowd.
+def cast_grasp
+  return if checkmana < SPELL_709_MANA
+  fput "release" if checkprep != "None"
+  go_stance
+  waitcastrt?
+  waitrt?
+  text = cast_collect("incant 709")
+  if text =~ CANT_CAST_WOUNDED
+    Script.run("eherbs", "--spellcast")
+    return
+  end
+  waitcastrt?
+  waitrt?
+end
+
+# Corrupt Essence -- silence the caster, once per target.
+def cast_corrupt(foe)
+  return if $cat_silenced_id == foe.id.to_i
+  return if target_dead?(foe)
+  return if checkmana < SPELL_703_MANA
+  go_stance
+  waitcastrt?
+  waitrt?
+  text = cast_collect("incant 703")
+  if text =~ CANT_CAST_WOUNDED
+    Script.run("eherbs", "--spellcast")
+    return
+  end
+  $cat_silenced_id = foe.id.to_i
+  waitcastrt?
+  waitrt?
+end
+
+# Dark Catalyst -- the kill. One cast per pass; bigshot re-invokes.
+def cast_catalyst(foe)
+  return if target_dead?(foe)
+  return if checkmana < SPELL_719_MANA
+  go_stance
+  waitcastrt?
+  waitrt?
+  text = cast_collect("incant 719")
+  if text =~ CANT_CAST_WOUNDED
+    Script.run("eherbs", "--spellcast")
+    return
+  end
+  waitcastrt?
+  waitrt?
+end
+
+def inciter?(foe)
+  foe && foe.name.to_s =~ INCITER_RE
+end
+
+# Do we have an Animate Dead buddy up right now?
+def have_animate?
+  return true if (Spell[ANIMATE_SPELL].active? rescue false)
+  GameObj.npcs.any? { |n| n && n.name.to_s =~ /\banimate/i }
+rescue StandardError
+  false
+end
+
+# Pain (711) the target to death -- for inciters once we already have a buddy.
+# Each cast: 20-35% of its max HP + 3-7s roundtime (locks it out of its kicks).
+def pain_to_death(foe)
+  tries = 0
+  while tries < PAIN_MAX_TRIES
+    return if target_dead?(foe)
+    return if checkmana < SPELL_711_MANA
+    go_stance
+    waitcastrt?
+    waitrt?
+    text = cast_collect("incant 711")
+    if text =~ CANT_CAST_WOUNDED
+      Script.run("eherbs", "--spellcast")
+      return
+    end
+    tries += 1
+    waitcastrt?
+    waitrt?
+  end
+end
+
+def recover_mana
+  return unless !Effects::Cooldowns.active?("Symbol of Mana") && Experience.deeds > 3
+  fput "symbol of mana"
+  waitrt?
+end
+
+# --- main ----------------------------------------------------------
+
+# no wings in this variant -- make sure the reactive companion isn't running
+Script.kill(WINGGUARD_SCRIPT_NAME) if Script.running?(WINGGUARD_SCRIPT_NAME)
+
+$cat_target      = nil unless defined?($cat_target)
+$cat_silenced_id = nil unless defined?($cat_silenced_id)
+
+foe = GameObj.targets.find { |t| t.id.to_i == XMLData.current_target_id.to_i } if XMLData.current_target_id
+foe ||= GameObj.targets.find { |t| t.status.to_s !~ /dead|gone/ && t.name !~ /animated/ }
+
+exit if target_dead?(foe)
+
+# fresh target -> reset the per-target tracker
+if $cat_target != foe.id.to_i
+  $cat_target      = foe.id.to_i
+  $cat_silenced_id = nil
+end
+
+fput "target ##{foe.id}" unless XMLData.current_target_id.to_i == foe.id.to_i
+waitrt?
+waitcastrt?
+exit if target_dead?(foe)
+
+# room's too full -- bail so bigshot flees
+exit if living_targets >= FLEE_AT
+
+go_stance
+
+# area control first, so everything's staggered before the single-target work
+cast_grasp if living_targets >= SWARM_709
+exit if target_dead?(foe)
+
+if checkmana < SPELL_703_MANA
+  recover_mana
+  exit
+end
+
+if inciter?(foe)
+  if have_animate?
+    pain_to_death(foe)
+  else
+    # ;reanim does the whole thing: Pain 711 to death, then Animate Dead 730
+    # on the corpse + "tell anim follow/attack". Synchronous -- bigshot stays
+    # paused on us until it's done.
+    Script.run(REANIM_SCRIPT, "##{foe.id}")
+  end
+else
+  cast_corrupt(foe)
+  cast_catalyst(foe) unless target_dead?(foe)
+end
+
+recover_mana if !target_dead?(foe) && checkmana < SPELL_711_MANA

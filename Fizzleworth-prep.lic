@@ -59,4 +59,9 @@ if res !~ /An ethereal necrotic film covers the/
     fput "evoke #{GameObj.right_hand}"
     end
 
+# Log mind saturation ("Field Exp: N/1220") right before the hunt starts, so
+# every hunt has a recorded starting mind for the wings-compare analysis
+# (bigshot only reads exp while resting otherwise).
+fput "exp"
+
 end #End of module

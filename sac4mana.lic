@@ -62,6 +62,18 @@ module Sac4Mana
   CHECK_INTERVAL_SECONDS = 10
   FIZZSAC_SPELL_ID       = "719"   # spell fizzsac is told to use when harvesting after a mana sac
   BIGSHOT_SCRIPT_NAME    = "bigshot"
+  # Whichever Fizzleworth attack script is active (an A/B/C set --
+  # -wing with Energy Wings, -base without, -cat = Corrupt Essence / Dark
+  # Catalyst / Pain) owns the rotation and holds for its DoTs --
+  # with_bigshot_paused only pauses "bigshot" by name,
+  # which does nothing to a script bigshot merely started and is waiting on.
+  # Without this check, a mana dip mid-rotation would send "sacrifice mana"
+  # into the same roundtime, and worse, the harvest cycle's wander.lic would
+  # start walking the room while the attack script is still mid-fight with the
+  # original target. So just skip this poll and retry in
+  # CHECK_INTERVAL_SECONDS instead of racing it -- bigshot's own oom rest is
+  # the backstop if mana stays low longer than that.
+  FIZZLEWORTH_ATTACK_SCRIPT_NAMES = ["Fizzleworth-attack-wing", "Fizzleworth-attack-base", "Fizzleworth-attack-cat"]
   ESSENCE_MAX            = 5
   MAX_HARVEST_ROUNDS     = 5      # give up wander+fizzsac cycling after this many rounds
   MAX_WANDER_SKIPS       = 5      # give up skipping "too easy" targets after this many wander attempts
@@ -165,7 +177,7 @@ module Sac4Mana
     echo "Stop with ;kill sac4mana"
 
     loop do
-      if mana < MANA_THRESHOLD and !sacrifice_on_cooldown?
+      if mana < MANA_THRESHOLD and !sacrifice_on_cooldown? and FIZZLEWORTH_ATTACK_SCRIPT_NAMES.none? { |n| Script.running?(n) }
         echo "Mana below #{MANA_THRESHOLD}, sacrificing mana to top off."
         with_bigshot_paused do
           sacrifice_mana

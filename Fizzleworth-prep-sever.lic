@@ -2,18 +2,44 @@
 
 module FizzleworthPrepSever
 
-# rub stuff
-multifput "store weapon", "stow all"
-Script.run("qverb", "rub gold coin")
-pause 3
-Script.run("qverb", "rub small statue")
-pause 3
-Script.run("qverb", "rub moonstone cube")
-pause 3
-Script.run("qverb", "rub white crystal")
-pause 3
+# Stop playing before gearing up for combat -- kills the instrument along
+# with the script (playsongs.lic's before_dying stows it). Kill is async,
+# so wait for it to actually finish before "clear hands" below sends its
+# own fput commands, to avoid the two scripts racing on the same hands.
+if Script.running?("playsongs")
+  Script.kill("playsongs")
+  wait_while { Script.running?("playsongs") }
+end
 
-fput "ready weapon"
+# clear hands -- "store weapon" routes the runestaff to the readied sheath per
+# the in-game STORE config (STORE SET WEAPON SHEATH); "stow all" mops up anything
+# left in the off-hand. Replaces the old hardcoded "put ... in my cloak" that
+# ignored the sheath and let stray items fall through to the backpack.
+fput "store weapon"
+fput "stow all"
+
+# rub stuff, but only if the spell isn't already active -- and only pause
+# after ones that actually ran, instead of always eating 3s per item
+unless Spell[1701].active?
+  Script.run("qverb", "rub gold coin")
+  pause 3
+end
+unless Spell[1712].active?
+  Script.run("qverb", "rub small statue")
+  pause 3
+end
+unless Spell[1705].active?
+  Script.run("qverb", "rub moonstone cube")
+  pause 3
+end
+unless Spell[509].active?
+  Script.run("qverb", "rub white crystal")
+  pause 3
+end
+unless GameObj.loot.find { |i| i.name =~ /#{Char.name} disk/ }
+  Script.run("qverb", "rub black crystal")
+  pause 3
+end
 
 # check if runestaff is ensorcelled, if not, prep and evoke
 res = dothistimeout "l at my #{GameObj.right_hand}", 2, Regexp.union(
@@ -23,5 +49,9 @@ if res !~ /An ethereal necrotic film covers the/
     fput "prep 735"
     fput "evoke #{GameObj.right_hand}"
     end
+
+# Log mind saturation ("Field Exp: N/1220") right before the hunt for the
+# wings-compare analysis (see Fizzleworth-prep.lic).
+fput "exp"
 
 end #End of module
