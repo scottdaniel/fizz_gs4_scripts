@@ -24,9 +24,12 @@
   text still displays normally -- quiet:true would silently swallow it
   from your screen entirely, not just from Lich's own echo.)
 
-  room_target ignores your own minor demon (matched via IGNORE_NPCS,
-  currently "verlok") so wander/fizzsac never target your own pet as a
-  harvest target. Update that regex if you resummon a different demon type.
+  room_target ignores your own minor demon AND any Animate Dead buddy
+  (matched via IGNORE_NPCS = /verlok|animated/i) so wander/fizzsac never
+  Pain/Tether/sacrifice your own pet or your ;reanim animate. (Observed
+  2026-09-08: fizzsac spent a whole harvest cycle "You gesture at an
+  animated supple Ivasian inciter" -- casting at Fizzleworth's own buddy.)
+  Update the regex if you resummon a different demon type.
 
   After a successful "sacrifice mana", it tries to top shadow essence back
   up to full (5) by:
@@ -77,7 +80,7 @@ module Sac4Mana
   ESSENCE_MAX            = 5
   MAX_HARVEST_ROUNDS     = 5      # give up wander+fizzsac cycling after this many rounds
   MAX_WANDER_SKIPS       = 5      # give up skipping "too easy" targets after this many wander attempts
-  IGNORE_NPCS            = /verlok/i   # your own minor demon -- never a valid harvest target
+  IGNORE_NPCS            = /verlok|animated/i   # your own minor demon / Animate Dead buddy -- never a harvest target
   TOO_EASY_REGEX         = /too easy for the likes of you/i
 
   # === helpers ===================================================================

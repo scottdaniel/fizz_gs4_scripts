@@ -21,9 +21,9 @@
 	    /target lock (GameObj.target) if you have one, then the first living
 	    NPC in the room. If none of those find anything, the room is
 	    considered empty and the script does nothing. Your own minor demon
-	    (matched via IGNORE_NPCS, currently "verlok") is never picked as a
-	    fallback target -- update that regex if you resummon a different
-	    demon type.
+	    (matched via IGNORE_NPCS = /verlok|animated/i) is never picked as a
+	    fallback target, and an explicit #id that resolves to one is refused
+	    -- update that regex if you resummon a different demon type.
 
 	Set DEBUG = true/false at the top of the script to toggle the extra
 	status messages (room-empty, appraisal) it prints along the way.
@@ -53,7 +53,7 @@
 
 DEBUG = true
 
-IGNORE_NPCS = /verlok/i   # your own minor demon -- never a valid target
+IGNORE_NPCS = /verlok|animated/i   # your own minor demon / Animate Dead buddy -- never a valid target
 
 def debug(msg)
 	echo "[DBG] #{msg}" if DEBUG
@@ -65,6 +65,12 @@ explicit_target = args.find { |a| a.start_with?("#") }
 spell_id = args.find { |a| a =~ /^\d+$/ }
 
 if explicit_target
+	# refuse an explicit id that resolves to our own demon / animate buddy
+	et_npc = GameObj.npcs.find { |n| n.id.to_s == explicit_target.delete_prefix("#") }
+	if et_npc && et_npc.name.to_s =~ IGNORE_NPCS
+		echo "[fizzsac] refusing #{explicit_target} -- that's your own #{et_npc.name}."
+		exit
+	end
 	target = explicit_target
 elsif GameObj.target and GameObj.target.name !~ IGNORE_NPCS
 	target = "##{GameObj.target.id}"

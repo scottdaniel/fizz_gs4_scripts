@@ -72,6 +72,10 @@ Script.start("Fizzleworth-anim-cleanup") unless Script.running?("Fizzleworth-ani
 $ult_reanim_done = false
 $reanim_animate_live = false unless GameObj.npcs.any? { |n| n && n.name.to_s =~ /\banimate/i }
 
+# Make sure the minor demon is set to follow -- ;reanim has verlok drop the
+# animate's spare weapon, which only works if it's in the room.
+fput "tell mdem to follow"
+
 # Log mind saturation ("Field Exp: N/1220") right before the hunt starts, so
 # every hunt has a recorded starting mind for the wings-compare analysis
 # (bigshot only reads exp while resting otherwise).

@@ -71,7 +71,7 @@
 
 DEBUG = true
 
-IGNORE_NPCS = /verlok/i   # your own minor demon -- never a valid target
+IGNORE_NPCS = /verlok|animated/i   # your own minor demon / an existing animate -- never a valid target
 
 PAIN_SPELL          = 711
 ANIMATE_SPELL       = 730
@@ -95,8 +95,25 @@ def debug(msg)
 	echo "[DBG] #{msg}" if DEBUG
 end
 
+# Do two weapon nouns refer to the same weapon? `reanim_weapon` is a game
+# TARGETING noun ("claid"), while a LOOK / GameObj.loot name gives the
+# descriptive last word ("claidhmore"). Treat either being a prefix of the
+# other as a match -- "claid" <-> "claidhmore", "halberd" <-> "halberd".
+def same_weapon?(a, b)
+	a = a.to_s.downcase.strip
+	b = b.to_s.downcase.strip
+	return false if a.empty? || b.empty?
+	a == b || a.start_with?(b) || b.start_with?(a)
+end
+
+# Is a weapon matching `noun` lying on the ground? Match `noun` against each
+# word of every loot item's name (so "claid" finds "massive bone-hilted
+# claidhmore") -- NOT a /\bnoun\b/ regex, which fails when the item's real
+# name extends the noun ("claid" + "hmore").
 def weapon_on_ground(noun)
-	GameObj.loot.find { |o| o && o.name.to_s =~ /\b#{Regexp.escape(noun)}\b/i }
+	GameObj.loot.find do |o|
+		o && o.name.to_s.split(/\s+/).any? { |w| same_weapon?(w, noun) }
+	end
 end
 
 # LOOK at the animate (by id, so it can't match a live mob of the same type)
@@ -141,7 +158,7 @@ def drop_other_weapons(keep)
 	held = animate_held_nouns
 	held = [OLD_WEAPON] if held.nil?
 	dropped_any = false
-	held.reject { |w| w == keep.to_s.downcase }.each do |w|
+	held.reject { |w| same_weapon?(w, keep) }.each do |w|
 		2.times do |t|
 			r = dothistimeout("tell anim to drop #{w}", 3, Regexp.union(DROP_OK, DROP_NOT)).to_s
 			if r =~ DROP_OK || r !~ DROP_NOT
@@ -162,30 +179,40 @@ end
 #   3) once it has WEAPON (and auto-wields it -- animates take the better
 #      weapon), drop whatever else it's still holding (its innate whip, an
 #      old spare) -- droppable now that it's not the wielded weapon.
+def verlok_here?
+	GameObj.npcs.any? { |n| n && n.name.to_s =~ /verlok'?asha|minor demon/i }
+rescue StandardError
+	false
+end
+
 def arm_animate(noun, old)
 	held = animate_held_nouns
-	if held && held.include?(noun.downcase)
+	if held && held.any? { |w| same_weapon?(w, noun) }
 		debug("animate already has a #{noun}")
 		drop_other_weapons(noun)         # still clear the whip / old spare
 		return
 	end
 
+	# 1) get a spare WEAPON onto the ground
 	unless weapon_on_ground(noun)
-		r = dothistimeout("tell verlok to drop #{noun}", 3,
-			/drops (?:a|an|the) .*#{Regexp.escape(noun)}|could not find|isn't holding|not holding|does(?:n't| not) have/i)
-		if r.to_s =~ /could not find|isn't holding|not holding|does(?:n't| not) have/i
-			echo "[reanim] verlok has no #{noun} to drop and none on the ground -- animate left unarmed."
+		unless verlok_here?
+			echo "[reanim] verlok isn't here -- nudging it to follow. ('tell mdem to follow' before a hunt.)"
+			fput "tell mdem to follow"
+			sleep 1
+		end
+		dothistimeout("tell verlok to drop #{noun}", 3,
+			/drops (?:a|an|the)|could not find|isn't holding|not holding|does(?:n't| not) have|not here/i)
+		# GameObj.loot can lag the drop line by a beat -- give it a moment
+		15.times { break if weapon_on_ground(noun); sleep 0.2 }
+		unless weapon_on_ground(noun)
+			echo "[reanim] no #{noun} on the ground for the animate (verlok didn't drop one) -- animate left unarmed."
 			return
 		end
-		sleep 0.5
 	end
 
+	# 2) a spare IS on the ground now -- get the animate to take it
 	picked = false
 	WEAPON_PICKUP_TRIES.times do |i|
-		if weapon_on_ground(noun).nil?
-			picked = true
-			break
-		end
 		gr = dothistimeout("tell anim to get #{noun}", 4,
 			/snatches up|picks up|retriev|reaches down|takes hold of|obeys|obliges|hands full|cannot|can't|refuses/i)
 		waitrt?
@@ -198,11 +225,12 @@ def arm_animate(noun, old)
 		drop_other_weapons(noun)         # hands full? clear the off-hand and retry
 	end
 
+	# 3) it has the WEAPON (auto-wields it) -- drop the innate whip / old spare
 	if picked
 		debug("animate has the #{noun}")
-		drop_other_weapons(noun)         # now drop the innate whip / old spare
+		drop_other_weapons(noun)
 	else
-		echo "[reanim] WARNING: animate may not have picked up the #{noun} -- check it."
+		echo "[reanim] WARNING: animate wouldn't pick up the #{noun} -- check it."
 	end
 end
 
