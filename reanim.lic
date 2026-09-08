@@ -60,10 +60,14 @@
           ;reanim #<id>        same, explicit target (bigshot passes this)
           ;reanim die          end-of-hunt teardown: strip the spare weapon
                                off the animate and back onto verlok, then
-                               "tell anim die" -- so we don't drag an
-                               animated corpse (or lose the weapon) into
-                               town. No-op if no animate is up. Wire it into
-                               bigshot's resting_commands.
+                               "tell anim die", then ;eloot the collapsed
+                               animate for the original creature's treasure
+                               -- so we don't drag an animated corpse (or
+                               lose the weapon / leave the loot) when we
+                               head to town. No-op if no animate is up.
+                               Fired early (in the field) by
+                               Fizzleworth-anim-cleanup.lic, with
+                               Fizzleworth-prerest as a town fallback.
   Stop:   n/a (single pass, exits when done)
 =end
 
@@ -216,6 +220,10 @@ def dismiss_animate(noun, old)
 	fput "tell anim die"
 	sleep 1
 	echo "[reanim] animate still present after 'tell anim die' -- check it." if have_animate?
+
+	# a dismissed animate collapses where it stands -- loot it for the original
+	# creature's treasure before we leave (bigshot's own loot pass already ran).
+	Script.run("eloot")
 end
 
 args = script.vars[1..-1].to_a.compact.map(&:to_s).reject(&:empty?)

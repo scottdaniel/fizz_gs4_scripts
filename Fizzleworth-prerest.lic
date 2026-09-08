@@ -13,10 +13,14 @@ module FizzleworthPrerest
 # here in case it ever dies mid-run.
 Script.start("Fizzleworth-webward") unless Script.running?("Fizzleworth-webward")
 
-# End-of-hunt animate teardown (Fizzleworth-attack-cat's ;reanim buddy): move
-# the spare weapon back onto verlok and "tell anim die" so we don't walk an
-# animated corpse -- or leave its weapon on the ground -- on the way to town.
-# No-op when no animate is up (base / wing hunts).
+# Watches for end-of-hunt and dismisses the ;reanim animate buddy IN THE FIELD
+# (weapon back to verlok -> "tell anim die" -> ;eloot), before bigshot walks
+# home. Restarted here in case it ever dies mid-run.
+Script.start("Fizzleworth-anim-cleanup") unless Script.running?("Fizzleworth-anim-cleanup")
+
+# Town-side fallback for the above, for the rare case the monitor missed the
+# window: strip the spare weapon back onto verlok, "tell anim die", ;eloot.
+# No-op when no animate is up (base / wing hunts, or already cleaned up).
 Script.run("reanim", "die")
 
 Script.run("eherbs")
