@@ -67,7 +67,10 @@ Script.start("Fizzleworth-anim-cleanup") unless Script.running?("Fizzleworth-ani
 
 # Fizzleworth-attack-ultima reanims only the first inciter per hunt -- re-arm
 # that at the start of every hunt (reanim.lic's `;reanim die` also clears it).
+# Also clear reanim's "a buddy exists" flag unless one is actually still here,
+# in case a teardown was missed last hunt (crash / manual stop).
 $ult_reanim_done = false
+$reanim_animate_live = false unless GameObj.npcs.any? { |n| n && n.name.to_s =~ /\banimate/i }
 
 # Log mind saturation ("Field Exp: N/1220") right before the hunt starts, so
 # every hunt has a recorded starting mind for the wings-compare analysis

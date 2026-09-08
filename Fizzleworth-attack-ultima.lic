@@ -176,7 +176,7 @@ def caster?(foe)
 end
 
 def have_animate?
-  return true if (Spell[ANIMATE_SPELL].active? rescue false)
+  return true if $reanim_animate_live          # reanim.lic's source of truth
   GameObj.npcs.any? { |n| n && n.name.to_s =~ /\banimate/i }
 rescue StandardError
   false

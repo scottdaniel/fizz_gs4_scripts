@@ -175,9 +175,10 @@ def inciter?(foe)
   foe && foe.name.to_s =~ INCITER_RE
 end
 
-# Do we have an Animate Dead buddy up right now?
+# Is an Animate Dead buddy in the room right now? ("keep one up" -> re-reanim
+# when it's gone.) NOT Spell[ANIMATE_SPELL].active? -- that stays true for the
+# spell's whole duration even after the buddy has died or been dismissed.
 def have_animate?
-  return true if (Spell[ANIMATE_SPELL].active? rescue false)
   GameObj.npcs.any? { |n| n && n.name.to_s =~ /\banimate/i }
 rescue StandardError
   false

@@ -39,8 +39,12 @@ REST_STATES   = %i[resting rest_stop] unless defined?(REST_STATES)
 MOVERS        = %w[go2 bigshot sac4mana wander fizzsac] unless defined?(MOVERS)
 PAUSE_SETTLE  = 4 unless defined?(PAUSE_SETTLE)
 
+# $reanim_animate_live is reanim.lic's source of truth (set when Animate Dead
+# lands, cleared by `;reanim die`). Fall back to an npc scan in case this
+# script started after the reanim. NOT Spell[730].active? -- that stays true
+# for the spell's whole duration even after the buddy is dismissed.
 def animate_up?
-  return true if (Spell[730].active? rescue false)
+  return true if $reanim_animate_live
   GameObj.npcs.any? { |n| n && n.name.to_s =~ /\banimate/i }
 rescue StandardError
   false

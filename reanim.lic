@@ -77,7 +77,13 @@ PAIN_SPELL          = 711
 ANIMATE_SPELL       = 730
 MAX_PAIN_ATTEMPTS   = 15
 WEAPON_PICKUP_TRIES = 4
-ANIMATE_CATCHUP     = 12   # ;reanim die: secs to wait for the animate to follow in
+ANIMATE_CATCHUP     = 10   # ;reanim die: secs to wait for the animate to follow in
+
+# Set true when Animate Dead lands, false once ;reanim die has torn the buddy
+# down. `Spell[730].active?` stays true for the spell's whole duration even
+# after "tell anim die", so it's useless as a "do we still have a buddy?"
+# check -- this global is the source of truth. Survives across ;reanim runs.
+$reanim_animate_live = false unless defined?($reanim_animate_live)
 
 # Weapon nouns -- ;vars set reanim_weapon=<noun> / reanim_old_weapon=<noun>
 UserVars.reanim_weapon     = "katana" if UserVars.reanim_weapon.to_s.strip.empty?
@@ -207,21 +213,15 @@ rescue StandardError
 	false
 end
 
-# Do we have an animate at all (may be a room behind while it catches up on
-# follow)?
-def have_animate?
-	return true if (Spell[ANIMATE_SPELL].active? rescue false)
-	animate_here?
-end
-
-# End-of-hunt teardown. The animate is on "follow", so if travel has already
-# started it may be a room or two back -- the caller (Fizzleworth-anim-cleanup)
-# freezes go2 / bigshot / sac4mana first, then this waits for the animate to
-# catch up, gets the spare WEAPON back onto verlok (so it isn't lost),
-# dismisses the animate, and loots the remains.
+# End-of-hunt teardown. Gated on $reanim_animate_live so it runs exactly once
+# per hunt (Fizzleworth-anim-cleanup fires it in the field; Fizzleworth-prerest
+# fires it again in town, where this is now an instant no-op). The caller
+# freezes go2 / bigshot / sac4mana first; the animate is on "follow", so if
+# travel already started it may be a room back -- wait for it, then get the
+# spare WEAPON back onto verlok, dismiss it, and loot the remains.
 def dismiss_animate(noun, old)
-	unless have_animate?
-		debug("no animate up -- nothing to dismiss")
+	unless $reanim_animate_live
+		debug("no animate raised this hunt (or already torn down) -- nothing to do")
 		return
 	end
 
@@ -230,19 +230,25 @@ def dismiss_animate(noun, old)
 		sleep 0.5
 		waited += 0.5
 	end
-	echo "[reanim] animate hasn't caught up after #{ANIMATE_CATCHUP}s -- carrying on anyway." unless animate_here?
+	here = animate_here?
+	echo "[reanim] animate never reached the room -- dismissing it blind." unless here
 
-	# 1) ask it to drop the spare (the "to" form -- bare "tell anim drop" fails).
-	#    It's wielding the spare by now, which it may refuse to drop; step 3
-	#    is the backstop (a dying animate drops what it holds).
-	dothistimeout("tell anim to drop #{noun}", 3,
-		/drops (?:a|an|the)|not (?:holding|carrying)|isn't (?:holding|carrying)|could not find|empty[- ]handed/i)
-	sleep 0.4
+	# 1) ask it to drop the spare (the "to" form -- bare "tell anim drop" fails;
+	#    step 3 is the backstop -- a dying animate drops what it holds). Skip if
+	#    it's not here.
+	if here
+		dothistimeout("tell anim to drop #{noun}", 3,
+			/drops (?:a|an|the)|not (?:holding|carrying)|isn't (?:holding|carrying)|could not find|empty[- ]handed/i)
+		sleep 0.4
+	end
 
 	# 2) dismiss it
 	fput "tell anim die"
 	sleep 1.5
+	$reanim_animate_live = false
 	echo "[reanim] animate still present after 'tell anim die' -- check it." if animate_here?
+
+	return unless here   # nothing on the ground to reclaim / loot elsewhere
 
 	# 3) whatever's on the ground now (the spare it dropped or died holding) ->
 	#    back onto verlok so it isn't lost. If verlok won't, pick it up
@@ -260,8 +266,7 @@ def dismiss_animate(noun, old)
 	end
 
 	# 4) loot the collapsed animate for the original creature's treasure
-	#    (bigshot's own loot pass already ran) -- also scoops the spare if
-	#    steps 1-3 all missed, so it's in the pack rather than lost.
+	#    (bigshot's own loot pass skipped it -- it was still "the animate")
 	Script.run("eloot")
 end
 
@@ -330,6 +335,7 @@ else
 		waitcastrt?
 		result = Spell[ANIMATE_SPELL].cast("##{find.id}")
 		debug("Cast #{ANIMATE_SPELL} on ##{find.id} -> #{result}")
+		$reanim_animate_live = true   # a buddy exists -> ;reanim die should tear it down
 
 		waitrt?
 		waitcastrt?
