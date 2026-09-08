@@ -1,27 +1,32 @@
 # Fizzleworth-anim-cleanup.lic
-# Always-on companion for the Fizzleworth-attack-cat variant. Dismisses the
-# ;reanim animate buddy IN THE FIELD -- the moment bigshot decides to rest,
-# before it walks back to town -- instead of dragging an animated corpse
-# through the tunnels.
+# Always-on companion for the Fizzleworth-attack-cat / -ultima variants.
+# Dismisses the ;reanim animate buddy IN THE FIELD -- the moment bigshot
+# decides to rest, before anything walks back to town -- instead of dragging
+# an animated corpse through the tunnels or losing its weapon on the way.
 #
 # Why a monitor and not a bigshot hook: bigshot has exactly two command
-# seams, hunting_prep_commands (before the hunt) and resting_commands (AFTER
-# it's already travelled back to the resting room). Nothing runs in the gap
-# between "hunt is over" and "start walking home". bigshot's rest() sets
-# $bigshot_status = :resting as soon as should_rest? / ready_to_rest? trips,
-# then spends several seconds on a final loot pass + stance change + casting
-# its Voln signs before the first go2 step. This watches for that status flip
-# and uses that window: pause bigshot, run `;reanim die` (weapon back onto
-# verlok -> "tell anim die" -> ;eloot the remains), unpause.
+# seams, hunting_prep_commands (before the hunt) and resting_commands (which
+# runs AFTER it's already travelled back to the resting room). Nothing runs
+# in the gap between "hunt is over" and "start walking home". bigshot sets
+# $bigshot_status = :resting as soon as should_rest? / ready_to_rest? trips;
+# this watches for that flip and takes the window: FREEZE every script that
+# could move Fizzleworth (bigshot, go2, and sac4mana's wander/fizzsac harvest
+# cycle), run `;reanim die`, then unfreeze.
+#
+# Learned the hard way (2026-09-08): pausing only "bigshot" is not enough --
+# by end of hunt bigshot has handed travel to go2, and sac4mana may be
+# mid-wander harvesting essence. Both keep walking Fizzleworth away from the
+# animate while `;reanim die` flails at an empty room. `;reanim die` now also
+# waits for the animate to catch up (it's on follow), but the mover freeze is
+# what actually makes that possible.
 #
 # Fizzleworth-prerest.lic still calls `;reanim die` too, as a town-side
 # fallback for the rare case this monitor misses the window (or isn't
 # running). Both are no-ops when no animate is up, so base / wing hunts are
 # unaffected.
 #
-# Start it always-on: it's added to Fizzleworth-prerest.lic, or
-# `;autostart add Fizzleworth-anim-cleanup`. Idle cost is one global read
-# every POLL seconds.
+# Start it always-on: added to Fizzleworth-prep.lic (up for hunt 1) and
+# Fizzleworth-prerest.lic. Idle cost is one global read every POLL seconds.
 
 module FizzleworthAnimCleanup
 module_function
@@ -30,7 +35,9 @@ REANIM_SCRIPT = "reanim" unless defined?(REANIM_SCRIPT)
 POLL          = 0.3 unless defined?(POLL)
 # bigshot $bigshot_status values that mean "hunt's done, heading to rest"
 REST_STATES   = %i[resting rest_stop] unless defined?(REST_STATES)
-PAUSE_TIMEOUT = 5 unless defined?(PAUSE_TIMEOUT)
+# everything that can walk Fizzleworth around at end of hunt
+MOVERS        = %w[go2 bigshot sac4mana wander fizzsac] unless defined?(MOVERS)
+PAUSE_SETTLE  = 4 unless defined?(PAUSE_SETTLE)
 
 def animate_up?
   return true if (Spell[730].active? rescue false)
@@ -43,34 +50,18 @@ def resting?
   REST_STATES.include?($bigshot_status)
 end
 
-# Don't tear down the buddy while anything's still alive in the room -- a
-# stray $bigshot_should_rest mid-fight shouldn't strip our tank. By the time
-# bigshot is really resting the room is clear.
-def room_clear?
-  GameObj.targets.none? { |t| t && t.status.to_s !~ /dead|gone/ }
-rescue StandardError
-  false
-end
-
-def bigshot_running?
-  Script.running?("bigshot")
-end
-
-# Pause bigshot (if it's running and driving), do the teardown, unpause only
-# if we're the ones who paused it.
+# Freeze every mover we didn't already find paused, run the teardown, then
+# unfreeze only the ones we froze.
 def teardown
-  paused_by_us = false
-  if bigshot_running? && !Script.paused?("bigshot")
-    Script.pause("bigshot")
-    paused_by_us = true
-    # let bigshot finish whatever game command it was mid-way through
-    give = Time.now + PAUSE_TIMEOUT
-    sleep 0.1 until Script.paused?("bigshot") || Time.now > give || !bigshot_running?
-  end
+  mine = MOVERS.select { |s| Script.running?(s) && !Script.paused?(s) }
+  mine.each { |s| Script.pause(s) }
+  # let them settle out of whatever game command they were mid-way through
+  give = Time.now + PAUSE_SETTLE
+  sleep 0.1 until mine.all? { |s| !Script.running?(s) || Script.paused?(s) } || Time.now > give
 
   Script.run(REANIM_SCRIPT, "die")
 ensure
-  Script.unpause("bigshot") if paused_by_us && Script.paused?("bigshot")
+  mine.to_a.each { |s| Script.unpause(s) if Script.paused?(s) }
 end
 
 def run
@@ -81,16 +72,13 @@ def run
 
     if !resting?
       done = false                    # $bigshot_status back to :hunting / :ready
-    elsif done
-      # already handled this rest cycle
-    elsif !animate_up?
-      done = true                     # nothing to dismiss -- latch
-    elsif room_clear?
-      echo "Fizzleworth-anim-cleanup: hunt over with an animate up -- dismissing it here."
-      teardown
+    elsif !done
+      if animate_up?
+        echo "Fizzleworth-anim-cleanup: hunt over with an animate up -- dismissing it here."
+        teardown
+      end
       done = true                     # latch until the next hunt, pass or fail
     end
-    # else: resting, animate up, but room not clear yet -- recheck next poll
 
     sleep POLL
   end
