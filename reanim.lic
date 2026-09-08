@@ -233,6 +233,9 @@ args = script.vars[1..-1].to_a.compact.map(&:to_s).reject(&:empty?)
 # and its weapon don't come to town with us.
 if args.any? { |a| a =~ /\A-{0,2}(?:die|dismiss|cleanup|teardown)\z/i }
 	dismiss_animate(WEAPON, OLD_WEAPON)
+	# Fizzleworth-attack-ultima reanims only the first inciter per hunt; this
+	# teardown marks the hunt's end, so re-arm it for the next one.
+	$ult_reanim_done = false
 	exit
 end
 

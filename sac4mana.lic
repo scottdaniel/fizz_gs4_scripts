@@ -73,7 +73,7 @@ module Sac4Mana
   # original target. So just skip this poll and retry in
   # CHECK_INTERVAL_SECONDS instead of racing it -- bigshot's own oom rest is
   # the backstop if mana stays low longer than that.
-  FIZZLEWORTH_ATTACK_SCRIPT_NAMES = ["Fizzleworth-attack-wing", "Fizzleworth-attack-base", "Fizzleworth-attack-cat"]
+  FIZZLEWORTH_ATTACK_SCRIPT_NAMES = ["Fizzleworth-attack-wing", "Fizzleworth-attack-base", "Fizzleworth-attack-cat", "Fizzleworth-attack-ultima"]
   ESSENCE_MAX            = 5
   MAX_HARVEST_ROUNDS     = 5      # give up wander+fizzsac cycling after this many rounds
   MAX_WANDER_SKIPS       = 5      # give up skipping "too easy" targets after this many wander attempts

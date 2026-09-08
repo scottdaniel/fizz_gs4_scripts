@@ -1,0 +1,326 @@
+# Fizzleworth-attack-ultima.lic
+# Bigshot custom attack routine for Fizzleworth (Sorcerer). A FOURTH variant
+# for the gs4-wings-compare experiment -- Fizzleworth-attack-base with a
+# creature-specific disable step and a one-shot animate buddy bolted on.
+# Drop it into a bigshot hunting-commands list as a single command:
+#
+#   script Fizzleworth-attack-ultima
+#
+# Like -base / -cat it uses NO Energy Wings and kills Fizzleworth-wingguard
+# every pass, so plugging it into a profile is the only setup needed.
+#
+# --- what's different from -base -----------------------------------------
+#
+# -base opens every target with Web (118) regardless of what it is. -ultima
+# instead picks the disable by creature, then runs the SAME 710 -> 706 -> hold
+# DoT finish:
+#
+#   * magna vereri            -> Web (118), recast until endroll >= WEB_ENDROLL
+#                                (vereri don't cast -- a snare/knockdown is the
+#                                useful disable).
+#   * Ivasian inciter,        -> Corrupt Essence (703): CS vs TD, a failed ward
+#     dark-eyed incubus,         drops a "blood red haze" that BLOCKS their
+#     pestilent vision           spellcasting ~15s. All three cast, so silencing
+#                                them is worth more than a web. 3 mana, once per
+#                                target ($ult_silenced_id).
+#   * pestilent vision         -> ALSO Symbol of Disruption (Voln, favor not
+#     (additionally)             mana) once per target ($ult_disrupted_id) BEFORE
+#                                the 703 -- visions are noncorporeal undead, and
+#                                Disruption pulses a CS/TD (+AS/DS/UDF/CMAN)
+#                                penalty on them, which makes the 703 ward and
+#                                the Maelstrom land better.
+#   * anything unrecognised    -> Web (118), same as -base.
+#
+# ONE-SHOT ANIMATE BUDDY: the first Ivasian inciter of a hunt, if we don't
+# already have an animate up, is handed to `;reanim` (Pain 711 to death, then
+# Animate Dead 730 the corpse into a buddy that tanks/attacks for us). Just
+# once per hunt -- $ult_reanim_done latches it, and reanim.lic clears that
+# latch from its `;reanim die` end-of-hunt teardown (Fizzleworth-prep clears
+# it too as a backstop). Every inciter after the first just gets the normal
+# 703 -> 710 -> 706 treatment. This is the mana-conservative middle ground
+# between -base (no buddy) and -cat (re-reanims whenever the buddy dies).
+#
+# The animate is dismissed in the field at end of hunt by
+# Fizzleworth-anim-cleanup.lic (weapon back to verlok -> "tell anim die" ->
+# ;eloot), same as the -cat variant.
+#
+# --- offense finish (identical to -base) --------------------------------
+#
+#   710 Energy Maelstrom (prep + cast, a DoT) -> 706 Tenebrous Tether (root,
+#   only on a pass where 710 actually confirmed cast) -> hold up to
+#   MAELSTROM_WAIT for the DoT, bailing on death or the room filling past
+#   FLEE_HINT.
+#
+# Everything casts from stance DEFENSIVE and never leaves it -- per
+# https://gswiki.play.net/SMR stance is not a factor for spell SMRv2, and the
+# 703/710/706 wards don't care either (kept identical to -base/-wing/-cat for
+# the comparison). OVEREXERTION: every cast gated on live checkmana vs the
+# spell's real cost (Web 118 targeted = 5, Corrupt 703 = 3, Maelstrom 710 =
+# 10, Tether 706 = 6). Wound-block ("can't think clearly enough") ->
+# ;eherbs --spellcast once. Extra mana: Symbol of Mana (off-cooldown, deeds to
+# spare) + the sac4mana hunting-script + bigshot's oom rest. No pray-for-mana.
+
+# --- knobs -----------------------------------------------------------------
+
+SPELL_WEB_MANA       = 5 unless defined?(SPELL_WEB_MANA)   # TARGETED 118 (not effect-list.xml's 10)
+SPELL_CORRUPT_MANA   = (Spell[703].mana_cost.to_i.positive? ? Spell[703].mana_cost.to_i : 3)  unless defined?(SPELL_CORRUPT_MANA)
+SPELL_MAELSTROM_MANA = (Spell[710].mana_cost.to_i.positive? ? Spell[710].mana_cost.to_i : 10) unless defined?(SPELL_MAELSTROM_MANA)
+SPELL_TETHER_MANA    = (Spell[706].mana_cost.to_i.positive? ? Spell[706].mana_cost.to_i : 6)  unless defined?(SPELL_TETHER_MANA)
+
+WEB_ENDROLL   = 101 unless defined?(WEB_ENDROLL)
+WEB_MAX_TRIES = 3   unless defined?(WEB_MAX_TRIES)
+
+MAELSTROM_WAIT = 10 unless defined?(MAELSTROM_WAIT)
+FLEE_HINT      = 7  unless defined?(FLEE_HINT)
+
+# Creature buckets. vereri -> web; the three casters -> 703; vision -> also
+# Symbol of Disruption first.
+VERERI_RE  = /magna vereri/i    unless defined?(VERERI_RE)
+INCITER_RE = /Ivasian inciter/i unless defined?(INCITER_RE)
+INCUBUS_RE = /incubus/i         unless defined?(INCUBUS_RE)
+VISION_RE  = /pestilent vision/i unless defined?(VISION_RE)
+
+REANIM_SCRIPT = "reanim" unless defined?(REANIM_SCRIPT)
+ANIMATE_SPELL = 730      unless defined?(ANIMATE_SPELL)
+
+WINGGUARD_SCRIPT_NAME = "Fizzleworth-wingguard" unless defined?(WINGGUARD_SCRIPT_NAME)
+
+VOLN = (defined?(Lich::Gemstone::Societies::OrderOfVoln) ? Lich::Gemstone::Societies::OrderOfVoln : nil) unless defined?(VOLN)
+
+# --- patterns ------------------------------------------------------------
+
+CANT_CAST_WOUNDED = /can't think clearly enough to prepare a spell/i unless defined?(CANT_CAST_WOUNDED)
+
+# --- helpers -----------------------------------------------------------
+
+def target_dead?(foe)
+  return true if foe.nil?
+  return true if foe.status.to_s =~ /dead|gone/
+  !GameObj.targets.any? { |t| t.id.to_i == foe.id.to_i && t.status.to_s !~ /dead|gone/ }
+end
+
+def living_targets
+  GameObj.targets.count { |t| t.status.to_s !~ /dead|gone/ }
+end
+
+def hold_for_dot(seconds, foe)
+  deadline = Time.now.to_f + seconds
+  until Time.now.to_f >= deadline
+    return if target_dead?(foe)
+    return if living_targets >= FLEE_HINT
+    sleep 0.25
+  end
+end
+
+# Sends `cmd` and collects every line through the roundtime/resolution message.
+def cast_collect(cmd, timeout = 6)
+  lines = []
+  put cmd
+  deadline = Time.now.to_f + timeout
+  loop do
+    line = get?
+    if line.nil?
+      sleep 0.1
+    else
+      lines << line
+      break if line =~ /Roundtime: \d+ sec|Cast Roundtime \d+ Sec|can't think clearly enough to prepare|Warded off|Warding failed|is rooted in place|blood red haze/i
+    end
+    break if Time.now.to_f >= deadline
+  end
+  lines.join("\n")
+end
+
+def go_defensive
+  fput "stance defensive" if stance != "defensive"
+end
+
+def vereri?(foe)
+  foe && foe.name.to_s =~ VERERI_RE
+end
+
+def inciter?(foe)
+  foe && foe.name.to_s =~ INCITER_RE
+end
+
+def vision?(foe)
+  foe && foe.name.to_s =~ VISION_RE
+end
+
+# inciter / incubus / vision -- the three that cast and so get 703
+def caster?(foe)
+  foe && (foe.name.to_s =~ INCITER_RE || foe.name.to_s =~ INCUBUS_RE || foe.name.to_s =~ VISION_RE)
+end
+
+def have_animate?
+  return true if (Spell[ANIMATE_SPELL].active? rescue false)
+  GameObj.npcs.any? { |n| n && n.name.to_s =~ /\banimate/i }
+rescue StandardError
+  false
+end
+
+# --- disables --------------------------------------------------------
+
+# Web until the endroll clears WEB_ENDROLL (or WEB_MAX_TRIES). Once per target.
+def land_web(foe)
+  return if $ult_webbed_id == foe.id.to_i
+  tries = 0
+  while tries < WEB_MAX_TRIES
+    return if target_dead?(foe)
+    return if checkmana < SPELL_WEB_MANA
+    waitcastrt?
+    waitrt?
+    text = cast_collect("incant 118")
+    if text =~ CANT_CAST_WOUNDED
+      Script.run("eherbs", "--spellcast")
+      return
+    end
+    tries += 1
+    roll = (text =~ /==\s*\+?(-?\d+)/ ? Regexp.last_match(1).to_i : nil)
+    break if (roll && roll >= WEB_ENDROLL) || text =~ /becomes ensnared|is rooted in place/i
+    sleep 0.2
+  end
+  $ult_webbed_id = foe.id.to_i
+end
+
+# Corrupt Essence (703) -- silence a caster, once per target.
+def land_corrupt(foe)
+  return if $ult_silenced_id == foe.id.to_i
+  return if target_dead?(foe)
+  return if checkmana < SPELL_CORRUPT_MANA
+  waitcastrt?
+  waitrt?
+  text = cast_collect("incant 703")
+  if text =~ CANT_CAST_WOUNDED
+    Script.run("eherbs", "--spellcast")
+    return
+  end
+  $ult_silenced_id = foe.id.to_i
+  waitcastrt?
+  waitrt?
+end
+
+# Symbol of Disruption (Voln, favor) -- once per vision. Guarded by the Voln
+# helper's own known?/affordable? check; no-op if not a member / low favor.
+def land_disruption(foe)
+  return if $ult_disrupted_id == foe.id.to_i
+  $ult_disrupted_id = foe.id.to_i          # latch either way -- don't retry every pass
+  return if VOLN.nil?
+  begin
+    return unless VOLN.available?("disruption")
+  rescue StandardError
+    return
+  end
+  waitcastrt?
+  waitrt?
+  dothistimeout("symbol of disruption", 4,
+    /symbol of disruption|wave of (?:divine|holy)|noncorporeal|do not have (?:enough|sufficient) favor|no (?:valid|undead)|not a member/i)
+  waitrt?
+end
+
+# prep 710 + cast at foe. @return true only if prep confirmed AND cast went out.
+def land_maelstrom(foe)
+  return false if target_dead?(foe)
+  return false if checkmana < SPELL_MAELSTROM_MANA
+  fput "release" if checkprep != "None"
+  waitcastrt?
+  waitrt?
+  text = dothistimeout("prep 710", 6, /Your spell is ready|can't think clearly enough to prepare/i).to_s
+  if text =~ CANT_CAST_WOUNDED
+    Script.run("eherbs", "--spellcast")
+    return false
+  end
+  return false unless text =~ /Your spell is ready/i
+  return false if target_dead?(foe)
+  return false if checkmana < SPELL_MAELSTROM_MANA
+  fput "cast ##{foe.id}"
+  waitcastrt?
+  waitrt?
+  true
+end
+
+# Tenebrous Tether (706), once per target.
+def land_tether(foe)
+  return if $ult_tethered_id == foe.id.to_i
+  return if target_dead?(foe)
+  return if checkmana < SPELL_TETHER_MANA
+  waitcastrt?
+  waitrt?
+  cast_collect("incant 706")
+  $ult_tethered_id = foe.id.to_i
+  waitcastrt?
+  waitrt?
+end
+
+def recover_mana
+  return unless !Effects::Cooldowns.active?("Symbol of Mana") && Experience.deeds > 3
+  fput "symbol of mana"
+  waitrt?
+end
+
+# --- main ----------------------------------------------------------
+
+Script.kill(WINGGUARD_SCRIPT_NAME) if Script.running?(WINGGUARD_SCRIPT_NAME)
+
+$ult_target      = nil   unless defined?($ult_target)
+$ult_webbed_id   = nil   unless defined?($ult_webbed_id)
+$ult_silenced_id = nil   unless defined?($ult_silenced_id)
+$ult_disrupted_id = nil  unless defined?($ult_disrupted_id)
+$ult_tethered_id = nil   unless defined?($ult_tethered_id)
+$ult_reanim_done = false unless defined?($ult_reanim_done)
+
+foe = GameObj.targets.find { |t| t.id.to_i == XMLData.current_target_id.to_i } if XMLData.current_target_id
+foe ||= GameObj.targets.find { |t| t.status.to_s !~ /dead|gone/ && t.name !~ /animated/ }
+
+exit if target_dead?(foe)
+
+if $ult_target != foe.id.to_i
+  $ult_target       = foe.id.to_i
+  $ult_webbed_id    = nil
+  $ult_silenced_id  = nil
+  $ult_disrupted_id = nil
+  $ult_tethered_id  = nil
+end
+
+fput "target ##{foe.id}" unless XMLData.current_target_id.to_i == foe.id.to_i
+waitrt?
+waitcastrt?
+exit if target_dead?(foe)
+
+go_defensive
+
+# too dry for even the cheapest disable (703 = 3) -- recover and let bigshot rest
+if checkmana < SPELL_CORRUPT_MANA
+  recover_mana
+  exit
+end
+
+# First inciter of the hunt with no buddy up -> reanim it into one and we're
+# done for this pass (reanim kills it and raises the animate).
+if inciter?(foe) && !$ult_reanim_done && !have_animate?
+  Script.run(REANIM_SCRIPT, "##{foe.id}")
+  $ult_reanim_done = true
+  exit
+end
+
+# Visions: Symbol of Disruption first (drops their CS/TD before the ward).
+land_disruption(foe) if vision?(foe)
+
+# Creature-specific disable.
+if vereri?(foe)
+  land_web(foe)
+elsif caster?(foe)
+  land_corrupt(foe)
+else
+  land_web(foe)                      # unknown -> web, same as -base
+end
+
+# Shared DoT finish.
+got_dot = false
+unless target_dead?(foe)
+  got_dot = land_maelstrom(foe)
+  land_tether(foe) if got_dot && !target_dead?(foe)
+end
+
+hold_for_dot(MAELSTROM_WAIT, foe) if got_dot
+
+recover_mana if !target_dead?(foe) && checkmana < SPELL_MAELSTROM_MANA

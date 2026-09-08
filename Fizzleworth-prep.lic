@@ -59,10 +59,15 @@ if res !~ /An ethereal necrotic film covers the/
     fput "evoke #{GameObj.right_hand}"
     end
 
-# Dismisses the Fizzleworth-attack-cat ;reanim animate in the field the moment
-# bigshot decides to rest, before the walk home. Started here so it's up for
-# the very first hunt (prerest also (re)starts it); no-op on base / wing hunts.
+# Dismisses the Fizzleworth-attack-cat / -ultima ;reanim animate in the field
+# the moment bigshot decides to rest, before the walk home. Started here so
+# it's up for the very first hunt (prerest also (re)starts it); no-op on
+# base / wing hunts.
 Script.start("Fizzleworth-anim-cleanup") unless Script.running?("Fizzleworth-anim-cleanup")
+
+# Fizzleworth-attack-ultima reanims only the first inciter per hunt -- re-arm
+# that at the start of every hunt (reanim.lic's `;reanim die` also clears it).
+$ult_reanim_done = false
 
 # Log mind saturation ("Field Exp: N/1220") right before the hunt starts, so
 # every hunt has a recorded starting mind for the wings-compare analysis
