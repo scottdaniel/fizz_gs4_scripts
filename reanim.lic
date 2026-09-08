@@ -130,9 +130,13 @@ end
 def animate_held_nouns
 	mine = GameObj.npcs.find { |n| n && n.name.to_s =~ /\banimate/i }
 	tgt  = mine ? "##{mine.id}" : "animate"
-	lines = Lich::Util.issue_command("look #{tgt}",
+	raw  = Lich::Util.issue_command("look #{tgt}",
 	          /\b(?:has|have)\b|empty[- ]handed|hands? (?:are|is) empty|nothing in (?:its|his|her|their)/i,
 	          include_end: false, silent: true) rescue []
+	# held items come through as clickable links -- strip the XML/markup
+	# (<a exist=... noun=...>whip</a>, <pushBold/>, ...) or the noun we
+	# extract keeps a trailing "</a>" and "tell anim to drop whip</a>" fails.
+	lines = raw.map { |l| l.to_s.gsub(/<[^>]+>/, "") }
 	return [] if lines.any? { |l| l =~ /empty[- ]handed|hands? (?:are|is) empty|nothing in (?:its|his|her|their)/i }
 
 	line = lines.find { |l| l =~ /\b(?:has|have)\s+(?:a|an|some|two|three|four|several|a pair of)\b/i &&
@@ -143,7 +147,7 @@ def animate_held_nouns
 	return nil unless m
 	m[1].split(/\s*,\s*|\s+and\s+/i)
 	    .reject { |item| item =~ /\(worn\)/i }
-	    .map    { |item| item.sub(/\s*\([^)]*\)\s*$/, "").strip.split(/\s+/).last.to_s.downcase }
+	    .map    { |item| item.sub(/\s*\([^)]*\)\s*$/, "").strip.split(/\s+/).last.to_s.downcase.gsub(/[^a-z'\-]/, "") }
 	    .reject(&:empty?)
 	    .uniq
 rescue StandardError
