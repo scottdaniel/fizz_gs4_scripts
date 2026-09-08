@@ -50,6 +50,14 @@
 # Fizzleworth-anim-cleanup.lic (weapon back to verlok -> "tell anim die" ->
 # ;eloot), same as the -cat variant.
 #
+# SYMBOL OF RETRIBUTION: also a self-aura (Voln, favor). "You feel an aura of
+# righteous wrath surround you." -- reactively flares divine damage back at
+# any UNDEAD that strikes you (visions are noncorporeal undead; the inciters'
+# kicks / maneuvers count as strikes). rank x 10s, stackable. Kept up every
+# pass there's a live target, tracked by $ult_retribution_until, same
+# lapse-timestamp scheme as Disruption. Pure defense -- it's ULTIMA, we want
+# the protection. RETRIBUTION knob turns it off; needs Voln step 15.
+#
 # --- offense finish (identical to -base) --------------------------------
 #
 #   710 Energy Maelstrom (prep + cast, a DoT) -> 706 Tenebrous Tether (root,
@@ -79,8 +87,8 @@ WEB_MAX_TRIES = 3   unless defined?(WEB_MAX_TRIES)
 MAELSTROM_WAIT = 10 unless defined?(MAELSTROM_WAIT)
 FLEE_HINT      = 7  unless defined?(FLEE_HINT)
 
-# Creature buckets. vereri -> web; the three casters -> 703; vision -> also
-# Symbol of Disruption first.
+# Creature buckets. vereri -> web; the three casters (inciter/incubus/vision)
+# -> 703; vision additionally puts up the Disruption aura first.
 VERERI_RE  = /magna vereri/i    unless defined?(VERERI_RE)
 INCITER_RE = /Ivasian inciter/i unless defined?(INCITER_RE)
 INCUBUS_RE = /incubus/i         unless defined?(INCUBUS_RE)
@@ -89,11 +97,15 @@ VISION_RE  = /pestilent vision/i unless defined?(VISION_RE)
 REANIM_SCRIPT = "reanim" unless defined?(REANIM_SCRIPT)
 ANIMATE_SPELL = 730      unless defined?(ANIMATE_SPELL)
 
-# Symbol of Disruption aura lasts Voln rank x 10s; re-arm this many seconds
-# early. If a cast can't happen (no favor / not a member) don't retry it for
-# DISRUPT_RETRY seconds instead of hammering it every pass.
-DISRUPT_MARGIN = 5  unless defined?(DISRUPT_MARGIN)
-DISRUPT_RETRY  = 45 unless defined?(DISRUPT_RETRY)
+# Voln self-auras (Disruption, Retribution) last Voln rank x 10s; re-arm this
+# many seconds early. If a cast can't happen (no favor / rank too low / not a
+# member) back off AURA_RETRY seconds instead of hammering it every pass.
+AURA_MARGIN = 5  unless defined?(AURA_MARGIN)
+AURA_RETRY  = 45 unless defined?(AURA_RETRY)
+
+# Symbol of Retribution -- reactive divine flare vs undead that strike you.
+# Set false to skip it (favor is ~3x Symbol of Protection per recast).
+RETRIBUTION = true unless defined?(RETRIBUTION)
 
 WINGGUARD_SCRIPT_NAME = "Fizzleworth-wingguard" unless defined?(WINGGUARD_SCRIPT_NAME)
 
@@ -211,42 +223,58 @@ def land_corrupt(foe)
   waitrt?
 end
 
-# Symbol of Disruption -- a self-aura (rank x 10s), NOT a per-target strike.
-# Cast once when the aura isn't up; every noncorporeal undead struck while it
-# lasts is disrupted. Favor, not mana. No-op if not a Voln member / low favor
-# (then backs off DISRUPT_RETRY seconds).
+# --- Voln self-auras (Disruption, Retribution) --------------------------
+#
+# Both are rank x 10s self-buffs, not per-target strikes: cast once, and while
+# the aura holds it works on every valid creature. Tracked by a hunt-wide
+# expiry timestamp ($ult_*_until), NOT reset on target change. Favor, not mana.
+# No-op / back off AURA_RETRY seconds if not a Voln member, rank too low, or
+# out of favor (VOLN.available? covers all three).
+
 def voln_rank
   (VOLN.rank rescue Society.rank rescue 0).to_i
 end
 
-def disruption_aura_up?
-  $ult_disruption_until.is_a?(Numeric) && Time.now.to_f < $ult_disruption_until
+def aura_up?(until_ts)
+  until_ts.is_a?(Numeric) && Time.now.to_f < until_ts
 end
 
-def raise_disruption_aura
-  return if disruption_aura_up?
-  return if VOLN.nil?
+# Cast `symbol of <short>`, confirm on `success_re`, and return the new expiry
+# timestamp (rank x 10s out, less AURA_MARGIN) -- or a short back-off stamp if
+# it couldn't be cast / confirmed. Never returns nil.
+def cast_voln_aura(short, success_re)
+  backoff = Time.now.to_f + AURA_RETRY
+  return backoff if VOLN.nil?
   begin
-    unless VOLN.available?("disruption")
-      $ult_disruption_until = Time.now.to_f + DISRUPT_RETRY   # no favor / not known -- back off
-      return
-    end
+    return backoff unless VOLN.available?(short)
   rescue StandardError
-    $ult_disruption_until = Time.now.to_f + DISRUPT_RETRY
-    return
+    return backoff
   end
   waitcastrt?
   waitrt?
-  text = dothistimeout("symbol of disruption", 4,
-    /churning spectral aura surrounds you|already surrounded|do not have (?:enough|sufficient) favor|don't have (?:enough|sufficient) favor|not .*(?:enough|sufficient) favor|must wait/i).to_s
-  if text =~ /churning spectral aura surrounds you|already surrounded/i
-    rank = voln_rank
-    dur  = rank.positive? ? rank * 10 : 60
-    $ult_disruption_until = Time.now.to_f + dur - DISRUPT_MARGIN
-  else
-    $ult_disruption_until = Time.now.to_f + DISRUPT_RETRY       # couldn't confirm -- retry later
-  end
+  text = dothistimeout("symbol of #{short}", 4,
+    Regexp.union(success_re,
+      /already (?:surround|aura)|do not have (?:enough|sufficient) favor|don't have (?:enough|sufficient) favor|must wait/i)).to_s
   waitrt?
+  if text =~ success_re || text =~ /already (?:surround|aura)/i
+    r = voln_rank
+    Time.now.to_f + (r.positive? ? r * 10 : 60) - AURA_MARGIN
+  else
+    backoff
+  end
+end
+
+# gswiki Symbol_of_Disruption: "A churning spectral aura surrounds you."
+def raise_disruption_aura
+  return if aura_up?($ult_disruption_until)
+  $ult_disruption_until = cast_voln_aura("disruption", /churning spectral aura surrounds you/i)
+end
+
+# gswiki Symbol_of_Retribution: "You feel an aura of righteous wrath surround you."
+def raise_retribution_aura
+  return unless RETRIBUTION
+  return if aura_up?($ult_retribution_until)
+  $ult_retribution_until = cast_voln_aura("retribution", /aura of righteous wrath surround you/i)
 end
 
 # prep 710 + cast at foe. @return true only if prep confirmed AND cast went out.
@@ -293,12 +321,13 @@ end
 
 Script.kill(WINGGUARD_SCRIPT_NAME) if Script.running?(WINGGUARD_SCRIPT_NAME)
 
-$ult_target           = nil   unless defined?($ult_target)
-$ult_webbed_id        = nil   unless defined?($ult_webbed_id)
-$ult_silenced_id      = nil   unless defined?($ult_silenced_id)
-$ult_tethered_id      = nil   unless defined?($ult_tethered_id)
-$ult_disruption_until = nil   unless defined?($ult_disruption_until)  # aura expiry, hunt-wide
-$ult_reanim_done      = false unless defined?($ult_reanim_done)
+$ult_target            = nil   unless defined?($ult_target)
+$ult_webbed_id         = nil   unless defined?($ult_webbed_id)
+$ult_silenced_id       = nil   unless defined?($ult_silenced_id)
+$ult_tethered_id       = nil   unless defined?($ult_tethered_id)
+$ult_disruption_until  = nil   unless defined?($ult_disruption_until)   # aura expiry, hunt-wide
+$ult_retribution_until = nil   unless defined?($ult_retribution_until)  # aura expiry, hunt-wide
+$ult_reanim_done       = false unless defined?($ult_reanim_done)
 
 foe = GameObj.targets.find { |t| t.id.to_i == XMLData.current_target_id.to_i } if XMLData.current_target_id
 foe ||= GameObj.targets.find { |t| t.status.to_s !~ /dead|gone/ && t.name !~ /animated/ }
@@ -319,6 +348,10 @@ waitcastrt?
 exit if target_dead?(foe)
 
 go_defensive
+
+# Protective Voln aura up first -- favor not mana, so do it even when OOM
+# (that's exactly when the reactive flare matters most).
+raise_retribution_aura
 
 # too dry for even the cheapest disable (703 = 3) -- recover and let bigshot rest
 if checkmana < SPELL_CORRUPT_MANA
