@@ -266,8 +266,14 @@ def dismiss_animate(noun, old)
 	end
 
 	# 4) loot the collapsed animate for the original creature's treasure
-	#    (bigshot's own loot pass skipped it -- it was still "the animate")
-	Script.run("eloot")
+	#    (bigshot's own loot pass skipped it -- it was still "the animate").
+	#    Run eloot detached with a hard cap: if it pauses itself for user input
+	#    (sacks full, box handling) we must NOT stay blocked here -- the caller
+	#    has bigshot / go2 / sac4mana frozen. Leave a paused eloot for the user.
+	Script.start("eloot")
+	deadline = Time.now + 15
+	sleep 0.3 until !Script.running?("eloot") || Script.paused?("eloot") || Time.now > deadline
+	echo "[reanim] eloot is still busy -- leaving it to finish on its own." if Script.running?("eloot")
 end
 
 args = script.vars[1..-1].to_a.compact.map(&:to_s).reject(&:empty?)
