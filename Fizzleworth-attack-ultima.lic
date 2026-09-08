@@ -71,8 +71,10 @@
 # the comparison). OVEREXERTION: every cast gated on live checkmana vs the
 # spell's real cost (Web 118 targeted = 5, Corrupt 703 = 3, Maelstrom 710 =
 # 10, Tether 706 = 6). Wound-block ("can't think clearly enough") ->
-# ;eherbs --spellcast once. Extra mana: Symbol of Mana (off-cooldown, deeds to
-# spare) + the sac4mana hunting-script + bigshot's oom rest. No pray-for-mana.
+# ;eherbs --spellcast once. MANA: this rotation keeps the attack script busy
+# enough that sac4mana's harvest never gets a window (same as -cat), so
+# recovery is INLINE -- at the top of any pass below SACRIFICE_AT: `sacrifice
+# mana` (~89, 1 shadow essence) then Symbol of Mana. No pray-for-mana.
 
 # --- knobs -----------------------------------------------------------------
 
@@ -86,6 +88,13 @@ WEB_MAX_TRIES = 3   unless defined?(WEB_MAX_TRIES)
 
 MAELSTROM_WAIT = 10 unless defined?(MAELSTROM_WAIT)
 FLEE_HINT      = 7  unless defined?(FLEE_HINT)
+
+# Top mana off (inline `sacrifice mana`, ~89 for 1 shadow essence) at the start
+# of any pass it's below this. Like -cat, ultima keeps the attack script busy
+# enough that sac4mana's own harvest never gets a window -- observed OOM at
+# 3m33s with 1 Symbol of Mana and 0 sacrifices (2026-09-08). The `;reanim`
+# buddy makes it hungrier still, so recovery is inline here.
+SACRIFICE_AT = 45 unless defined?(SACRIFICE_AT)
 
 # Creature buckets. vereri -> web; the three casters (inciter/incubus/vision)
 # -> 703; vision additionally puts up the Disruption aura first.
@@ -311,10 +320,39 @@ def land_tether(foe)
   waitrt?
 end
 
+# Sacrifice (Mana) has its own cooldown, independent of the other sacrifice
+# abilities -- match sac4mana's loose name check rather than an exact key.
+def sacrifice_on_cooldown?
+  Effects::Cooldowns.to_h.keys.any? { |k| k.to_s =~ /sacrifice\s*\(\s*mana\s*\)/i }
+rescue StandardError
+  false
+end
+
+def shadow_essence
+  Resources.shadow_essence.to_i
+rescue StandardError
+  0
+end
+
+# Inline mana top-off: `sacrifice mana` (~89, spends 1 shadow essence) if off
+# cooldown with essence to spare, then Symbol of Mana (off-cooldown, deeds to
+# spare). sac4mana can't get a harvest window in this rotation, so this is the
+# recovery that actually happens mid-hunt.
 def recover_mana
-  return unless !Effects::Cooldowns.active?("Symbol of Mana") && Experience.deeds > 3
-  fput "symbol of mana"
-  waitrt?
+  if shadow_essence.positive? && !sacrifice_on_cooldown?
+    waitcastrt?
+    waitrt?
+    r = dothistimeout("sacrifice mana", 4,
+          /mana surge into you|overwhelm you with shadow essence|don't have (?:enough|any)/i)
+    waitrt?
+    return true if r.to_s =~ /mana surge into you|overwhelm you with shadow essence/i
+  end
+  if !Effects::Cooldowns.active?("Symbol of Mana") && Experience.deeds > 3
+    fput "symbol of mana"
+    waitrt?
+    return true
+  end
+  false
 end
 
 # --- main ----------------------------------------------------------
@@ -353,9 +391,12 @@ go_defensive
 # (that's exactly when the reactive flare matters most).
 raise_retribution_aura
 
-# too dry for even the cheapest disable (703 = 3) -- recover and let bigshot rest
+# top mana off before committing to a pass (703 + 710 + 706 + the reanim
+# path add up fast, and sac4mana never gets a window here)
+recover_mana if checkmana < SACRIFICE_AT
+
+# still too dry for even the cheapest disable (703 = 3) -- hand back to bigshot
 if checkmana < SPELL_CORRUPT_MANA
-  recover_mana
   exit
 end
 
@@ -389,4 +430,4 @@ end
 
 hold_for_dot(MAELSTROM_WAIT, foe) if got_dot
 
-recover_mana if !target_dead?(foe) && checkmana < SPELL_MAELSTROM_MANA
+recover_mana if !target_dead?(foe) && checkmana < SACRIFICE_AT
