@@ -24,11 +24,17 @@
 #                                them is worth more than a web. 3 mana, once per
 #                                target ($ult_silenced_id).
 #   * pestilent vision         -> ALSO Symbol of Disruption (Voln, favor not
-#     (additionally)             mana) once per target ($ult_disrupted_id) BEFORE
-#                                the 703 -- visions are noncorporeal undead, and
-#                                Disruption pulses a CS/TD (+AS/DS/UDF/CMAN)
-#                                penalty on them, which makes the 703 ward and
-#                                the Maelstrom land better.
+#     (additionally)             mana) BEFORE the 703. It's a self-AURA, not a
+#                                per-target strike: one cast ("A churning
+#                                spectral aura surrounds you.") and for
+#                                rank x 10s every noncorporeal undead you hit
+#                                gets an AS/DS/CS/TD/UDF/CMAN penalty. So it's
+#                                cast once when a vision is in the room and the
+#                                aura isn't already up ($ult_disruption_until
+#                                timestamp), not once per creature. gswiki:
+#                                Seething_pestilent_vision explicitly
+#                                recommends it. Makes the 703 ward + Maelstrom
+#                                land better on visions.
 #   * anything unrecognised    -> Web (118), same as -base.
 #
 # ONE-SHOT ANIMATE BUDDY: the first Ivasian inciter of a hunt, if we don't
@@ -82,6 +88,12 @@ VISION_RE  = /pestilent vision/i unless defined?(VISION_RE)
 
 REANIM_SCRIPT = "reanim" unless defined?(REANIM_SCRIPT)
 ANIMATE_SPELL = 730      unless defined?(ANIMATE_SPELL)
+
+# Symbol of Disruption aura lasts Voln rank x 10s; re-arm this many seconds
+# early. If a cast can't happen (no favor / not a member) don't retry it for
+# DISRUPT_RETRY seconds instead of hammering it every pass.
+DISRUPT_MARGIN = 5  unless defined?(DISRUPT_MARGIN)
+DISRUPT_RETRY  = 45 unless defined?(DISRUPT_RETRY)
 
 WINGGUARD_SCRIPT_NAME = "Fizzleworth-wingguard" unless defined?(WINGGUARD_SCRIPT_NAME)
 
@@ -199,21 +211,41 @@ def land_corrupt(foe)
   waitrt?
 end
 
-# Symbol of Disruption (Voln, favor) -- once per vision. Guarded by the Voln
-# helper's own known?/affordable? check; no-op if not a member / low favor.
-def land_disruption(foe)
-  return if $ult_disrupted_id == foe.id.to_i
-  $ult_disrupted_id = foe.id.to_i          # latch either way -- don't retry every pass
+# Symbol of Disruption -- a self-aura (rank x 10s), NOT a per-target strike.
+# Cast once when the aura isn't up; every noncorporeal undead struck while it
+# lasts is disrupted. Favor, not mana. No-op if not a Voln member / low favor
+# (then backs off DISRUPT_RETRY seconds).
+def voln_rank
+  (VOLN.rank rescue Society.rank rescue 0).to_i
+end
+
+def disruption_aura_up?
+  $ult_disruption_until.is_a?(Numeric) && Time.now.to_f < $ult_disruption_until
+end
+
+def raise_disruption_aura
+  return if disruption_aura_up?
   return if VOLN.nil?
   begin
-    return unless VOLN.available?("disruption")
+    unless VOLN.available?("disruption")
+      $ult_disruption_until = Time.now.to_f + DISRUPT_RETRY   # no favor / not known -- back off
+      return
+    end
   rescue StandardError
+    $ult_disruption_until = Time.now.to_f + DISRUPT_RETRY
     return
   end
   waitcastrt?
   waitrt?
-  dothistimeout("symbol of disruption", 4,
-    /symbol of disruption|wave of (?:divine|holy)|noncorporeal|do not have (?:enough|sufficient) favor|no (?:valid|undead)|not a member/i)
+  text = dothistimeout("symbol of disruption", 4,
+    /churning spectral aura surrounds you|already surrounded|do not have (?:enough|sufficient) favor|don't have (?:enough|sufficient) favor|not .*(?:enough|sufficient) favor|must wait/i).to_s
+  if text =~ /churning spectral aura surrounds you|already surrounded/i
+    rank = voln_rank
+    dur  = rank.positive? ? rank * 10 : 60
+    $ult_disruption_until = Time.now.to_f + dur - DISRUPT_MARGIN
+  else
+    $ult_disruption_until = Time.now.to_f + DISRUPT_RETRY       # couldn't confirm -- retry later
+  end
   waitrt?
 end
 
@@ -261,12 +293,12 @@ end
 
 Script.kill(WINGGUARD_SCRIPT_NAME) if Script.running?(WINGGUARD_SCRIPT_NAME)
 
-$ult_target      = nil   unless defined?($ult_target)
-$ult_webbed_id   = nil   unless defined?($ult_webbed_id)
-$ult_silenced_id = nil   unless defined?($ult_silenced_id)
-$ult_disrupted_id = nil  unless defined?($ult_disrupted_id)
-$ult_tethered_id = nil   unless defined?($ult_tethered_id)
-$ult_reanim_done = false unless defined?($ult_reanim_done)
+$ult_target           = nil   unless defined?($ult_target)
+$ult_webbed_id        = nil   unless defined?($ult_webbed_id)
+$ult_silenced_id      = nil   unless defined?($ult_silenced_id)
+$ult_tethered_id      = nil   unless defined?($ult_tethered_id)
+$ult_disruption_until = nil   unless defined?($ult_disruption_until)  # aura expiry, hunt-wide
+$ult_reanim_done      = false unless defined?($ult_reanim_done)
 
 foe = GameObj.targets.find { |t| t.id.to_i == XMLData.current_target_id.to_i } if XMLData.current_target_id
 foe ||= GameObj.targets.find { |t| t.status.to_s !~ /dead|gone/ && t.name !~ /animated/ }
@@ -274,11 +306,11 @@ foe ||= GameObj.targets.find { |t| t.status.to_s !~ /dead|gone/ && t.name !~ /an
 exit if target_dead?(foe)
 
 if $ult_target != foe.id.to_i
-  $ult_target       = foe.id.to_i
-  $ult_webbed_id    = nil
-  $ult_silenced_id  = nil
-  $ult_disrupted_id = nil
-  $ult_tethered_id  = nil
+  $ult_target      = foe.id.to_i
+  $ult_webbed_id   = nil
+  $ult_silenced_id = nil
+  $ult_tethered_id = nil
+  # $ult_disruption_until is deliberately NOT reset -- the aura spans targets
 end
 
 fput "target ##{foe.id}" unless XMLData.current_target_id.to_i == foe.id.to_i
@@ -302,8 +334,9 @@ if inciter?(foe) && !$ult_reanim_done && !have_animate?
   exit
 end
 
-# Visions: Symbol of Disruption first (drops their CS/TD before the ward).
-land_disruption(foe) if vision?(foe)
+# Visions: make sure the Disruption aura is up before the ward (it penalizes
+# every noncorporeal undead we hit while it lasts).
+raise_disruption_aura if vision?(foe)
 
 # Creature-specific disable.
 if vereri?(foe)
