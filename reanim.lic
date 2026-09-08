@@ -371,8 +371,25 @@ else
 		status = Lich::Util.issue_command("appraise ##{find.id}", /suitable for animation/i, include_end: false, silent: true).last
 		debug("Appraise ##{find.id}: #{status}")
 
+		# Pain (711 x3) can leave nothing for Animate Dead (~30 mana) -- observed
+		# a cat hunt where the corpse appraised "suitable" then reanim bailed
+		# OOM and no buddy was raised. Try one recovery (Symbol of Mana, then
+		# `sacrifice mana` if there's shadow essence) before giving up.
 		unless Spell[ANIMATE_SPELL].affordable?
-			debug("Not enough resources to cast #{ANIMATE_SPELL}.")
+			debug("#{ANIMATE_SPELL} not affordable -- trying to recover mana")
+			if !Effects::Cooldowns.active?("Symbol of Mana") && Experience.deeds.to_i > 3
+				fput "symbol of mana"
+				waitrt?
+			end
+			if !Spell[ANIMATE_SPELL].affordable? && (Resources.shadow_essence.to_i rescue 0).positive?
+				dothistimeout("sacrifice mana", 4,
+					/mana surge into you|overwhelm you with shadow essence|don't have (?:enough|any)|Cooldown/i)
+				waitrt?
+			end
+		end
+
+		unless Spell[ANIMATE_SPELL].affordable?
+			echo "[reanim] out of mana for Animate Dead -- corpse killed but no buddy raised."
 			exit
 		end
 
