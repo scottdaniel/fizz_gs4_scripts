@@ -42,10 +42,14 @@
           not find what you were referring to." -- must be "tell anim TO
           drop <x>". Observed 2026-09-08.)
 
-  reanim_weapon (UserVar, plain noun, default "katana") is what the animate
-  should wield:  ;vars set reanim_weapon=broadsword
-  reanim_old_weapon (default "weapon") is only a fallback for when the LOOK
-  can't be parsed.
+  reanim_weapon (UserVar, default "katana") is what the animate should wield.
+  Use the item's BASE noun -- the last word of its inventory name ("massive
+  bone-hilted claidhmore" -> "claidhmore", "well-balanced gornar halberd" ->
+  "halberd"). A shorter targeting noun ("claid") is matched too, but the base
+  noun is an exact match for what LOOK reports it holding.
+    ;vars set reanim_weapon=claidhmore
+  The minor demon must be set to follow ("tell mdem to follow" -- Fizzleworth-
+  prep does this) so it's in the room to drop the spare.
 
   Both 711 and 730 are cast via Spell#cast, which queues through Lich's
   shared cast lock instead of raw release/incant fput -- the same fix
@@ -85,11 +89,13 @@ ANIMATE_CATCHUP     = 10   # ;reanim die: secs to wait for the animate to follow
 # check -- this global is the source of truth. Survives across ;reanim runs.
 $reanim_animate_live = false unless defined?($reanim_animate_live)
 
-# Weapon nouns -- ;vars set reanim_weapon=<noun> / reanim_old_weapon=<noun>
-UserVars.reanim_weapon     = "katana" if UserVars.reanim_weapon.to_s.strip.empty?
-UserVars.reanim_old_weapon = "weapon" if UserVars.reanim_old_weapon.to_s.strip.empty?
-WEAPON     = UserVars.reanim_weapon.to_s.strip
-OLD_WEAPON = UserVars.reanim_old_weapon.to_s.strip
+# The weapon the animate should wield.  Use the item's BASE noun -- the last
+# word of how it shows in inventory ("massive bone-hilted claidhmore" -> set
+# "claidhmore"; "well-balanced gornar halberd" -> "halberd").  A shorter
+# targeting noun ("claid") also works, but the base noun is an exact match for
+# what LOOK reports the animate holding.   ;vars set reanim_weapon=claidhmore
+UserVars.reanim_weapon = "katana" if UserVars.reanim_weapon.to_s.strip.empty?
+WEAPON = UserVars.reanim_weapon.to_s.strip
 
 def debug(msg)
 	echo "[DBG] #{msg}" if DEBUG
@@ -147,7 +153,8 @@ end
 # Tell the animate to drop every weapon it's holding EXCEPT `keep` (the one we
 # want it wielding). Uses "tell anim TO drop <noun>" -- the bare "tell anim
 # drop <noun>" form fails with "I could not find what you were referring to."
-# (observed 2026-09-08). Falls back to `old` if the LOOK can't be parsed.
+# (observed 2026-09-08). No-op if the LOOK can't be parsed (better to leave a
+# stray whip in the off-hand than guess at nouns).
 # NOTE: an animate can't drop the weapon it's actively WIELDING, so this only
 # succeeds on off-hand items -- call it AFTER the animate has picked up `keep`
 # and switched to it. The switch can lag a round or two, so retry once on the
@@ -156,7 +163,7 @@ DROP_OK  = /drops (?:a|an|the)|not (?:holding|carrying)|isn't (?:holding|carryin
 DROP_NOT = /could not find|not able to make out/i
 def drop_other_weapons(keep)
 	held = animate_held_nouns
-	held = [OLD_WEAPON] if held.nil?
+	return false if held.nil?
 	dropped_any = false
 	held.reject { |w| same_weapon?(w, keep) }.each do |w|
 		2.times do |t|
@@ -185,7 +192,7 @@ rescue StandardError
 	false
 end
 
-def arm_animate(noun, old)
+def arm_animate(noun)
 	held = animate_held_nouns
 	if held && held.any? { |w| same_weapon?(w, noun) }
 		debug("animate already has a #{noun}")
@@ -247,7 +254,7 @@ end
 # freezes go2 / bigshot / sac4mana first; the animate is on "follow", so if
 # travel already started it may be a room back -- wait for it, then get the
 # spare WEAPON back onto verlok, dismiss it, and loot the remains.
-def dismiss_animate(noun, old)
+def dismiss_animate(noun)
 	unless $reanim_animate_live
 		debug("no animate raised this hunt (or already torn down) -- nothing to do")
 		return
@@ -310,7 +317,7 @@ args = script.vars[1..-1].to_a.compact.map(&:to_s).reject(&:empty?)
 # Wire it into bigshot's resting_commands (Fizzleworth-prerest) so the animate
 # and its weapon don't come to town with us.
 if args.any? { |a| a =~ /\A-{0,2}(?:die|dismiss|cleanup|teardown)\z/i }
-	dismiss_animate(WEAPON, OLD_WEAPON)
+	dismiss_animate(WEAPON)
 	# Fizzleworth-attack-ultima reanims only the first inciter per hunt; this
 	# teardown marks the hunt's end, so re-arm it for the next one.
 	$ult_reanim_done = false
@@ -377,6 +384,6 @@ else
 		sleep 0.3
 		fput "tell anim attack"
 		sleep 0.3
-		arm_animate(WEAPON, OLD_WEAPON)
+		arm_animate(WEAPON)
 	end
 end
