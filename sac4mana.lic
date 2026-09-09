@@ -31,39 +31,24 @@
   animated supple Ivasian inciter" -- casting at Fizzleworth's own buddy.)
   Update the regex if you resummon a different demon type.
 
-  After a successful "sacrifice mana", it tries to top shadow essence back
-  up to full (5) by:
-    1) pausing Bigshot (via Lich's Script.pause/unpause -- no changes to
-       bigshot.lic itself)
-    2) running wander.lic (no args) until it finds and targets a new enemy
-    3) appraising that target -- if it says the creature "is too easy for
-       the likes of you", it's skipped (not worth the essence) and step 2
-       repeats (up to MAX_WANDER_SKIPS times) until a worthwhile target
-       turns up
-    4) running fizzsac against that target to try to harvest essence
-    5) repeating steps 2-4 (up to MAX_HARVEST_ROUNDS times) until shadow
-       essence reads 5/5, or giving up if nothing targetable/worthwhile
-       turns up
-    6) unpausing Bigshot
+  ESSENCE: "sacrifice mana" spends shadow essence. The old wander+fizzsac
+  cycle that tried to refill it (steps: pause bigshot -> wander to a new
+  enemy -> appraise -> fizzsac -> repeat) is OFF by default (WANDER_HARVEST)
+  and stays as dead code you can flip back on. It never worked for a
+  mana-starved sorcerer: fizzsac needs several Pain casts to bring a FRESH
+  creature to the ~2/3-health "enticingly frail" state sacrifice requires,
+  and on <50 mana it either can't afford that or overshoots into a corpse
+  (dead creatures give no essence). Proven repeatedly 2026-09-09.
 
-  While this harvest cycle runs, Bigshot -- and its normal combat/defense
-  handling -- is paused the entire time, not just for the initial mana sac.
-  That's intentional (avoids Bigshot's hunting loop stepping on wander's
-  movement or fizzsac's casting), but it does mean you're relying on
-  wander/fizzsac alone for however long the cycle takes, with no Bigshot
-  safety net if the new enemy gets aggressive.
-
-  ESSENCE SPIRAL: "sacrifice mana" needs shadow essence, and fizzsac needs
-  MANA (several Pain casts) to weaken a creature the ~2/3 health that
-  "sacrifice <creature>" requires. This script's mid-hunt harvest wanders to
-  a FRESH full-health room, which only works if there's mana to spare -- so
-  when essence runs out and mana stays low it's a dead end. Once that
-  happens this script gives up for ~5 minutes at a time and lets Bigshot's
-  own oom rest carry the hunt.
-  The real essence rebuild now happens in Fizzleworth-anim-cleanup.lic: at
-  end of hunt it sacrifices the creatures the hunt already beat down, which
-  are cheap targets, before the walk home. Falling below ~3 essence there
-  triggers a top-off.
+  Essence now rebuilds from creatures the HUNT already softened, not fresh
+  ones:
+    - Fizzleworth-attack-ultima sacrifices its own tethered dying target
+      during the Maelstrom hold while essence is low
+    - Fizzleworth-anim-cleanup sweeps the room for frail creatures at end
+      of hunt, before the walk home
+  This script just keeps "sacrifice mana" running as the mana top-off; if
+  essence hits bottom it backs off ~5 min and lets bigshot's oom rest carry
+  the hunt. A hard-drained pool still needs a manual rebuild.
 
   Meant to run alongside fizzsac.lic during a hunt.
 
@@ -90,6 +75,13 @@ module Sac4Mana
   # the backstop if mana stays low longer than that.
   FIZZLEWORTH_ATTACK_SCRIPT_NAMES = ["Fizzleworth-attack-wing", "Fizzleworth-attack-base", "Fizzleworth-attack-cat", "Fizzleworth-attack-ultima"]
   ESSENCE_MAX            = 5
+  # The wander+fizzsac harvest cycle is OFF by default: it wanders to FRESH
+  # full-health creatures, which fizzsac can't Pain down to "frail" on <50
+  # mana without overshooting into a corpse (= 0 essence) -- proven repeatedly
+  # 2026-09-09. Essence now rebuilds via the attack rotation sacrificing its
+  # own tethered dying targets + Fizzleworth-anim-cleanup's end-of-hunt sweep.
+  # Set true to re-enable the old wander cycle.
+  WANDER_HARVEST        = false
   MAX_HARVEST_ROUNDS     = 5      # give up wander+fizzsac cycling after this many rounds
   MAX_WANDER_SKIPS       = 5      # give up skipping "too easy" targets after this many wander attempts
   IGNORE_NPCS            = /verlok|animated/i   # your own minor demon / Animate Dead buddy -- never a harvest target
@@ -229,7 +221,7 @@ module Sac4Mana
         got_mana = false
         with_bigshot_paused do
           got_mana = sacrifice_mana
-          harvest_until_full if Resources.shadow_essence.to_i < ESSENCE_MAX
+          harvest_until_full if WANDER_HARVEST && Resources.shadow_essence.to_i < ESSENCE_MAX
         end
         # essence-spiral (couldn't sacrifice for mana and still can't harvest):
         # stop pausing bigshot every 10s just to fail -- let its own oom rest

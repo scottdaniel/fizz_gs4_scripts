@@ -42,13 +42,12 @@ ESSENCE_MAX          = 5 unless defined?(ESSENCE_MAX)
 HARVEST_BELOW        = 3 unless defined?(HARVEST_BELOW)        # only bother when the pool is low
 HARVEST_MAX_TARGETS  = 4 unless defined?(HARVEST_MAX_TARGETS)  # cap frozen time
 HARVEST_MIN_HEALTH   = 50 unless defined?(HARVEST_MIN_HEALTH)  # abort if something's actually hitting us
-HARVEST_PAIN_BUDGET  = 6 unless defined?(HARVEST_PAIN_BUDGET)  # total Pain casts across the whole harvest
-HARVEST_PAIN_PER_TGT = 3 unless defined?(HARVEST_PAIN_PER_TGT) # ... and per creature (before giving up on it)
 HARVEST_MANA_FLOOR   = 20 unless defined?(HARVEST_MANA_FLOOR)  # leave this much for the walk home / next prep
 IGNORE_NPCS          = /verlok|animated/i unless defined?(IGNORE_NPCS)
 PAIN_SPELL           = 711 unless defined?(PAIN_SPELL)
 TETHER_SPELL         = 706 unless defined?(TETHER_SPELL)
 FRAIL_RE = /enticingly frail|ready to be severed|hovering (?:on|at) the brink|near death/i unless defined?(FRAIL_RE)
+MID_RE   = /susceptible to manipulation/i unless defined?(MID_RE)
 SAC_OK   = /You violently shatter the bond on the soul|forming shadow essence/i unless defined?(SAC_OK)
 SAC_FAIL = /impossible to forge a bond|unable to complete the link|thrown back in a small blast/i unless defined?(SAC_FAIL)
 
@@ -65,10 +64,12 @@ rescue StandardError
   11
 end
 
-def appraise_frail?(id)
-  lines = Lich::Util.issue_command("appraise #{id}", /^The .+? is \w+ in size/,
-            include_end: false, quiet: true, silent: true) rescue []
-  lines.join(" ") =~ FRAIL_RE
+def readiness(id)
+  s = (Lich::Util.issue_command("appraise #{id}", /^The .+? is \w+ in size/,
+         include_end: false, quiet: true, silent: true) rescue []).join(" ")
+  return :frail if s =~ FRAIL_RE
+  return :mid   if s =~ MID_RE
+  :tough
 end
 
 def try_sacrifice(id)
@@ -79,16 +80,16 @@ def try_sacrifice(id)
   r =~ SAC_OK
 end
 
-# Sacrifice the room's creatures for shadow essence. They're hurt from the
-# hunt; Pain (711) each down to "enticingly frail" -- the only sacrificeable
-# state -- then Tether (706) and sacrifice. Spending ~33 mana of Pain to gain
-# 1 essence is a great trade: `sacrifice mana` later turns that 1 essence into
-# ~90 mana. Bounded by HARVEST_PAIN_BUDGET total / HARVEST_PAIN_PER_TGT each,
-# a mana floor, target and health caps.
+# Sacrifice the creatures the hunt already softened. Pain (711) is ~100 a cast
+# and creatures have ~400-600 HP, so more than ONE nudge overshoots straight
+# past "frail" into dead (= no essence). So:
+#   :frail -> Tether + sacrifice
+#   :mid   -> one Pain (mana permitting), re-check, sacrifice if frail now
+#   :tough -> skip -- a fresh creature isn't worth soloing down here
+# A dead-target check aborts the nudge so we don't Pain a corpse.
 def harvest_room
   return if essence >= HARVEST_BELOW
   got = 0
-  pain_spent = 0
   GameObj.targets.to_a.each do |t|
     break if essence >= ESSENCE_MAX
     break if got >= HARVEST_MAX_TARGETS
@@ -97,20 +98,16 @@ def harvest_room
     next if t.name.to_s =~ IGNORE_NPCS
     id = "##{t.id}"
 
-    frail = appraise_frail?(id)
-    tries = 0
-    while !frail && tries < HARVEST_PAIN_PER_TGT &&
-          pain_spent < HARVEST_PAIN_BUDGET &&
-          checkmana.to_i >= pain_cost + HARVEST_MANA_FLOOR
+    state = readiness(id)
+    next if state == :tough
+    if state == :mid
+      next unless checkmana.to_i >= pain_cost + HARVEST_MANA_FLOOR
       Spell[PAIN_SPELL].cast(id) rescue nil
       waitcastrt?
       waitrt?
-      pain_spent += 1
-      tries += 1
-      break if GameObj.targets.to_a.none? { |x| x && x.id == t.id && x.status.to_s !~ /dead|gone/ }
-      frail = appraise_frail?(id)
+      next if GameObj.targets.to_a.none? { |x| x && x.id == t.id && x.status.to_s !~ /dead|gone/ }
+      next unless readiness(id) == :frail
     end
-    next unless frail
 
     (Spell[TETHER_SPELL].cast(id) rescue nil) if (Spell[TETHER_SPELL].affordable? rescue false)
     waitcastrt?

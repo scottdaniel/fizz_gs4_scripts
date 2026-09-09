@@ -89,6 +89,15 @@ WEB_MAX_TRIES = 3   unless defined?(WEB_MAX_TRIES)
 MAELSTROM_WAIT = 10 unless defined?(MAELSTROM_WAIT)
 FLEE_HINT      = 7  unless defined?(FLEE_HINT)
 
+# While shadow essence is under this, sacrifice the tethered dying target for
+# essence during the Maelstrom hold instead of letting the DoT finish it --
+# free essence (the kill still counts), and `sacrifice mana` later turns each
+# point into ~90 mana. Only fires when the target already appraises
+# "enticingly frail", so it never overshoots or wastes a cast.
+ESSENCE_LOW      = 4 unless defined?(ESSENCE_LOW)
+FRAIL_RE = /enticingly frail|ready to be severed|hovering (?:on|at) the brink|near death/i unless defined?(FRAIL_RE)
+SAC_DONE = /forming shadow essence|thrown back in a small blast|unable to complete the link|Roundtime: \d+/i unless defined?(SAC_DONE)
+
 # Top mana off (inline `sacrifice mana`, ~89 for 1 shadow essence) at the start
 # of any pass it's below this. Like -cat, ultima keeps the attack script busy
 # enough that sac4mana's own harvest never gets a window -- observed OOM at
@@ -136,11 +145,38 @@ def living_targets
   GameObj.targets.count { |t| t.status.to_s !~ /dead|gone/ }
 end
 
+def essence
+  Resources.shadow_essence.to_i
+rescue StandardError
+  ESSENCE_LOW
+end
+
+# Sacrifice the target if the pool's low and it's already frail (tethered from
+# land_tether). @return true once it's done for this pass.
+def try_essence_harvest(foe)
+  return false if target_dead?(foe)
+  return false if essence >= ESSENCE_LOW
+  s = (Lich::Util.issue_command("appraise ##{foe.id}", /^The .+? is \w+ in size/,
+        include_end: false, quiet: true, silent: true) rescue []).join(" ")
+  return false unless s =~ FRAIL_RE
+  waitrt?
+  waitcastrt?
+  dothistimeout("sacrifice ##{foe.id}", 5, SAC_DONE)
+  waitrt?
+  true
+end
+
 def hold_for_dot(seconds, foe)
-  deadline = Time.now.to_f + seconds
+  deadline   = Time.now.to_f + seconds
+  harvested  = false
   until Time.now.to_f >= deadline
     return if target_dead?(foe)
     return if living_targets >= FLEE_HINT
+    # once, in the back half of the hold: grab it for essence before the DoT
+    # kills it (if the pool's low and it's frail)
+    if !harvested && Time.now.to_f > deadline - seconds * 0.5
+      harvested = try_essence_harvest(foe)
+    end
     sleep 0.25
   end
 end

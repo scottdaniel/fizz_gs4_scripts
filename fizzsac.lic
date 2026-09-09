@@ -160,59 +160,63 @@ def readiness(target)
 	:tough
 end
 
-MAX_ATTEMPTS = 10
+MAX_ATTEMPTS = 6
 
 ############################################
 # Main
 ############################################
+#
+# Pain (711) does ~90-105 a cast; a fresh Den creature has ~400-600 HP, so
+# 3-4 casts blow straight past the narrow "enticingly frail" window into DEAD
+# -- and a dead creature can't be sacrificed, so that's ~40 mana and 4 rounds
+# for ZERO essence (observed 2026-09-09). So fizzsac now only ever finishes a
+# creature the HUNT has already softened:
+#   :frail  -> Tether (incap + bonus) then sacrifice. Done.
+#   :mid    -> ONE Pain, re-appraise; sacrifice if it's frail now, else stop
+#              (another Pain risks killing it).
+#   :tough  -> give up immediately. Not worth trying to solo it down.
+# Rebuilding a drained pool needs a dedicated run where the attack script has
+# creatures at ~1/3 HP for you.
 
 if target.nil?
 	debug("Not doing anything because room is empty")
+elsif Resources.shadow_essence.to_i >= 5
+	# pool's full -- fizzsac's other job: just cast the requested spell
+	MAX_ATTEMPTS.times do
+		find = GameObj.npcs.find { |n| n.id == target.delete_prefix("#") }
+		break if find.nil? or find.status =~ /dead|gone/
+		incant(spell_id)
+		waitrt?; waitcastrt?; sleep 0.5
+	end
 else
 	echo "Finding: #{target}"
-
 	search = target.delete_prefix("#")
-	oom_strikes = 0
 
 	MAX_ATTEMPTS.times do |attempt|
 		find = GameObj.npcs.find { |n| n.id == search }
 		break if find.nil? or find.status =~ /dead|gone/
 		id = "##{find.id}"
 
-		if Resources.shadow_essence.to_i >= 5
-			incant(spell_id)
-			waitrt?; waitcastrt?; sleep 0.5
-			next
-		end
-
 		state = readiness(id)
 		debug("Attempt #{attempt + 1}/#{MAX_ATTEMPTS}: #{id} -> #{state}, essence #{Resources.shadow_essence.to_i}/5")
 
-		tried_sac = false
-		if state == :frail
-			tether(id)                       # incap + bonus (free-skips if OOM)
-			tried_sac = true
-			break if sacrifice(id) == :ok    # essence harvested
-			# :fail -> not weak enough after all, Pain more below
+		case state
+		when :tough
+			echo "[fizzsac] #{id} is at full health -- not worth soloing down for essence."
+			break
+		when :mid
+			break if pain(id) == :oom        # can't nudge it -> done
+			waitrt?; waitcastrt?; sleep 0.3
+			next unless readiness(id) == :frail
+			# fall through to the :frail handling
 		end
 
-		# still standing / sacrifice bounced -> weaken it
-		if pain(id) == :oom
-			oom_strikes += 1
-			# no mana to Pain. If we haven't already tried this iteration, one
-			# bare sacrifice in case the hunt gutted it -- then give up. Looping
-			# just spams "not enough mana" and eats 3s RT on failed bonds.
-			break if !tried_sac && sacrifice(id) == :ok
-			if oom_strikes >= 2
-				echo "[fizzsac] out of mana and #{id} isn't weak enough to sacrifice -- nothing to do."
-				break
-			end
-		else
-			oom_strikes = 0
-		end
-
-		waitrt?
-		waitcastrt?
-		sleep 0.5
+		# :frail (or :mid that just became frail)
+		tether(id)                          # incap + bonus (free-skips if OOM)
+		waitrt?; waitcastrt?
+		break if sacrifice(id) == :ok       # essence harvested
+		# sacrifice bounced -- one more Pain if we can, else give up
+		break if pain(id) == :oom
+		waitrt?; waitcastrt?; sleep 0.3
 	end
 end
