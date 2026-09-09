@@ -55,12 +55,15 @@
 
   ESSENCE SPIRAL: "sacrifice mana" needs shadow essence, and fizzsac needs
   MANA (several Pain casts) to weaken a creature the ~2/3 health that
-  "sacrifice <creature>" requires. If essence runs out, "sacrifice mana"
-  fails ("too depleted..."), mana stays low, and fizzsac -- which only runs
-  when mana is already low -- can't afford to harvest. Once that happens
-  this script gives up for ~5 minutes at a time and lets Bigshot's own oom
-  rest carry the hunt; rebuild the essence pool with a manual ;fizzsac run
-  somewhere you have mana to spare.
+  "sacrifice <creature>" requires. This script's mid-hunt harvest wanders to
+  a FRESH full-health room, which only works if there's mana to spare -- so
+  when essence runs out and mana stays low it's a dead end. Once that
+  happens this script gives up for ~5 minutes at a time and lets Bigshot's
+  own oom rest carry the hunt.
+  The real essence rebuild now happens in Fizzleworth-anim-cleanup.lic: at
+  end of hunt it sacrifices the creatures the hunt already beat down, which
+  are cheap targets, before the walk home. Falling below ~3 essence there
+  triggers a top-off.
 
   Meant to run alongside fizzsac.lic during a hunt.
 
