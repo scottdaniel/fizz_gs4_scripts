@@ -4,219 +4,235 @@
         game: gemstone
         tags: sorcerer, sacrifice, shadow essence, combat
     requires: Lich > 5.14.2
-     version: 0.7
+     version: 1.0
         note: Written with assistance from Claude (Anthropic).
 
-  This script was designed to help detect whether a target is ready for Sorcerer Sacrifice.
+  Harvest shadow essence off the creatures in the room. Run it during a hunt
+  with mana to spare:
 
-	If you have less than maximum shadow essence, the script will check the target for eligibility.
-	If you have maximum shadow essence, it will cast the spell you set as your script variable.
-	Mana upkeep via "sacrifice mana" is handled separately by the companion background
-	script sac4mana.lic -- run that alongside this one during a hunt.
+      ;fizzsac
 
-	Can be run two ways:
-	  - From Bigshot, passing an explicit target and spell: ;fizzsac <#targetid> 719
-	  - Manually during a hunt, passing just the spell id: ;fizzsac 719
-	    Target resolution order: an explicit #id you passed, then your formal
-	    /target lock (GameObj.target) if you have one, then the first living
-	    NPC in the room. If none of those find anything, the room is
-	    considered empty and the script does nothing. Your own minor demon
-	    (matched via IGNORE_NPCS = /verlok|animated/i) is never picked as a
-	    fallback target, and an explicit #id that resolves to one is refused
-	    -- update that regex if you resummon a different demon type.
+  No target id needed. It pauses bigshot/go2, scans the room, works whichever
+  creature is closest to sacrificeable, Pains it the rest of the way down,
+  roots it (Tenebrous Tether), and sacrifices it -- then the next one. When
+  the room runs dry and the pool still isn't full it WANDERS to the next
+  room and keeps going (up to MAX_ROOMS), so one `;fizzsac` call grinds you
+  back to 5/5. Stops on: pool full, out of mana, MAX_ROOMS, or you ;kill it.
+  If you have a ;reanim animate up it tells it to STOP first (so the buddy
+  doesn't finish creatures before the sacrifice lands) and back to ATTACK
+  when done. Bigshot is unpaused at the end.
 
-	Set DEBUG = true/false at the top of the script to toggle the extra
-	status messages (room-empty, appraisal) it prints along the way.
+  Best run at the START of a hunt, rested, with the animate already up.
 
-	incant() casts via Spell#force_incant instead of raw "release"/"incant"
-	fput commands. Lich's Spell#cast internally queues through a shared
-	lock (@@cast_lock) so only one script releases/prepares/casts a spell
-	at a time across the whole session -- the same mechanism Bigshot's own
-	spell commands (e.g. tether) use. Sending raw release/incant fput
-	directly bypasses that queue entirely and can cancel whatever Bigshot
-	is mid-cast on, which is what was causing Bigshot to keep recasting
-	Tenebrous Tether (706) over and over during a hunt.
+  Sacrifice mechanics (gswiki): the creature's health must be down ~2/3+ AND
+  it must be incapacitated. Only the "enticingly frail" appraisal is reliably
+  sacrificeable -- "susceptible to manipulation" looks ready but the bond
+  usually bounces ("you are thrown back in a small blast"). Pain (711) does
+  ~90-105 a cast and Den creatures have ~400-600 HP, so this re-appraises
+  after every Pain and stops the instant the target reads frail.
 
-	A single invocation loops the appraise -> Pain/sacrifice cycle on its own
-	(up to MAX_ATTEMPTS times) until the target is dead/gone, the essence is
-	harvested, or there's no mana left to weaken it further.
+    ;fizzsac           harvest essence from the room (the normal use)
+    ;fizzsac 719       if essence is already 5/5, incant 719 at the target
+                       instead (kept for a bigshot "script fizzsac target 719"
+                       line -- pointless otherwise)
+    ;fizzsac #<id> ..  work only that creature
 
-	Sacrifice needs the creature's health down ~2/3+ AND incapacitated
-	(gswiki). In practice only the "enticingly frail" appraisal is actually
-	sacrificeable -- "susceptible to manipulation" LOOKS ready but the
-	sacrifice bounces ("you are thrown back in a small blast"). So:
-		- 5 shadow essence already          -> incant <spell_id> at the target
-		- target "enticingly frail"          -> Tenebrous Tether (706, for the
-		                                        incap + bonus) then sacrifice
-		- anything healthier                 -> Pain (711) to weaken it
-		- out of mana + not frail            -> one bare sacrifice attempt
-		                                        (in case the hunt gutted it),
-		                                        then give up -- don't spam
-		                                        "not enough mana"
-
-	IMPORTANT: when Fizzleworth is already out of mana (which is exactly when
-	sac4mana calls this), fizzsac usually can't Pain a fresh creature down
-	far enough on its own -- it depends on the hunt's attack script having
-	already beaten the target to ~1/3 health. Rebuilding a depleted essence
-	pool needs a dedicated run somewhere you have mana to spare.
+  Mana upkeep via "sacrifice mana" is a separate background script (sac4mana).
+  DEBUG = true/false at the top toggles the per-step status echoes.
 =end
 
 DEBUG = true
 
-IGNORE_NPCS = /verlok|animated/i   # your own minor demon / Animate Dead buddy -- never a valid target
+IGNORE_NPCS = /verlok|animated/i   # minor demon / Animate Dead buddy -- never a sacrifice target
+ESSENCE_MAX = 5
+MAX_ROUNDS  = 14                   # total Pain/sacrifice actions per room before moving on
+MAX_ROOMS   = 8                    # rooms to wander through before giving up
+PAUSE_WHILE = %w[bigshot go2 sac4mana]
 
-def debug(msg)
-	echo "[DBG] #{msg}" if DEBUG
-end
-
-args = script.vars[1..-1].to_a.compact.map(&:to_s).reject(&:empty?)
-
-explicit_target = args.find { |a| a.start_with?("#") }
-spell_id = args.find { |a| a =~ /^\d+$/ }
-
-if explicit_target
-	# refuse an explicit id that resolves to our own demon / animate buddy
-	et_npc = GameObj.npcs.find { |n| n.id.to_s == explicit_target.delete_prefix("#") }
-	if et_npc && et_npc.name.to_s =~ IGNORE_NPCS
-		echo "[fizzsac] refusing #{explicit_target} -- that's your own #{et_npc.name}."
-		exit
-	end
-	target = explicit_target
-elsif GameObj.target and GameObj.target.name !~ IGNORE_NPCS
-	target = "##{GameObj.target.id}"
-else
-	# No formal /target lock -- fall back to the first living NPC in the room,
-	# since most hunting doesn't use an explicit lock at all.
-	npc = GameObj.npcs.find { |n| n.status !~ /dead|gone/i and n.name !~ IGNORE_NPCS }
-	target = npc ? "##{npc.id}" : nil
-end
-
-unless spell_id
-	echo "Usage: ;fizzsac <spell_id>  (uses your currently selected target)"
-	echo "       ;fizzsac <#targetid> <spell_id>  (explicit target, e.g. from Bigshot)"
-	exit
-end
-
+FRAIL_RE = /enticingly frail|ready to be severed|hovering (?:on|at) the brink|near death/i
+MID_RE   = /susceptible to manipulation/i
 SAC_OK   = /You violently shatter the bond on the soul|forming shadow essence/i
 SAC_FAIL = /impossible to forge a bond|unable to complete the link|thrown back in a small blast/i
 
-# Attempt the essence harvest. Returns :ok / :fail / :unknown. A "fail" means
-# the creature isn't weakened enough (gswiki: health must be down ~2/3+ AND it
-# must be incapacitated) -- the caller should Pain it more, not just retry.
-def sacrifice(target)
-	waitrt?
-	waitcastrt?
-	r = dothistimeout("sacrifice #{target}", 5,
-		Regexp.union(SAC_OK, SAC_FAIL, /Roundtime: \d+|\.\.\. \d+ points/i)).to_s
-	waitrt?
-	return :ok   if r =~ SAC_OK
-	return :fail if r =~ SAC_FAIL
-	:unknown
+def debug(msg)
+  echo "[fizzsac] #{msg}" if DEBUG
 end
 
-# Root the target (helps meet the "incapacitated" requirement + a sacrifice
-# bonus). Skipped when it can't be afforded.
-def tether(target)
-	return unless Spell[706].affordable?
-	waitrt?
-	waitcastrt?
-	Spell[706].cast("#{target}")
+def essence
+  Resources.shadow_essence.to_i
+rescue StandardError
+  ESSENCE_MAX
 end
 
-# @return :cast if Pain went out, :oom if there wasn't mana for it.
-def pain(target)
-	return :oom unless Spell[711].affordable?
-	waitrt?
-	waitcastrt?
-	Spell[711].cast("#{target}")
-	:cast
+def animate_here?
+  GameObj.npcs.any? { |n| n && n.name.to_s =~ /\banimate/i }
+rescue StandardError
+  false
 end
 
-def incant(spell_id)
-	spell = Spell[spell_id]
-
-	unless spell.affordable?
-		debug("Skipping incant #{spell_id} -- not affordable (mana/spirit/stamina).")
-		return
-	end
-
-	waitrt?
-	waitcastrt?
-	result = spell.force_incant
-	debug("Incant #{spell_id} result: #{result}")
-	result
+def readiness(id)
+  s = (Lich::Util.issue_command("appraise #{id}", /^The .+? is \w+ in size/,
+        include_end: false, quiet: true, silent: true) rescue []).join(" ")
+  return :frail if s =~ FRAIL_RE
+  return :mid   if s =~ MID_RE
+  :tough
 end
 
-# Full-health -> "..stalwart and formidable" / "firmly bound"; mid ->
-# "susceptible to manipulation"; only "enticingly frail" (or weaker) is
-# actually sacrificeable -- "susceptible" LOOKS ready but the sacrifice fails
-# ("thrown back in a small blast"). So only :frail sacrifices; everything
-# above it means "keep hitting it".
-def readiness(target)
-	status = Lich::Util.issue_command("appraise #{target}", /^The .+? is \w+ in size/, include_end: false, quiet: true, silent: true).join(" ")
-	debug("Appraise #{target}: #{status}")
-	return :frail  if status =~ /enticingly frail|ready to be severed|hovering (?:on|at) the brink|near death/i
-	return :mid    if status =~ /susceptible to manipulation/i
-	:tough
+def pain(id)
+  return :oom unless Spell[711].affordable?
+  waitrt?
+  waitcastrt?
+  Spell[711].cast(id)
+  waitrt?
+  waitcastrt?
+  :cast
 end
 
-MAX_ATTEMPTS = 6
+def tether(id)
+  return unless Spell[706].affordable?
+  waitrt?
+  waitcastrt?
+  Spell[706].cast(id)
+  waitrt?
+end
+
+def sacrifice(id)
+  waitrt?
+  waitcastrt?
+  r = dothistimeout("sacrifice #{id}", 5, Regexp.union(SAC_OK, SAC_FAIL, /Roundtime: \d+/i)).to_s
+  waitrt?
+  return :ok   if r =~ SAC_OK
+  return :fail if r =~ SAC_FAIL
+  :unknown
+end
+
+def incant(spell_id, id)
+  spell = Spell[spell_id]
+  return unless spell && spell.affordable?
+  waitrt?
+  waitcastrt?
+  spell.force_incant
+end
+
+# living, non-ignored creatures in the room
+def sac_targets
+  GameObj.targets.to_a.select { |t| t && t.status.to_s !~ /dead|gone/ && t.name.to_s !~ IGNORE_NPCS }
+rescue StandardError
+  []
+end
+
+# Pick the creature nearest to sacrificeable: a frail one, else a mid one,
+# else (only if we can afford to weaken it) the first tough one.
+def next_target(can_pain)
+  frail = nil
+  mid   = nil
+  sac_targets.each do |t|
+    case readiness("##{t.id}")
+    when :frail then frail ||= t
+    when :mid   then mid   ||= t
+    end
+    break if frail
+  end
+  return ["##{frail.id}", :frail] if frail
+  return ["##{mid.id}",   :mid]   if mid
+  return ["##{sac_targets.first.id}", :tough] if can_pain && sac_targets.any?
+  [nil, nil]
+end
+
+# Work one room: walk creatures to frail and sacrifice them. @return :full /
+# :oom / :dry (room's out of sacrificeable creatures).
+def harvest_room(explicit = nil)
+  rounds = 0
+  while rounds < MAX_ROUNDS
+    return :full if essence >= ESSENCE_MAX
+    rounds += 1
+    can_pain = Spell[711].affordable?
+    id, state = explicit ? [explicit, readiness(explicit)] : next_target(can_pain)
+
+    if id.nil?
+      return can_pain ? :dry : :oom
+    end
+
+    gid = id.delete_prefix("#")
+    next unless GameObj.npcs.any? { |n| n.id.to_s == gid && n.status.to_s !~ /dead|gone/ }
+
+    case state
+    when :tough, :mid
+      debug("#{id} #{state} -- Pain.")
+      return :oom if pain(id) == :oom
+    when :frail
+      debug("#{id} frail -- tether + sacrifice.")
+      tether(id)
+      case sacrifice(id)
+      when :ok   then echo "[fizzsac] harvested shadow essence (#{essence}/#{ESSENCE_MAX})."
+      when :fail then (return :oom if pain(id) == :oom)
+      end
+    end
+  end
+  :dry
+end
 
 ############################################
 # Main
 ############################################
-#
-# Pain (711) does ~90-105 a cast; a fresh Den creature has ~400-600 HP, so
-# 3-4 casts blow straight past the narrow "enticingly frail" window into DEAD
-# -- and a dead creature can't be sacrificed, so that's ~40 mana and 4 rounds
-# for ZERO essence (observed 2026-09-09). So fizzsac now only ever finishes a
-# creature the HUNT has already softened:
-#   :frail  -> Tether (incap + bonus) then sacrifice. Done.
-#   :mid    -> ONE Pain, re-appraise; sacrifice if it's frail now, else stop
-#              (another Pain risks killing it).
-#   :tough  -> give up immediately. Not worth trying to solo it down.
-# Rebuilding a drained pool needs a dedicated run where the attack script has
-# creatures at ~1/3 HP for you.
 
-if target.nil?
-	debug("Not doing anything because room is empty")
-elsif Resources.shadow_essence.to_i >= 5
-	# pool's full -- fizzsac's other job: just cast the requested spell
-	MAX_ATTEMPTS.times do
-		find = GameObj.npcs.find { |n| n.id == target.delete_prefix("#") }
-		break if find.nil? or find.status =~ /dead|gone/
-		incant(spell_id)
-		waitrt?; waitcastrt?; sleep 0.5
-	end
-else
-	echo "Finding: #{target}"
-	search = target.delete_prefix("#")
+args = script.vars[1..-1].to_a.compact.map(&:to_s).reject(&:empty?)
+explicit = args.find { |a| a.start_with?("#") }
+spell_id = args.find { |a| a =~ /^\d+$/ }
 
-	MAX_ATTEMPTS.times do |attempt|
-		find = GameObj.npcs.find { |n| n.id == search }
-		break if find.nil? or find.status =~ /dead|gone/
-		id = "##{find.id}"
+if explicit
+  et = GameObj.npcs.find { |n| n.id.to_s == explicit.delete_prefix("#") }
+  if et && et.name.to_s =~ IGNORE_NPCS
+    debug("refusing #{explicit} -- that's your own #{et.name}.")
+    exit
+  end
+end
 
-		state = readiness(id)
-		debug("Attempt #{attempt + 1}/#{MAX_ATTEMPTS}: #{id} -> #{state}, essence #{Resources.shadow_essence.to_i}/5")
+# essence already full -> the legacy "incant a spell at the target" mode
+if essence >= ESSENCE_MAX && spell_id
+  id = explicit || (GameObj.target && "##{GameObj.target.id}") ||
+       (sac_targets.first && "##{sac_targets.first.id}")
+  debug("essence #{essence}/#{ESSENCE_MAX} -- incanting #{spell_id} at #{id || 'nothing'}.")
+  incant(spell_id, id) if id
+  exit
+end
 
-		case state
-		when :tough
-			echo "[fizzsac] #{id} is at full health -- not worth soloing down for essence."
-			break
-		when :mid
-			break if pain(id) == :oom        # can't nudge it -> done
-			waitrt?; waitcastrt?; sleep 0.3
-			next unless readiness(id) == :frail
-			# fall through to the :frail handling
-		end
+# explicit id from bigshot -> just that creature, no wander / no pausing
+if explicit
+  harvest_room(explicit)
+  echo "[fizzsac] done -- shadow essence #{essence}/#{ESSENCE_MAX}."
+  exit
+end
 
-		# :frail (or :mid that just became frail)
-		tether(id)                          # incap + bonus (free-skips if OOM)
-		waitrt?; waitcastrt?
-		break if sacrifice(id) == :ok       # essence harvested
-		# sacrifice bounced -- one more Pain if we can, else give up
-		break if pain(id) == :oom
-		waitrt?; waitcastrt?; sleep 0.3
-	end
+# --- grind mode: top the pool back up, wandering rooms as needed -----------
+
+paused  = PAUSE_WHILE.select { |s| Script.running?(s) && !Script.paused?(s) }
+paused.each { |s| Script.pause(s) }
+sleep 0.3
+
+paused_anim = false
+if animate_here?
+  fput "tell anim stop"
+  sleep 0.3
+  paused_anim = true
+end
+
+begin
+  MAX_ROOMS.times do |room|
+    Script.current.kill if checkdead
+    result = harvest_room
+    break if result == :full
+    if result == :oom
+      echo "[fizzsac] out of mana -- stopping at #{essence}/#{ESSENCE_MAX}."
+      break
+    end
+    # room's dry -- move on
+    break if room == MAX_ROOMS - 1
+    debug("room #{room + 1} dry (#{essence}/#{ESSENCE_MAX}) -- wandering.")
+    Script.run("wander")
+  end
+  echo "[fizzsac] done -- shadow essence #{essence}/#{ESSENCE_MAX}."
+ensure
+  fput "tell anim attack" if paused_anim
+  paused.each { |s| Script.unpause(s) if Script.paused?(s) }
 end
