@@ -53,6 +53,15 @@
   wander/fizzsac alone for however long the cycle takes, with no Bigshot
   safety net if the new enemy gets aggressive.
 
+  ESSENCE SPIRAL: "sacrifice mana" needs shadow essence, and fizzsac needs
+  MANA (several Pain casts) to weaken a creature the ~2/3 health that
+  "sacrifice <creature>" requires. If essence runs out, "sacrifice mana"
+  fails ("too depleted..."), mana stays low, and fizzsac -- which only runs
+  when mana is already low -- can't afford to harvest. Once that happens
+  this script gives up for ~5 minutes at a time and lets Bigshot's own oom
+  rest carry the hunt; rebuild the essence pool with a manual ;fizzsac run
+  somewhere you have mana to spare.
+
   Meant to run alongside fizzsac.lic during a hunt.
 
   Usage:  ;sac4mana
@@ -99,16 +108,25 @@ module Sac4Mana
     end
   end
 
+  # @return true if it actually refilled mana, false if it couldn't (no
+  # essence -> "too depleted", or nothing came back).
   def self.sacrifice_mana
     waitrt?
     waitcastrt?
-    Lich::Util.issue_command(
+    lines = Lich::Util.issue_command(
       "sacrifice mana",
-      /mana surge into you!|overwhelm you with shadow essence/,
+      /mana surge into you!|overwhelm you with shadow essence|too depleted of shadow essence/,
       include_end: false, silent: true
     )
     sleep 0.2
     waitrt?
+    if lines.any? { |l| l =~ /too depleted of shadow essence/i }
+      echo "!! Shadow essence exhausted -- 'sacrifice mana' can't refill. You're in a spiral:"
+      echo "!! no essence -> no mana recovery -> can't afford to Pain a creature down to harvest."
+      echo "!! Fix: a manual essence run somewhere easy with mana to spare (;fizzsac <#id> 719)."
+      return false
+    end
+    lines.any? { |l| l =~ /mana surge into you|overwhelm you with shadow essence/i }
   end
 
   def self.room_target
@@ -152,13 +170,27 @@ module Sac4Mana
     nil
   end
 
+  # Pain (711) is ~11 mana and it takes several to weaken a fresh creature the
+  # ~2/3 health that sacrifice needs. If we can't afford even a couple, the
+  # harvest is hopeless flailing -- fizzsac will just spam "not enough mana".
+  def self.can_afford_to_harvest?
+    (checkmana.to_i rescue 0) >= (Spell[711].mana_cost.to_i.positive? ? Spell[711].mana_cost.to_i : 11) * 2
+  end
+
   def self.harvest_until_full
+    unless can_afford_to_harvest?
+      echo "Too low on mana to Pain a creature down for sacrifice -- skipping the harvest cycle."
+      echo "Rebuild shadow essence with a manual run somewhere you have mana to spare."
+      return
+    end
+
     MAX_HARVEST_ROUNDS.times do |round|
       if Resources.shadow_essence.to_i >= ESSENCE_MAX
         echo "Shadow essence full (#{ESSENCE_MAX}/#{ESSENCE_MAX})."
         return
       end
 
+      before = Resources.shadow_essence.to_i
       echo "Harvest round #{round + 1}/#{MAX_HARVEST_ROUNDS}: wandering for a worthy target."
       target = find_worthy_target
 
@@ -169,6 +201,12 @@ module Sac4Mana
 
       echo "Target #{target} found, running fizzsac to harvest essence."
       Script.run("fizzsac", "#{target} #{FIZZSAC_SPELL_ID}")
+
+      # made no progress and now can't afford to keep trying -> stop
+      if Resources.shadow_essence.to_i <= before && !can_afford_to_harvest?
+        echo "No essence gained and out of mana to keep trying -- stopping harvest cycle."
+        return
+      end
     end
 
     echo "Gave up harvesting after #{MAX_HARVEST_ROUNDS} rounds (essence: #{Resources.shadow_essence.to_i}/#{ESSENCE_MAX})."
@@ -179,12 +217,22 @@ module Sac4Mana
     echo "Sac4Mana started! Watching mana (threshold: #{MANA_THRESHOLD})."
     echo "Stop with ;kill sac4mana"
 
+    spiral_backoff_until = Time.now
+
     loop do
-      if mana < MANA_THRESHOLD and !sacrifice_on_cooldown? and FIZZLEWORTH_ATTACK_SCRIPT_NAMES.none? { |n| Script.running?(n) }
+      if mana < MANA_THRESHOLD and !sacrifice_on_cooldown? and Time.now >= spiral_backoff_until and
+         FIZZLEWORTH_ATTACK_SCRIPT_NAMES.none? { |n| Script.running?(n) }
         echo "Mana below #{MANA_THRESHOLD}, sacrificing mana to top off."
+        got_mana = false
         with_bigshot_paused do
-          sacrifice_mana
-          harvest_until_full
+          got_mana = sacrifice_mana
+          harvest_until_full if Resources.shadow_essence.to_i < ESSENCE_MAX
+        end
+        # essence-spiral (couldn't sacrifice for mana and still can't harvest):
+        # stop pausing bigshot every 10s just to fail -- let its own oom rest
+        # carry the hunt and re-check in a few minutes.
+        if !got_mana && Resources.shadow_essence.to_i <= 1
+          spiral_backoff_until = Time.now + 300
         end
       end
 

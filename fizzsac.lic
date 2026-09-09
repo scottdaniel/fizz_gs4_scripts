@@ -37,18 +37,28 @@
 	is mid-cast on, which is what was causing Bigshot to keep recasting
 	Tenebrous Tether (706) over and over during a hunt.
 
-	A single invocation now loops the essence-check -> appraise/incant cycle
-	on its own (up to MAX_ATTEMPTS times), instead of doing one step and
-	exiting. Previously it took ~3 separate manual invocations to walk a
-	target from full health down through the appraisal states to an actual
-	sacrifice; now one ;fizzsac call keeps going until the target is
-	dead/gone or MAX_ATTEMPTS is hit.
+	A single invocation loops the appraise -> Pain/sacrifice cycle on its own
+	(up to MAX_ATTEMPTS times) until the target is dead/gone, the essence is
+	harvested, or there's no mana left to weaken it further.
 
-	Example bigshot line: script fizzsac target 719
-		- Already have 5 shadow essence - casts 719 at target.
-		- Under 5 shadow essence and target at full health - Casts 711.
-		- Under 5 shadow essence and target appraises as "susceptible to manipulation" - Casts 706 for sacrifice bonus, then performs sacrifice.
-		- Under 5 shadow essence and target appraises as "enticingly frail" - sacrifices target.
+	Sacrifice needs the creature's health down ~2/3+ AND incapacitated
+	(gswiki). In practice only the "enticingly frail" appraisal is actually
+	sacrificeable -- "susceptible to manipulation" LOOKS ready but the
+	sacrifice bounces ("you are thrown back in a small blast"). So:
+		- 5 shadow essence already          -> incant <spell_id> at the target
+		- target "enticingly frail"          -> Tenebrous Tether (706, for the
+		                                        incap + bonus) then sacrifice
+		- anything healthier                 -> Pain (711) to weaken it
+		- out of mana + not frail            -> one bare sacrifice attempt
+		                                        (in case the hunt gutted it),
+		                                        then give up -- don't spam
+		                                        "not enough mana"
+
+	IMPORTANT: when Fizzleworth is already out of mana (which is exactly when
+	sac4mana calls this), fizzsac usually can't Pain a fresh creature down
+	far enough on its own -- it depends on the hunt's attack script having
+	already beaten the target to ~1/3 health. Rebuilding a depleted essence
+	pool needs a dedicated run somewhere you have mana to spare.
 =end
 
 DEBUG = true
@@ -87,25 +97,39 @@ unless spell_id
 	exit
 end
 
+SAC_OK   = /You violently shatter the bond on the soul|forming shadow essence/i
+SAC_FAIL = /impossible to forge a bond|unable to complete the link|thrown back in a small blast/i
+
+# Attempt the essence harvest. Returns :ok / :fail / :unknown. A "fail" means
+# the creature isn't weakened enough (gswiki: health must be down ~2/3+ AND it
+# must be incapacitated) -- the caller should Pain it more, not just retry.
 def sacrifice(target)
 	waitrt?
 	waitcastrt?
-	fput "sacrifice #{target}"
-	sleep 0.1
+	r = dothistimeout("sacrifice #{target}", 5,
+		Regexp.union(SAC_OK, SAC_FAIL, /Roundtime: \d+|\.\.\. \d+ points/i)).to_s
 	waitrt?
+	return :ok   if r =~ SAC_OK
+	return :fail if r =~ SAC_FAIL
+	:unknown
 end
 
+# Root the target (helps meet the "incapacitated" requirement + a sacrifice
+# bonus). Skipped when it can't be afforded.
 def tether(target)
+	return unless Spell[706].affordable?
 	waitrt?
 	waitcastrt?
 	Spell[706].cast("#{target}")
-	sacrifice(target)
 end
 
+# @return :cast if Pain went out, :oom if there wasn't mana for it.
 def pain(target)
+	return :oom unless Spell[711].affordable?
 	waitrt?
 	waitcastrt?
 	Spell[711].cast("#{target}")
+	:cast
 end
 
 def incant(spell_id)
@@ -123,21 +147,17 @@ def incant(spell_id)
 	result
 end
 
-def appraise(target)
-
-	status = Lich::Util.issue_command("appraise #{target}", /^The .+? is \w+ in size/, include_end: false, quiet: true, silent: true).last
-
+# Full-health -> "..stalwart and formidable" / "firmly bound"; mid ->
+# "susceptible to manipulation"; only "enticingly frail" (or weaker) is
+# actually sacrificeable -- "susceptible" LOOKS ready but the sacrifice fails
+# ("thrown back in a small blast"). So only :frail sacrifices; everything
+# above it means "keep hitting it".
+def readiness(target)
+	status = Lich::Util.issue_command("appraise #{target}", /^The .+? is \w+ in size/, include_end: false, quiet: true, silent: true).join(" ")
 	debug("Appraise #{target}: #{status}")
-
-	case status
-	when /enticingly frail/
-		sacrifice(target)
-	when /susceptible to manipulation/
-		tether(target)
-	when /soul is stalwart and formidable|firmly bound|indomitable/
-		pain(target)
-	end
-	
+	return :frail  if status =~ /enticingly frail|ready to be severed|hovering (?:on|at) the brink|near death/i
+	return :mid    if status =~ /susceptible to manipulation/i
+	:tough
 end
 
 MAX_ATTEMPTS = 10
@@ -152,18 +172,43 @@ else
 	echo "Finding: #{target}"
 
 	search = target.delete_prefix("#")
+	oom_strikes = 0
 
 	MAX_ATTEMPTS.times do |attempt|
 		find = GameObj.npcs.find { |n| n.id == search }
 		break if find.nil? or find.status =~ /dead|gone/
+		id = "##{find.id}"
 
-		shadow_essence = Resources.shadow_essence
-		debug("Attempt #{attempt + 1}/#{MAX_ATTEMPTS}: ##{find.id}, shadow essence #{shadow_essence.to_i}/5")
-
-		if shadow_essence.to_i < 5
-			appraise("##{find.id}")
-		else
+		if Resources.shadow_essence.to_i >= 5
 			incant(spell_id)
+			waitrt?; waitcastrt?; sleep 0.5
+			next
+		end
+
+		state = readiness(id)
+		debug("Attempt #{attempt + 1}/#{MAX_ATTEMPTS}: #{id} -> #{state}, essence #{Resources.shadow_essence.to_i}/5")
+
+		tried_sac = false
+		if state == :frail
+			tether(id)                       # incap + bonus (free-skips if OOM)
+			tried_sac = true
+			break if sacrifice(id) == :ok    # essence harvested
+			# :fail -> not weak enough after all, Pain more below
+		end
+
+		# still standing / sacrifice bounced -> weaken it
+		if pain(id) == :oom
+			oom_strikes += 1
+			# no mana to Pain. If we haven't already tried this iteration, one
+			# bare sacrifice in case the hunt gutted it -- then give up. Looping
+			# just spams "not enough mana" and eats 3s RT on failed bonds.
+			break if !tried_sac && sacrifice(id) == :ok
+			if oom_strikes >= 2
+				echo "[fizzsac] out of mana and #{id} isn't weak enough to sacrifice -- nothing to do."
+				break
+			end
+		else
+			oom_strikes = 0
 		end
 
 		waitrt?
