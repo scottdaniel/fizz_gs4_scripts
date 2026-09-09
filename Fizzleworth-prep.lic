@@ -70,6 +70,7 @@ Script.start("Fizzleworth-anim-cleanup") unless Script.running?("Fizzleworth-ani
 # Also clear reanim's "a buddy exists" flag unless one is actually still here,
 # in case a teardown was missed last hunt (crash / manual stop).
 $ult_reanim_done = false
+$ult_essence_run = false
 $reanim_animate_live = false unless GameObj.npcs.any? { |n| n && n.name.to_s =~ /\banimate/i }
 
 # Make sure the minor demon is set to follow -- ;reanim has verlok drop the

@@ -95,6 +95,11 @@ FLEE_HINT      = 7  unless defined?(FLEE_HINT)
 # point into ~90 mana. Only fires when the target already appraises
 # "enticingly frail", so it never overshoots or wastes a cast.
 ESSENCE_LOW      = 4 unless defined?(ESSENCE_LOW)
+# Once per hunt, if the buddy's up and mana >= ESSENCE_RUN_MANA but essence <
+# ESSENCE_RUN_BELOW, kick off a `;fizzsac` grind to refill the pool. Set
+# ESSENCE_RUN_BELOW = 0 to disable the auto-grind (still run ;fizzsac by hand).
+ESSENCE_RUN_BELOW = 3   unless defined?(ESSENCE_RUN_BELOW)
+ESSENCE_RUN_MANA  = 110 unless defined?(ESSENCE_RUN_MANA)
 FRAIL_RE = /enticingly frail|ready to be severed|hovering (?:on|at) the brink|near death/i unless defined?(FRAIL_RE)
 SAC_DONE = /forming shadow essence|thrown back in a small blast|unable to complete the link|Roundtime: \d+/i unless defined?(SAC_DONE)
 
@@ -402,6 +407,7 @@ $ult_tethered_id       = nil   unless defined?($ult_tethered_id)
 $ult_disruption_until  = nil   unless defined?($ult_disruption_until)   # aura expiry, hunt-wide
 $ult_retribution_until = nil   unless defined?($ult_retribution_until)  # aura expiry, hunt-wide
 $ult_reanim_done       = false unless defined?($ult_reanim_done)
+$ult_essence_run       = false unless defined?($ult_essence_run)   # one fizzsac grind per hunt
 
 foe = GameObj.targets.find { |t| t.id.to_i == XMLData.current_target_id.to_i } if XMLData.current_target_id
 foe ||= GameObj.targets.find { |t| t.status.to_s !~ /dead|gone/ && t.name !~ /animated/ }
@@ -441,6 +447,18 @@ end
 if inciter?(foe) && !$ult_reanim_done && !have_animate?
   Script.run(REANIM_SCRIPT, "##{foe.id}")
   $ult_reanim_done = true
+  exit
+end
+
+# Once per hunt: buddy is up and mana's healthy but the essence pool is low
+# -> grind it back to 5 with `;fizzsac` (pauses bigshot, stops the animate,
+# walks creatures to frail + sacrifices, wanders rooms, then hands back).
+# `sacrifice mana` needs that pool, so it's worth the interruption.
+if !$ult_essence_run && have_animate? &&
+   (Resources.shadow_essence.to_i rescue 5) < ESSENCE_RUN_BELOW &&
+   checkmana >= ESSENCE_RUN_MANA
+  $ult_essence_run = true
+  Script.run("fizzsac")
   exit
 end
 
