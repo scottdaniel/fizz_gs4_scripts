@@ -42,6 +42,9 @@ ESSENCE_MAX          = 5 unless defined?(ESSENCE_MAX)
 HARVEST_BELOW        = 3 unless defined?(HARVEST_BELOW)        # only bother when the pool is low
 HARVEST_MAX_TARGETS  = 4 unless defined?(HARVEST_MAX_TARGETS)  # cap frozen time
 HARVEST_MIN_HEALTH   = 50 unless defined?(HARVEST_MIN_HEALTH)  # abort if something's actually hitting us
+HARVEST_PAIN_BUDGET  = 6 unless defined?(HARVEST_PAIN_BUDGET)  # total Pain casts across the whole harvest
+HARVEST_PAIN_PER_TGT = 3 unless defined?(HARVEST_PAIN_PER_TGT) # ... and per creature (before giving up on it)
+HARVEST_MANA_FLOOR   = 20 unless defined?(HARVEST_MANA_FLOOR)  # leave this much for the walk home / next prep
 IGNORE_NPCS          = /verlok|animated/i unless defined?(IGNORE_NPCS)
 PAIN_SPELL           = 711 unless defined?(PAIN_SPELL)
 TETHER_SPELL         = 706 unless defined?(TETHER_SPELL)
@@ -76,11 +79,16 @@ def try_sacrifice(id)
   r =~ SAC_OK
 end
 
-# Sacrifice the room's weakened creatures. They're near death from the hunt --
-# one Pain + Tether if there's mana, else a bare attempt on the frail ones.
+# Sacrifice the room's creatures for shadow essence. They're hurt from the
+# hunt; Pain (711) each down to "enticingly frail" -- the only sacrificeable
+# state -- then Tether (706) and sacrifice. Spending ~33 mana of Pain to gain
+# 1 essence is a great trade: `sacrifice mana` later turns that 1 essence into
+# ~90 mana. Bounded by HARVEST_PAIN_BUDGET total / HARVEST_PAIN_PER_TGT each,
+# a mana floor, target and health caps.
 def harvest_room
   return if essence >= HARVEST_BELOW
   got = 0
+  pain_spent = 0
   GameObj.targets.to_a.each do |t|
     break if essence >= ESSENCE_MAX
     break if got >= HARVEST_MAX_TARGETS
@@ -90,10 +98,16 @@ def harvest_room
     id = "##{t.id}"
 
     frail = appraise_frail?(id)
-    if !frail && checkmana.to_i >= pain_cost
-      Spell[PAIN_SPELL].cast(id) rescue nil     # one nudge toward frail
+    tries = 0
+    while !frail && tries < HARVEST_PAIN_PER_TGT &&
+          pain_spent < HARVEST_PAIN_BUDGET &&
+          checkmana.to_i >= pain_cost + HARVEST_MANA_FLOOR
+      Spell[PAIN_SPELL].cast(id) rescue nil
       waitcastrt?
       waitrt?
+      pain_spent += 1
+      tries += 1
+      break if GameObj.targets.to_a.none? { |x| x && x.id == t.id && x.status.to_s !~ /dead|gone/ }
       frail = appraise_frail?(id)
     end
     next unless frail
@@ -106,7 +120,7 @@ def harvest_room
       echo "Fizzleworth-anim-cleanup: harvested shadow essence (#{essence}/#{ESSENCE_MAX})."
     end
   end
-  echo "Fizzleworth-anim-cleanup: no weakened creatures to sacrifice." if got.zero?
+  echo "Fizzleworth-anim-cleanup: nothing sacrificeable in the room." if got.zero?
 end
 
 # --- lifecycle ----------------------------------------------------------
