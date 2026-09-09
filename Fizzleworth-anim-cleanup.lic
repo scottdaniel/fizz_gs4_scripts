@@ -1,29 +1,27 @@
 # Fizzleworth-anim-cleanup.lic
-# Always-on companion for the Fizzleworth-attack-cat / -ultima variants.
-# Dismisses the ;reanim animate buddy IN THE FIELD -- the moment bigshot
-# decides to rest, before anything walks back to town -- instead of dragging
-# an animated corpse through the tunnels or losing its weapon on the way.
+# Always-on companion. End-of-hunt cleanup, run the MOMENT bigshot decides to
+# rest -- before anything walks back to town. Two jobs:
 #
-# Why a monitor and not a bigshot hook: bigshot has exactly two command
-# seams, hunting_prep_commands (before the hunt) and resting_commands (which
-# runs AFTER it's already travelled back to the resting room). Nothing runs
-# in the gap between "hunt is over" and "start walking home". bigshot sets
-# $bigshot_status = :resting as soon as should_rest? / ready_to_rest? trips;
-# this watches for that flip and takes the window: FREEZE every script that
-# could move Fizzleworth (bigshot, go2, and sac4mana's wander/fizzsac harvest
-# cycle), run `;reanim die`, then unfreeze.
+#   1. Dismiss the ;reanim animate buddy (cat / ultima) in the field, so we
+#      don't drag an animated corpse through the tunnels or lose its weapon.
+#   2. Sacrifice weakened creatures still in the room for shadow essence,
+#      before bigshot's oom rest and the walk home strand them. This is the
+#      only place essence gets rebuilt for the mana-hungry variants -- the
+#      hunt has already beaten these creatures down, so they're cheap
+#      sacrifice targets, unlike the fresh full-health room sac4mana's own
+#      harvest wanders off to (see the essence-spiral note in sac4mana.lic).
 #
-# Learned the hard way (2026-09-08): pausing only "bigshot" is not enough --
-# by end of hunt bigshot has handed travel to go2, and sac4mana may be
-# mid-wander harvesting essence. Both keep walking Fizzleworth away from the
-# animate while `;reanim die` flails at an empty room. `;reanim die` now also
-# waits for the animate to catch up (it's on follow), but the mover freeze is
-# what actually makes that possible.
+# Why a monitor and not a bigshot hook: bigshot has exactly two command seams,
+# hunting_prep_commands (before the hunt) and resting_commands (which runs
+# AFTER it's travelled back to the resting room). Nothing runs in the gap
+# between "hunt over" and "start walking home". bigshot sets $bigshot_status =
+# :resting as soon as should_rest? / ready_to_rest? trips (often mid-room, with
+# weakened creatures still present); this watches for that flip and takes the
+# window: FREEZE every script that could move Fizzleworth (bigshot, go2, and
+# sac4mana's wander/fizzsac cycle), do the two jobs, then unfreeze.
 #
 # Fizzleworth-prerest.lic still calls `;reanim die` too, as a town-side
-# fallback for the rare case this monitor misses the window (or isn't
-# running). Both are no-ops when no animate is up, so base / wing hunts are
-# unaffected.
+# fallback. Both are no-ops when there's no animate.
 #
 # Start it always-on: added to Fizzleworth-prep.lic (up for hunt 1) and
 # Fizzleworth-prerest.lic. Idle cost is one global read every POLL seconds.
@@ -38,6 +36,80 @@ REST_STATES   = %i[resting rest_stop] unless defined?(REST_STATES)
 # everything that can walk Fizzleworth around at end of hunt
 MOVERS        = %w[go2 bigshot sac4mana wander fizzsac] unless defined?(MOVERS)
 PAUSE_SETTLE  = 4 unless defined?(PAUSE_SETTLE)
+
+# --- essence harvest ------------------------------------------------------
+ESSENCE_MAX          = 5 unless defined?(ESSENCE_MAX)
+HARVEST_BELOW        = 3 unless defined?(HARVEST_BELOW)        # only bother when the pool is low
+HARVEST_MAX_TARGETS  = 4 unless defined?(HARVEST_MAX_TARGETS)  # cap frozen time
+HARVEST_MIN_HEALTH   = 50 unless defined?(HARVEST_MIN_HEALTH)  # abort if something's actually hitting us
+IGNORE_NPCS          = /verlok|animated/i unless defined?(IGNORE_NPCS)
+PAIN_SPELL           = 711 unless defined?(PAIN_SPELL)
+TETHER_SPELL         = 706 unless defined?(TETHER_SPELL)
+FRAIL_RE = /enticingly frail|ready to be severed|hovering (?:on|at) the brink|near death/i unless defined?(FRAIL_RE)
+SAC_OK   = /You violently shatter the bond on the soul|forming shadow essence/i unless defined?(SAC_OK)
+SAC_FAIL = /impossible to forge a bond|unable to complete the link|thrown back in a small blast/i unless defined?(SAC_FAIL)
+
+def essence
+  Resources.shadow_essence.to_i
+rescue StandardError
+  ESSENCE_MAX
+end
+
+def pain_cost
+  c = Spell[PAIN_SPELL].mana_cost.to_i
+  c.positive? ? c : 11
+rescue StandardError
+  11
+end
+
+def appraise_frail?(id)
+  lines = Lich::Util.issue_command("appraise #{id}", /^The .+? is \w+ in size/,
+            include_end: false, quiet: true, silent: true) rescue []
+  lines.join(" ") =~ FRAIL_RE
+end
+
+def try_sacrifice(id)
+  waitrt?
+  waitcastrt?
+  r = dothistimeout("sacrifice #{id}", 5, Regexp.union(SAC_OK, SAC_FAIL, /Roundtime: \d+/i)).to_s
+  waitrt?
+  r =~ SAC_OK
+end
+
+# Sacrifice the room's weakened creatures. They're near death from the hunt --
+# one Pain + Tether if there's mana, else a bare attempt on the frail ones.
+def harvest_room
+  return if essence >= HARVEST_BELOW
+  got = 0
+  GameObj.targets.to_a.each do |t|
+    break if essence >= ESSENCE_MAX
+    break if got >= HARVEST_MAX_TARGETS
+    break if checkdead || (Char.percent_health.to_i rescue 100) < HARVEST_MIN_HEALTH
+    next if t.nil? || t.status.to_s =~ /dead|gone/
+    next if t.name.to_s =~ IGNORE_NPCS
+    id = "##{t.id}"
+
+    frail = appraise_frail?(id)
+    if !frail && checkmana.to_i >= pain_cost
+      Spell[PAIN_SPELL].cast(id) rescue nil     # one nudge toward frail
+      waitcastrt?
+      waitrt?
+      frail = appraise_frail?(id)
+    end
+    next unless frail
+
+    (Spell[TETHER_SPELL].cast(id) rescue nil) if (Spell[TETHER_SPELL].affordable? rescue false)
+    waitcastrt?
+    waitrt?
+    if try_sacrifice(id)
+      got += 1
+      echo "Fizzleworth-anim-cleanup: harvested shadow essence (#{essence}/#{ESSENCE_MAX})."
+    end
+  end
+  echo "Fizzleworth-anim-cleanup: no weakened creatures to sacrifice." if got.zero?
+end
+
+# --- lifecycle ----------------------------------------------------------
 
 # $reanim_animate_live is reanim.lic's source of truth (set when Animate Dead
 # lands, cleared by `;reanim die`). Fall back to an npc scan in case this
@@ -54,8 +126,8 @@ def resting?
   REST_STATES.include?($bigshot_status)
 end
 
-# Freeze every mover we didn't already find paused, run the teardown, then
-# unfreeze only the ones we froze.
+# Freeze every mover we didn't already find paused, do the end-of-hunt jobs,
+# then unfreeze only the ones we froze.
 def teardown
   mine = MOVERS.select { |s| Script.running?(s) && !Script.paused?(s) }
   mine.each { |s| Script.pause(s) }
@@ -63,7 +135,8 @@ def teardown
   give = Time.now + PAUSE_SETTLE
   sleep 0.1 until mine.all? { |s| !Script.running?(s) || Script.paused?(s) } || Time.now > give
 
-  Script.run(REANIM_SCRIPT, "die")
+  harvest_room if essence < HARVEST_BELOW
+  Script.run(REANIM_SCRIPT, "die") if animate_up?
 ensure
   mine.to_a.each { |s| Script.unpause(s) if Script.paused?(s) }
 end
@@ -77,8 +150,8 @@ def run
     if !resting?
       done = false                    # $bigshot_status back to :hunting / :ready
     elsif !done
-      if animate_up?
-        echo "Fizzleworth-anim-cleanup: hunt over with an animate up -- dismissing it here."
+      if animate_up? || essence < HARVEST_BELOW
+        echo "Fizzleworth-anim-cleanup: hunt over -- cleaning up here."
         teardown
       end
       done = true                     # latch until the next hunt, pass or fail
