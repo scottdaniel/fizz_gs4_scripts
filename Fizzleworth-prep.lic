@@ -66,19 +66,20 @@ if res !~ /An ethereal necrotic film covers the/
 Script.start("Fizzleworth-anim-cleanup") unless Script.running?("Fizzleworth-anim-cleanup")
 
 # Fizzleworth-attack-ultima reanims / grinds once per hunt -- re-arm both.
-$ult_reanim_done = false
-$ult_essence_run = false
-
-# Last chance to tear down a ;reanim buddy that neither the field nor the
-# town teardown could reach last hunt (it lagged through travel). We're at
-# the resting room now, everyone co-located and still -- one clean shot,
-# then force the flag clear so a stuck animate doesn't block a fresh reanim.
-Script.run("reanim", "die") if $reanim_animate_live
+# Also clear reanim's "buddy exists" flag: any animate from last hunt is long
+# gone by now (730 duration, plus the whole rest/travel/shop cycle in between).
+$ult_reanim_done    = false
+$ult_essence_run    = false
 $reanim_animate_live = false
 
 # Make sure the minor demon is set to follow -- ;reanim has verlok drop the
 # animate's spare weapon, which only works if it's in the room.
 fput "tell mdem to follow"
+sleep 0.3
+
+# If verlok lost the spare weapon (a botched teardown last hunt), buy a new
+# one now so ;reanim has something to arm the animate with. No-op otherwise.
+Script.run("Fizzleworth-buyweapon")
 
 # Log mind saturation ("Field Exp: N/1220") right before the hunt starts, so
 # every hunt has a recorded starting mind for the wings-compare analysis

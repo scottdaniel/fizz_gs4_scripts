@@ -266,7 +266,8 @@ end
 # room, DON'T dismiss it and DON'T clear the flag -- leave it on follow and
 # let Fizzleworth-prerest run this again at the resting room, where everyone
 # is co-located and nothing is moving. Only touch the weapon once the animate
-# is here.
+# is here. Final backstop for a genuinely lost weapon: Fizzleworth-prep runs
+# Fizzleworth-buyweapon, which re-buys one if verlok isn't carrying a spare.
 def dismiss_animate(noun)
 	unless $reanim_animate_live
 		debug("no animate raised this hunt (or already torn down) -- nothing to do")

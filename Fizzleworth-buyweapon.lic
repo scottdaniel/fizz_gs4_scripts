@@ -1,0 +1,84 @@
+=begin
+  Fizzleworth-buyweapon.lic
+
+  Makes sure the minor demon (verlok'asha) is carrying a spare weapon for
+  ;reanim to hand the animate. If it isn't, buys one at Wineberry's in
+  Icemule and gives it over, then returns to where it started.
+
+  Run from Fizzleworth-prep.lic. No-op (one `look` command) when verlok
+  already has the weapon.
+
+  Knobs (UserVars, so per-character):
+    reanim_weapon         noun of the weapon (default "claidhmore")
+    reanim_weapon_order   Wineberry catalog number (default 82 =
+                          "a massive bone-hilted claidhmore", backroom, ~1200)
+=end
+
+module FizzBuyWeapon
+  module_function
+
+  NOUN      = (UserVars.reanim_weapon.to_s.strip.empty? ? "claidhmore" : UserVars.reanim_weapon.to_s.strip)
+  ORDER_NUM = (UserVars.reanim_weapon_order.to_s =~ /\A\d+\z/ ? UserVars.reanim_weapon_order.to_s : "82")
+  WITHDRAW  = 2000          # a buffer over the ~1200 the claidhmore haggles to
+  SHOP      = "weaponshop"  # go2 alias -> Wineberry's, Icemule
+
+  # `look at verlok` prints its fixed description, then -- only when it's
+  # carrying something -- a trailing "The iron verlok'asha is holding X." line.
+  # Read lines for a few seconds, stopping early once that line shows.
+  def verlok_has_weapon?
+    put "look at verlok"
+    deadline = Time.now + 4
+    txt = +""
+    until Time.now > deadline
+      line = get?
+      if line.nil?
+        sleep 0.05
+        next
+      end
+      txt << line << "\n"
+      break if line =~ /is holding|could not find|don't see/i
+    end
+    txt =~ /is holding\b[^.\n]*\b#{Regexp.escape(NOUN)}/i
+  end
+
+  def run
+    if verlok_has_weapon?
+      echo "[buyweapon] verlok already has a #{NOUN} -- nothing to do."
+      return
+    end
+    echo "[buyweapon] verlok has no #{NOUN} -- buying one at Wineberry's."
+
+    start = (Room.current.id rescue nil)
+
+    Script.run("go2", "bank")
+    dothistimeout("withdraw #{WITHDRAW} silver", 6,
+      /withdraw [\d,]+ silvers|hand you [\d,]+ silvers|don't have (?:that much|enough)|insufficient/i)
+
+    Script.run("go2", SHOP)
+    fput "order"                                   # open the catalog
+    sleep 1
+    fput "order #{ORDER_NUM}"                       # get its price / arm BUY
+    sleep 1
+    r = dothistimeout("buy", 8,
+      /Sold for|hands you (?:a|an|the)|don't have enough|can't afford|hands are full|not for sale/i).to_s
+    if r =~ /hands are full/i
+      fput "stow left"
+      sleep 0.5
+      r = dothistimeout("buy", 8, /Sold for|hands you (?:a|an|the)|don't have enough|can't afford/i).to_s
+    end
+
+    if r =~ /Sold for|hands you (?:a|an|the)/i
+      dothistimeout("give #{NOUN} to verlok", 4,
+        /grudgingly accepts|hand(?:s)? .* to (?:a|an|the)|refuses|isn't interested/i)
+      echo "[buyweapon] bought a #{NOUN} and gave it to verlok."
+    else
+      echo "[buyweapon] !! couldn't buy a #{NOUN} (order ##{ORDER_NUM}): #{r.strip[0, 120]}"
+    end
+
+    Script.run("go2", "bank")
+    fput "deposit all"
+    Script.run("go2", "#{start} --disable-confirm") if start
+  end
+end
+
+FizzBuyWeapon.run
