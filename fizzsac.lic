@@ -210,16 +210,22 @@ paused  = PAUSE_WHILE.select { |s| Script.running?(s) && !Script.paused?(s) }
 paused.each { |s| Script.pause(s) }
 sleep 0.3
 
-paused_anim = false
-if animate_here?
-  fput "tell anim stop"
-  sleep 0.3
-  paused_anim = true
+# the animate is on "follow" -- it can catch up a room or two into the grind
+# and start finishing creatures before the sacrifice lands, so re-issue STOP
+# at the top of every room, not just once.
+saw_animate = false
+quiet_animate = lambda do
+  if animate_here?
+    fput "tell anim stop"
+    saw_animate = true
+    sleep 0.2
+  end
 end
 
 begin
   MAX_ROOMS.times do |room|
     Script.current.kill if checkdead
+    quiet_animate.call
     result = harvest_room
     break if result == :full
     if result == :oom
@@ -233,6 +239,6 @@ begin
   end
   echo "[fizzsac] done -- shadow essence #{essence}/#{ESSENCE_MAX}."
 ensure
-  fput "tell anim attack" if paused_anim
+  fput "tell anim attack" if saw_animate
   paused.each { |s| Script.unpause(s) if Script.paused?(s) }
 end
