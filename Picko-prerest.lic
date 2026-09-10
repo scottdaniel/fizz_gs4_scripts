@@ -2,10 +2,10 @@
 
 module PickoPrerest
 
-#Script.run("eherbs")
-#Script.run("eloot", "sell")
-#Script.run("undead_bounty", "kill zombie")
-#Script.run("buyitems")
+Script.run("eherbs")
+Script.run("eloot", "sell")
+Script.run("undead_bounty", "kill zombie")
+Script.run("buyitems")
 
 # Sweep every wand out of the default stow container into the active bigshot
 # profile's fresh-wand container, staged for waving. "wand" is no longer a STOW
