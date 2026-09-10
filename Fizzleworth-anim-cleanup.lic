@@ -30,7 +30,7 @@ module FizzleworthAnimCleanup
 module_function
 
 REANIM_SCRIPT = "reanim" unless defined?(REANIM_SCRIPT)
-POLL          = 0.3 unless defined?(POLL)
+POLL          = 0.15 unless defined?(POLL)   # tight -- must beat go2's first step
 # bigshot $bigshot_status values that mean "hunt's done, heading to rest"
 REST_STATES   = %i[resting rest_stop] unless defined?(REST_STATES)
 # everything that can walk Fizzleworth around at end of hunt
@@ -137,12 +137,10 @@ def resting?
   REST_STATES.include?($bigshot_status)
 end
 
-# Freeze every mover we didn't already find paused, do the end-of-hunt jobs,
-# then unfreeze only the ones we froze.
+# Freeze the movers, do the end-of-hunt jobs, unfreeze only what we froze.
 def teardown
   mine = MOVERS.select { |s| Script.running?(s) && !Script.paused?(s) }
   mine.each { |s| Script.pause(s) }
-  # let them settle out of whatever game command they were mid-way through
   give = Time.now + PAUSE_SETTLE
   sleep 0.1 until mine.all? { |s| !Script.running?(s) || Script.paused?(s) } || Time.now > give
 
@@ -161,6 +159,8 @@ def run
     if !resting?
       done = false                    # $bigshot_status back to :hunting / :ready
     elsif !done
+      # $bigshot_status just flipped to :resting -- decide and pause NOW, before
+      # go2 gets a step in and splits Fizzleworth from the trailing animate.
       if animate_up? || essence < HARVEST_BELOW
         echo "Fizzleworth-anim-cleanup: hunt over -- cleaning up here."
         teardown

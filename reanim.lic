@@ -245,53 +245,65 @@ def arm_animate(noun)
 	end
 end
 
-# Is there an animate IN THE CURRENT ROOM right now?
+# Is an animate in the CURRENT room right now? GameObj.npcs lags a beat on a
+# room change, so the callers that care double-check it 0.4s apart.
 def animate_here?
 	GameObj.npcs.any? { |n| n && n.name.to_s =~ /\banimate/i }
 rescue StandardError
 	false
 end
 
+def animate_here_stable?
+	animate_here? && (sleep(0.4) || true) && animate_here?
+end
+
 # End-of-hunt teardown. Gated on $reanim_animate_live so it runs exactly once
-# per hunt (Fizzleworth-anim-cleanup fires it in the field; Fizzleworth-prerest
-# fires it again in town, where this is now an instant no-op). The caller
-# freezes go2 / bigshot / sac4mana first; the animate is on "follow", so if
-# travel already started it may be a room back -- wait for it, then get the
-# spare WEAPON back onto verlok, dismiss it, and loot the remains.
+# per hunt. The caller (Fizzleworth-anim-cleanup) freezes go2 / bigshot /
+# sac4mana -- but go2 can get ONE step in before the freeze lands, leaving
+# Fizzleworth a room ahead of the animate.
+#
+# So: STOP the animate and call it to FOLLOW. If it's NOT confirmed in this
+# room, DON'T dismiss it and DON'T clear the flag -- leave it on follow and
+# let Fizzleworth-prerest run this again at the resting room, where everyone
+# is co-located and nothing is moving. Only touch the weapon once the animate
+# is here.
 def dismiss_animate(noun)
 	unless $reanim_animate_live
 		debug("no animate raised this hunt (or already torn down) -- nothing to do")
 		return
 	end
 
+	fput "tell anim stop"     # halt it wherever it is (mid-travel it lags on follow)
+	sleep 0.3
+	fput "tell anim follow"   # ... then bring it to us
+
 	waited = 0.0
-	until animate_here? || waited >= ANIMATE_CATCHUP
-		sleep 0.5
-		waited += 0.5
-	end
-	here = animate_here?
-	echo "[reanim] animate never reached the room -- dismissing it blind." unless here
-
-	# 1) ask it to drop the spare (the "to" form -- bare "tell anim drop" fails;
-	#    step 3 is the backstop -- a dying animate drops what it holds). Skip if
-	#    it's not here.
-	if here
-		dothistimeout("tell anim to drop #{noun}", 3,
-			/drops (?:a|an|the)|not (?:holding|carrying)|isn't (?:holding|carrying)|could not find|empty[- ]handed/i)
-		sleep 0.4
+	until animate_here_stable? || waited >= ANIMATE_CATCHUP
+		sleep 0.6
+		waited += 1.0          # animate_here_stable? already ate ~0.4s
 	end
 
-	# 2) dismiss it
+	unless animate_here_stable?
+		echo "[reanim] animate hasn't caught up -- leaving it on follow; the town teardown gets it."
+		return   # flag stays set -> Fizzleworth-prerest's ;reanim die finishes the job
+	end
+
+	# it's here: drop the spare. "You sense ... drop" would mean it slipped a
+	# room between our check and the command -- bail to the town teardown too.
+	r = dothistimeout("tell anim to drop #{noun}", 4,
+		/(?:drops|drop) (?:a|an|the).*#{Regexp.escape(noun)}|You sense .* drop|not (?:holding|carrying)|isn't (?:holding|carrying)|could not find|empty[- ]handed/i).to_s
+	if r =~ /You sense .* drop/i
+		echo "[reanim] animate slipped a room mid-teardown -- leaving it for the town teardown."
+		return
+	end
+	sleep 0.5
+
 	fput "tell anim die"
 	sleep 1.5
 	$reanim_animate_live = false
 	echo "[reanim] animate still present after 'tell anim die' -- check it." if animate_here?
 
-	return unless here   # nothing on the ground to reclaim / loot elsewhere
-
-	# 3) whatever's on the ground now (the spare it dropped or died holding) ->
-	#    back onto verlok so it isn't lost. If verlok won't, pick it up
-	#    ourselves; ;eloot below is the final catch-all (into the pack).
+	# reclaim the spare it just dropped (or died holding) -> verlok -> our pack
 	if weapon_on_ground(noun)
 		dothistimeout("tell verlok to get #{noun}", 3,
 			/picks up|snatches|grasps|retriev|reaches down|takes hold of|obeys|obliges|could not find|can't|cannot|refuses/i)
@@ -304,11 +316,15 @@ def dismiss_animate(noun)
 		end
 	end
 
-	# 4) loot the collapsed animate for the original creature's treasure
-	#    (bigshot's own loot pass skipped it -- it was still "the animate").
-	#    Run eloot detached with a hard cap: if it pauses itself for user input
-	#    (sacks full, box handling) we must NOT stay blocked here -- the caller
-	#    has bigshot / go2 / sac4mana frozen. Leave a paused eloot for the user.
+	if weapon_on_ground(noun)
+		echo "[reanim] !! the #{noun.upcase} is on the floor here and wouldn't go to verlok."
+		echo "[reanim] !!   get #{noun} ; give #{noun} to verlok"
+	else
+		debug("#{noun} recovered")
+	end
+
+	# loot the collapsed animate for the original creature's treasure. Detached
+	# with a hard cap so a sacks-full pause can't wedge the frozen bigshot.
 	Script.start("eloot")
 	deadline = Time.now + 15
 	sleep 0.3 until !Script.running?("eloot") || Script.paused?("eloot") || Time.now > deadline

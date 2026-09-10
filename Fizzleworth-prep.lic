@@ -65,13 +65,16 @@ if res !~ /An ethereal necrotic film covers the/
 # base / wing hunts.
 Script.start("Fizzleworth-anim-cleanup") unless Script.running?("Fizzleworth-anim-cleanup")
 
-# Fizzleworth-attack-ultima reanims only the first inciter per hunt -- re-arm
-# that at the start of every hunt (reanim.lic's `;reanim die` also clears it).
-# Also clear reanim's "a buddy exists" flag unless one is actually still here,
-# in case a teardown was missed last hunt (crash / manual stop).
+# Fizzleworth-attack-ultima reanims / grinds once per hunt -- re-arm both.
 $ult_reanim_done = false
 $ult_essence_run = false
-$reanim_animate_live = false unless GameObj.npcs.any? { |n| n && n.name.to_s =~ /\banimate/i }
+
+# Last chance to tear down a ;reanim buddy that neither the field nor the
+# town teardown could reach last hunt (it lagged through travel). We're at
+# the resting room now, everyone co-located and still -- one clean shot,
+# then force the flag clear so a stuck animate doesn't block a fresh reanim.
+Script.run("reanim", "die") if $reanim_animate_live
+$reanim_animate_live = false
 
 # Make sure the minor demon is set to follow -- ;reanim has verlok drop the
 # animate's spare weapon, which only works if it's in the room.
