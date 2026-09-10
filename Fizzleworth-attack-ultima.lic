@@ -53,10 +53,16 @@
 # SYMBOL OF RETRIBUTION: also a self-aura (Voln, favor). "You feel an aura of
 # righteous wrath surround you." -- reactively flares divine damage back at
 # any UNDEAD that strikes you (visions are noncorporeal undead; the inciters'
-# kicks / maneuvers count as strikes). rank x 10s, stackable. Kept up every
-# pass there's a live target, tracked by $ult_retribution_until, same
-# lapse-timestamp scheme as Disruption. Pure defense -- it's ULTIMA, we want
-# the protection. RETRIBUTION knob turns it off; needs Voln step 15.
+# kicks / maneuvers count as strikes). rank x 10s, stackable. When on, kept up
+# every pass there's a live target, tracked by $ult_retribution_until, same
+# lapse-timestamp scheme as Disruption.
+#
+# OFF BY DEFAULT. gs4-wings-compare measured it at ~7% of damage output for
+# ~300-600 favor per recast, and with every other symbol running Fizzleworth
+# was net -450 Voln favor/hunt. Favor only refills by releasing undead, so
+# that's a slow bleed. Turn it back on with:
+#   ;vars set ult_retribution=on      (on/true/yes/1 -> on; anything else off)
+# Needs Voln step 15.
 #
 # --- offense finish (identical to -base) --------------------------------
 #
@@ -127,8 +133,11 @@ AURA_MARGIN = 5  unless defined?(AURA_MARGIN)
 AURA_RETRY  = 45 unless defined?(AURA_RETRY)
 
 # Symbol of Retribution -- reactive divine flare vs undead that strike you.
-# Set false to skip it (favor is ~3x Symbol of Protection per recast).
-RETRIBUTION = true unless defined?(RETRIBUTION)
+# UserVar-backed so it can be flipped without a code edit; OFF unless
+# ult_retribution is set to one of on/true/yes/1. Favor is ~3x Symbol of
+# Protection per recast and it's only ~7% of damage (see gs4-wings-compare),
+# so it stays off to keep Voln favor net-positive.
+RETRIBUTION = (UserVars.ult_retribution.to_s =~ /\A\s*(?:1|true|on|yes)\s*\z/i) ? true : false unless defined?(RETRIBUTION)
 
 WINGGUARD_SCRIPT_NAME = "Fizzleworth-wingguard" unless defined?(WINGGUARD_SCRIPT_NAME)
 
