@@ -5,7 +5,7 @@
         game: gemstone
         tags: bounty, adventurer's guild, undead, voln
     requires: Lich > 5.4.0
-     version: 1.9
+     version: 1.10
 
   Want to keep earning favor with Voln while at the same time completing bounties?
 
@@ -96,6 +96,11 @@
   bounty" over and over).
 
   changelog:
+    1.10
+      - recognize a directly-assigned task like :escort, not just types
+        ending in "assignment" - previously it could sit unrecognized for
+        a full timeout (or, if the taskmaster was only asked once, go
+        completely unnoticed and never get removed)
     1.9
       - only accept a :creature_assignment task before heading to the town
         guard; any other assignment type (herb/gem/skin/heirloom/rescue) is
@@ -382,7 +387,13 @@ module UndeadBounty
         next
       end
 
-      task = wait_for_bounty(&:assigned?)
+      # Task#assigned? only matches types ending in "assignment" - but some
+      # types (e.g. :escort) get handed out directly in their final "ready"
+      # form, skipping that intermediate stage entirely, so they'd go
+      # unrecognized here and only get cleaned up later (if at all) via the
+      # "already assigned" text fallback above. any? (anything but :none)
+      # catches both shapes.
+      task = wait_for_bounty(&:any?)
       next unless task
 
       if creature_assignment?(task)
@@ -422,7 +433,13 @@ module UndeadBounty
         exit
       end
 
-      task = wait_for_bounty(&:assigned?)
+      # Task#assigned? only matches types ending in "assignment" - but some
+      # types (e.g. :escort) get handed out directly in their final "ready"
+      # form, skipping that intermediate stage entirely, so they'd go
+      # unrecognized here and only get cleaned up later (if at all) via the
+      # "already assigned" text fallback above. any? (anything but :none)
+      # catches both shapes.
+      task = wait_for_bounty(&:any?)
       next unless task
 
       return task if creature_assignment?(task)
