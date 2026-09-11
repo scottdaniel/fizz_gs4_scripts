@@ -5,7 +5,7 @@
         game: gemstone
         tags: bounty, adventurer's guild, undead, voln
     requires: Lich > 5.4.0
-     version: 1.7
+     version: 1.8
 
   Want to keep earning favor with Voln while at the same time completing bounties?
 
@@ -77,15 +77,22 @@
   level), the script stops with a clear message instead of burning through
   the attempt cap uselessly.
 
-  Handles zero Bounty Boosts gracefully too (common on F2P accounts): it
-  still tries asking the taskmaster in case a free task is available, but
-  only a couple of times instead of the full attempt cap, and exits with a
-  clean "nothing to do right now" message - including the "eligible again
-  in about N minutes" cooldown from `bounty`, when the game reports one -
-  instead of treating it as a failure. Meant to play nicely with something
-  like a bigshot hunt/rest loop calling this in between sessions.
+  Handles zero Bounty Boosts gracefully too (common on F2P accounts).
+  Requesting a SPECIFIC bounty type requires an active boost, so without
+  one the script asks the taskmaster generically instead (`ask taskmaster
+  about bounty`) and takes whatever's offered. If the taskmaster is on
+  cooldown ("Come back in about N minutes if you want another task."), it
+  exits with a clean "nothing to do right now (eligible again in about N
+  minutes)" message instead of treating it as a failure. Meant to play
+  nicely with something like a bigshot hunt/rest loop calling this in
+  between sessions.
 
   changelog:
+    1.8
+      - without a Bounty Boost, stop requesting a specific bounty type
+        (the game doesn't support that unboosted) and ask generically
+        instead, pulling the real wait time out of the taskmaster's own
+        "come back in about N minutes" cooldown response
     1.7
       - handle zero Bounty Boosts gracefully: still try the taskmaster once
         or twice in case a free task is available, then exit cleanly
@@ -205,18 +212,23 @@ module UndeadBounty
     wait_for_bounty { true }
   end
 
-  ELIGIBLE_IN_PATTERN = /eligible for new task assignment in about (\d+) minutes?/i.freeze
+  # matches both "...eligible for new task assignment in about 43 minutes"
+  # (from `bounty` status) and "...come back in about 37 minutes if you
+  # want another task" (from asking the taskmaster while on cooldown)
+  MINUTES_PATTERN = /in about (\d+) minutes?/i.freeze
 
-  # pulls "...eligible for new task assignment in about 43 minutes" out of
-  # a bounty status description, e.g. for accounts with no Bounty Boosts
-  def self.minutes_until_eligible(description)
-    m = ELIGIBLE_IN_PATTERN.match(description.to_s)
+  def self.minutes_until_eligible(text)
+    m = MINUTES_PATTERN.match(text.to_s)
     m && m[1].to_i
   end
 
   # sends a command once (no auto-resend) and watches incoming lines for up
   # to `timeout` seconds for any of the given patterns; returns the matching
   # pattern, or nil if none showed up in time
+  # returns the matching pattern (not the line) to keep existing `matched
+  # == SOME_PATTERN` call sites simple; the actual matched line is stashed
+  # in @last_matched_line for the rare caller (e.g. minute-count parsing)
+  # that needs the real text.
   def self.fput_and_check(command, patterns, timeout: 5)
     Script.current.clear
     fput command
@@ -226,6 +238,7 @@ module UndeadBounty
       if line.nil?
         sleep 0.1
       elsif (pattern = patterns.find { |p| line =~ p })
+        @last_matched_line = line
         return pattern
       end
     end
@@ -309,15 +322,19 @@ module UndeadBounty
   ALREADY_ASSIGNED_PATTERN = /already been assigned a task/i.freeze
   TASKMASTER_BUSY_PATTERN = /kind of busy right now/i.freeze
   NO_SUITABLE_TASK_PATTERN = /don't seem to have any tasks that are suitable for you/i.freeze
+  # this reuses the same opening line as TASKMASTER_BUSY_PATTERN, but with a
+  # real multi-minute cooldown attached - only seen (so far) when asking
+  # without a Bounty Boost active
+  TASKMASTER_COOLDOWN_PATTERN = /come back in about .+ if you want another task/i.freeze
 
   def self.ask_master_for_bounty(bounty_type, max_attempts: 10)
     go_to_advguild
-    had_boost = boost_bounty
-    # without a boost, this is a real multi-minute game cooldown, not
-    # something a quick retry will fix - don't spam the taskmaster
-    attempts = had_boost ? max_attempts : 2
 
-    attempts.times do
+    # asking for a SPECIFIC bounty type requires an active Bounty Boost -
+    # without one, the game doesn't support it at all, so don't even try
+    return ask_master_for_free_bounty unless boost_bounty
+
+    max_attempts.times do
       matched = fput_and_check(
         "ask #{BOUNTY_MASTER_NAME} for bounty #{bounty_type}",
         [ALREADY_ASSIGNED_PATTERN, TASKMASTER_BUSY_PATTERN, NO_SUITABLE_TASK_PATTERN]
@@ -343,13 +360,39 @@ module UndeadBounty
       return task if task
     end
 
-    if had_boost
-      respond 'UndeadBounty: never got a new assignment from the bounty master, stopping.'
-    else
-      wait_note = @eligible_in_minutes ? " (eligible again in about #{@eligible_in_minutes} minutes)" : ''
-      respond "UndeadBounty: no Bounty Boost available and no free task assignment right now#{wait_note}."
-      respond "UndeadBounty: nothing to do - stopping so the hunt/rest cycle can just try again later."
+    respond 'UndeadBounty: never got a new assignment from the bounty master, stopping.'
+    exit
+  end
+
+  # no Bounty Boost active: can't request a specific type, so just ask
+  # generically and take whatever's offered (run()'s normal qualify/reroll
+  # logic handles it from there - though without a boost, "reroll" just
+  # means hitting this same cooldown again).
+  def self.ask_master_for_free_bounty
+    2.times do
+      matched = fput_and_check(
+        "ask #{BOUNTY_MASTER_NAME} about bounty",
+        [ALREADY_ASSIGNED_PATTERN, TASKMASTER_COOLDOWN_PATTERN]
+      )
+      waitrt?
+
+      if matched == ALREADY_ASSIGNED_PATTERN
+        respond 'UndeadBounty: taskmaster says a task is already assigned, requesting removal...'
+        ask_master_for_removal
+        next
+      elsif matched == TASKMASTER_COOLDOWN_PATTERN
+        @eligible_in_minutes = minutes_until_eligible(@last_matched_line) || @eligible_in_minutes
+        wait_note = @eligible_in_minutes ? " (eligible again in about #{@eligible_in_minutes} minutes)" : ''
+        respond "UndeadBounty: no Bounty Boost available and no free task assignment right now#{wait_note}."
+        respond 'UndeadBounty: nothing to do - stopping so the hunt/rest cycle can just try again later.'
+        exit
+      end
+
+      task = wait_for_bounty(&:assigned?)
+      return task if task
     end
+
+    respond 'UndeadBounty: no Bounty Boost, and the taskmaster never confirmed a task or a cooldown - stopping.'
     exit
   end
 
@@ -712,8 +755,9 @@ module UndeadBounty
     respond 'If the taskmaster has no suitable tasks left for your level (hunting ground got too'
     respond 'easy), the script stops with a clear message instead of retrying uselessly.'
     respond ''
-    respond 'With zero Bounty Boosts (common on F2P), it still tries the taskmaster a couple of'
-    respond 'times in case a free task is available, then exits cleanly - no boost needed to run this.'
+    respond 'With zero Bounty Boosts (common on F2P), requesting a specific type is not possible, so'
+    respond 'it asks generically instead and takes whatever is offered. On cooldown, it exits cleanly'
+    respond 'with the real wait time pulled from the taskmaster - no boost needed to run this.'
   end
 end
 
