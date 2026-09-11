@@ -1,0 +1,124 @@
+# tackle-bot.lic
+# Standalone "dumb" combat loop for Brayis when he's just along for the ride
+# in someone else's group -- their bigshot runs the actual hunt (moving,
+# looting, retargeting); this just watches the room for anything alive and
+# tackles it, with the exact same stamina gate as Brayis-attack.lic so he
+# never exhausts himself. Not a bigshot hunting-command script -- start and
+# stop it by hand around the group hunt:
+#
+#   ;tackle-bot
+#   (kill it from the script list, or ;e Script.kill('tackle-bot'), when done)
+#
+# Loop, forever:
+#   1. Pick any non-dead/gone NPC in the room (GameObj.npcs -- whatever the
+#      group is fighting, not a target list Brayis himself has any reason to
+#      have built).
+#   2. Nothing there -> sleep and keep watching.
+#   3. Otherwise target it if needed, then the same tackle/attack decision as
+#      Brayis-attack.lic:
+#        stamina >= TACKLE_STAMINA_COST -> cman tackle, finishing with a
+#          plain attack the moment the target is (or just went) down;
+#        otherwise -> just attack with the Claidhmore.
+#
+# The tackle/attack helpers below are copy-pasted from Brayis-attack.lic
+# rather than shared, matching how Picko-attack.lic / Salvi-attack.lic
+# duplicate their own near-identical helpers instead of pulling in a shared
+# library -- keep both files in sync by hand if the tackle logic changes.
+
+# --- knobs -------------------------------------------------------------------
+
+TACKLE_STAMINA_COST = 7 unless defined?(TACKLE_STAMINA_COST)
+
+# --- patterns ----------------------------------------------------------------
+
+# GS4's outright refusal when the target is already down -- no stamina spent,
+# no roundtime, so it's safe (and necessary) to re-issue tackle every pass and
+# just read this back instead of tracking down-state ourselves.
+ALREADY_DOWN_MSG = /is lying down.*awkward proposition/i unless defined?(ALREADY_DOWN_MSG)
+
+# Tackle's own knockdown-success line, e.g.
+# "You knock a greater ghoul flat and jump to your feet.  Smooth!"
+KNOCKED_DOWN_MSG = /\bknock\b.*\bflat\b/i unless defined?(KNOCKED_DOWN_MSG)
+
+# --- helpers -----------------------------------------------------------------
+
+# Dead/gone check off GameObj.npcs directly -- there's no bigshot-maintained
+# target list to lean on here, since Brayis isn't the one driving the hunt.
+def target_dead?(foe)
+  return true if foe.nil?
+  return true if foe.status.to_s =~ /dead|gone/
+  !GameObj.npcs.any? { |t| t.id.to_i == foe.id.to_i && t.status.to_s !~ /dead|gone/ }
+end
+
+# Sends cmd and collects every line through the roundtime message (a single
+# dothistimeout match only sees the first matching line, not the whole result
+# block). Also breaks early on ALREADY_DOWN_MSG, which never gets a roundtime
+# line at all.
+def action_and_collect(cmd)
+  text_lines = []
+  put cmd
+  end_time = Time.now.to_f + 5
+  loop do
+    line = get?
+    if line.nil?
+      sleep 0.1
+    else
+      text_lines << line
+      break if line =~ /Roundtime: \d+ sec\.?/i || line =~ ALREADY_DOWN_MSG
+    end
+    break if Time.now.to_f >= end_time
+  end
+  text_lines.join(' ')
+end
+
+# Plain attack with the Claidhmore, offensive -> attack -> defensive. Safe to
+# call regardless of prone state. No-ops if the target is already dead.
+def finish_attack(foe)
+  return if target_dead?(foe)
+  fput "stance offensive" if stance != "offensive"
+  fput "attack"
+  waitrt?
+  fput "stance defensive" if stance != "defensive"
+end
+
+# One tackle attempt, then capitalizes on it immediately (finish_attack) if
+# the target is (or just went) down. Falls back to plain stance defensive if
+# the roll just misses.
+def tackle_then_maybe_finish(foe)
+  fput "stance offensive" if stance != "offensive"
+  text = action_and_collect("cman tackle")
+
+  if text =~ ALREADY_DOWN_MSG
+    finish_attack(foe)
+  elsif text =~ KNOCKED_DOWN_MSG
+    waitrt?
+    finish_attack(foe)
+  else
+    waitrt?
+    fput "stance defensive" if stance != "defensive"
+  end
+end
+
+# --- main ----------------------------------------------------------------
+
+loop do
+  foe = GameObj.npcs.find { |n| n.status.to_s !~ /dead|gone/ }
+
+  if foe.nil?
+    sleep 1
+    next
+  end
+
+  fput "target ##{foe.id}" unless XMLData.current_target_id.to_i == foe.id.to_i
+  waitrt?
+
+  next if target_dead?(foe)
+
+  if checkstamina >= TACKLE_STAMINA_COST
+    tackle_then_maybe_finish(foe)
+  else
+    finish_attack(foe)
+  end
+
+  sleep 0.2
+end
