@@ -12,29 +12,49 @@
 #
 # Decision each pass:
 #
-#   target not yet knocked down, stamina >= TACKLE_STAMINA_COST:
-#     stance offensive, cman tackle, back to stance defensive. The tackle's
-#     own combat roll (the "... + d100 roll: +N = +M" line, the same format
-#     every GS4 combat/spell roll uses) is checked against
-#     TACKLE_ENDROLL_FLOOR -- once one lands at or above it the target is
-#     down, and this script switches to plain attacks against it for the
-#     rest of the fight.
+#   stamina >= TACKLE_STAMINA_COST: stance offensive, cman tackle. The game
+#     itself is the source of truth for whether the target is already down --
+#     see ALREADY_DOWN_MSG below -- so this always attempts the tackle rather
+#     than trusting a remembered flag. Once the target actually goes down
+#     (this attempt or an earlier one), follows up immediately with a plain
+#     attack instead of waiting for the next bigshot pass. Back to stance
+#     defensive either way.
 #
-#   target already knocked down:
-#     stance offensive, attack, back to stance defensive.
+#   otherwise (stamina too low to tackle): stance defensive and wait for
+#     stamina to regenerate.
 #
-#   otherwise (stamina too low to tackle, target still standing):
-#     stance defensive and wait for stamina to regenerate.
-#
-# Whether the current target has been knocked down lives in a global keyed off
-# its id ($brayis_downed_target_id) so it survives this script being
-# re-invoked fresh each pass; it's cleared the moment the id no longer matches
-# the live target, i.e. at the start of the next fight.
+# BUG FIXED 2026-09-11: the original version tried to remember "target is
+# down" in a global, set from the endroll of the tackle's own combat roll.
+# That parsing used the ordinary-attack roll format ("... + d100 roll: +N =
+# +M"), but Tackle (a CMAN) actually prints "SMR SvD: ... + o100 roll: +N ==
+# +M" -- different letter (o, not d) and a double "==". The regex never
+# matched, the flag never got set, and the script kept re-issuing "cman
+# tackle" against a target that was already down, which GS4 just refuses:
+#   "A greater ghoul is lying down -- attempting to tackle it would be a
+#   rather awkward proposition."
+# -- burning the whole 5-second read window on that refusal every single pass
+# and never reaching the finishing attack. Confirmed live in
+# "Brayis - Prime/Brayis-Prime 09.11.2026 - 1.txt". Fixed by keying off that
+# exact refusal text (and the knockdown success text) instead of re-deriving
+# "is it down" from the roll numbers -- it's what GS4 itself just told us,
+# free of any roll-format assumptions, and it self-corrects every pass instead
+# of trusting a flag that goes stale the moment the target stands back up
+# ("A greater ghoul slowly stands back up.", also seen in that log).
 
 # --- knobs -------------------------------------------------------------------
 
-TACKLE_STAMINA_COST  = 7   unless defined?(TACKLE_STAMINA_COST)
-TACKLE_ENDROLL_FLOOR = 101 unless defined?(TACKLE_ENDROLL_FLOOR)
+TACKLE_STAMINA_COST = 7 unless defined?(TACKLE_STAMINA_COST)
+
+# --- patterns ----------------------------------------------------------------
+
+# GS4's outright refusal when the target is already down -- no stamina spent,
+# no roundtime, so it's safe (and necessary) to re-issue tackle every pass and
+# just read this back instead of tracking down-state ourselves.
+ALREADY_DOWN_MSG = /is lying down.*awkward proposition/i unless defined?(ALREADY_DOWN_MSG)
+
+# Tackle's own knockdown-success line, e.g.
+# "You knock a greater ghoul flat and jump to your feet.  Smooth!"
+KNOCKED_DOWN_MSG = /\bknock\b.*\bflat\b/i unless defined?(KNOCKED_DOWN_MSG)
 
 # --- helpers -----------------------------------------------------------------
 
@@ -51,7 +71,8 @@ end
 # Sends cmd and collects every line through the roundtime message (a single
 # dothistimeout match only sees the first matching line, not the whole result
 # block) -- same reasoning as the cast_and_collect helper in the Salvi/Picko
-# attack scripts, just for a physical action instead of a spell.
+# attack scripts, just for a physical action instead of a spell. Also breaks
+# early on ALREADY_DOWN_MSG, which never gets a roundtime line at all.
 def action_and_collect(cmd)
   text_lines = []
   put cmd
@@ -62,41 +83,35 @@ def action_and_collect(cmd)
       sleep 0.1
     else
       text_lines << line
-      break if line =~ /Roundtime: \d+ sec\.?/i
+      break if line =~ /Roundtime: \d+ sec\.?/i || line =~ ALREADY_DOWN_MSG
     end
     break if Time.now.to_f >= end_time
   end
   text_lines.join(' ')
 end
 
-# The endroll off a combat roll line, e.g. "... + d100 roll: +30 - 25 = +105"
-# -- the same format every GS4 combat/spell roll uses, already relied on for
-# endroll capture in Picko-attack.lic / Salvi-duskattack.lic.
-def extract_endroll(text)
-  text =~ /d100 roll:.*?=\s*([+-]?\d+)/ ? Regexp.last_match(1).to_i : nil
-end
-
-def downed?(foe)
-  $brayis_downed_target_id == foe.id.to_i
-end
-
-# One tackle attempt. Only lands stance back on defensive -- the caller is
-# responsible for checking stamina before calling this, same as every other
-# gated attack step in the Salvi/Picko routines.
-def tackle(foe)
-  fput "stance offensive" if stance != "offensive"
-  text = action_and_collect("cman tackle")
-  waitrt?
-  endroll = extract_endroll(text)
-  $brayis_downed_target_id = foe.id.to_i if endroll && endroll >= TACKLE_ENDROLL_FLOOR
-  fput "stance defensive"
-end
-
-# One plain attack against an already-downed target.
-def finish(foe)
-  fput "stance offensive" if stance != "offensive"
+# Plain attack against a downed target. No-ops if it's already dead (tackle
+# itself throws a real hit alongside the knockdown attempt and can finish a
+# weak target outright).
+def finish_attack(foe)
+  return if target_dead?(foe)
   fput "attack"
   waitrt?
+end
+
+# One tackle attempt, then capitalizes on it immediately if the target is (or
+# just went) down instead of waiting for the next bigshot pass.
+def tackle_then_maybe_finish(foe)
+  fput "stance offensive" if stance != "offensive"
+  text = action_and_collect("cman tackle")
+
+  if text =~ ALREADY_DOWN_MSG
+    finish_attack(foe)
+  else
+    waitrt?
+    finish_attack(foe) if text =~ KNOCKED_DOWN_MSG
+  end
+
   fput "stance defensive"
 end
 
@@ -114,13 +129,8 @@ waitrt?
 
 exit if target_dead?(foe)
 
-# New target -- a downed flag from a previous fight doesn't carry over.
-$brayis_downed_target_id = nil if $brayis_downed_target_id && $brayis_downed_target_id != foe.id.to_i
-
-if downed?(foe)
-  finish(foe)
-elsif checkstamina >= TACKLE_STAMINA_COST
-  tackle(foe)
+if checkstamina >= TACKLE_STAMINA_COST
+  tackle_then_maybe_finish(foe)
 else
   fput "stance defensive" if stance != "defensive"
 end

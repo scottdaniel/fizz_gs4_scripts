@@ -6,10 +6,10 @@
 
 module BrayisPrep
 
-# clear hands -- "store weapon" routes the weapon to the readied sheath per
+# clear hands -- "store 2weap" routes the Claidhmore to the readied sheath per
 # the in-game STORE config (STORE SET WEAPON SHEATH); "stow all" mops up
 # anything left in the off-hand.
-fput "store weapon"
+fput "store 2weap"
 fput "stow all"
 
 # rub stuff, but only if the spell isn't already active -- and only pause
@@ -23,6 +23,6 @@ unless Spell[509].active?
   pause 3
 end
 
-fput "ready weapon"
+fput "ready 2weap"
 
 end #End of module
