@@ -5,7 +5,7 @@
         game: gemstone
         tags: bounty, adventurer's guild, undead, voln
     requires: Lich > 5.4.0
-     version: 1.8
+     version: 1.9
 
   Want to keep earning favor with Voln while at the same time completing bounties?
 
@@ -87,7 +87,21 @@
   nicely with something like a bigshot hunt/rest loop calling this in
   between sessions.
 
+  Only follows through on a "creature problem" assignment (the kind that
+  routes to a town guard for a cull/dangerous task). If the taskmaster
+  hands out something else instead - a herb/gem/skin/heirloom/rescue quest
+  - the script recognizes that immediately, removes it, and stops rather
+  than sending you to ask a town guard who has no idea what you're talking
+  about (previously this could loop for a long time asking "ask guard for
+  bounty" over and over).
+
   changelog:
+    1.9
+      - only accept a :creature_assignment task before heading to the town
+        guard; any other assignment type (herb/gem/skin/heirloom/rescue) is
+        now recognized, removed, and handled immediately - fixes a case
+        where the script would repeatedly ask a guard for a bounty that was
+        never routed through them in the first place
     1.8
       - without a Bounty Boost, stop requesting a specific bounty type
         (the game doesn't support that unboosted) and ask generically
@@ -327,6 +341,18 @@ module UndeadBounty
   # without a Bounty Boost active
   TASKMASTER_COOLDOWN_PATTERN = /come back in about .+ if you want another task/i.freeze
 
+  # Task#assigned? matches ANY "...assignment" type - herb_assignment,
+  # gem_assignment, skin_assignment, heirloom_assignment, rescue_assignment,
+  # bandit_assignment, creature_assignment. This script only knows how to
+  # follow the creature_assignment ("It appears they have a creature
+  # problem they'd like you to solve") track through the town guard to a
+  # cull/dangerous task. Any other assignment type sent to ask_guard_for_bounty
+  # just has the guard saying "I don't have any tasks for you right now" in
+  # an endless-looking loop, since that quest was never routed through them.
+  def self.creature_assignment?(task)
+    task&.type == :creature_assignment
+  end
+
   def self.ask_master_for_bounty(bounty_type, max_attempts: 10)
     go_to_advguild
 
@@ -357,17 +383,25 @@ module UndeadBounty
       end
 
       task = wait_for_bounty(&:assigned?)
-      return task if task
+      next unless task
+
+      if creature_assignment?(task)
+        return task
+      end
+
+      respond "UndeadBounty: taskmaster assigned a #{task.type} task instead of a creature problem, " \
+              'requesting removal and retrying...'
+      ask_master_for_removal
     end
 
-    respond 'UndeadBounty: never got a new assignment from the bounty master, stopping.'
+    respond 'UndeadBounty: never got a new creature-problem assignment from the bounty master, stopping.'
     exit
   end
 
   # no Bounty Boost active: can't request a specific type, so just ask
-  # generically and take whatever's offered (run()'s normal qualify/reroll
-  # logic handles it from there - though without a boost, "reroll" just
-  # means hitting this same cooldown again).
+  # generically and take whatever's offered. Unlike the boosted path, there's
+  # no point retrying here if it's not a creature problem - without a boost
+  # a fresh assignment is a real cooldown away, so just remove it and stop.
   def self.ask_master_for_free_bounty
     2.times do
       matched = fput_and_check(
@@ -389,7 +423,14 @@ module UndeadBounty
       end
 
       task = wait_for_bounty(&:assigned?)
-      return task if task
+      next unless task
+
+      return task if creature_assignment?(task)
+
+      respond "UndeadBounty: no Bounty Boost, and the free task offered was a #{task.type} problem, not a " \
+              "creature problem. Removing it and stopping so the hunt/rest cycle can try again later."
+      ask_master_for_removal
+      exit
     end
 
     respond 'UndeadBounty: no Bounty Boost, and the taskmaster never confirmed a task or a cooldown - stopping.'
@@ -758,6 +799,10 @@ module UndeadBounty
     respond 'With zero Bounty Boosts (common on F2P), requesting a specific type is not possible, so'
     respond 'it asks generically instead and takes whatever is offered. On cooldown, it exits cleanly'
     respond 'with the real wait time pulled from the taskmaster - no boost needed to run this.'
+    respond ''
+    respond 'Only "creature problem" assignments are followed to the town guard. A herb/gem/skin/'
+    respond 'heirloom/rescue task is recognized immediately, removed, and the script stops instead'
+    respond 'of asking a guard who was never involved in that quest.'
   end
 end
 
