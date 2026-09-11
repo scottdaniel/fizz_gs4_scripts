@@ -1,0 +1,124 @@
+# bard-bot.lic
+# Standalone "dumb" combat loop for Fizzlestiks (Bard) when he's just grouped
+# along on someone else's bigshot hunt -- same shape as tackle-bot.lic (Brayis):
+# not a bigshot hunting-command, started/stopped by hand, watches the room for
+# anything alive and pitches in without needing to run the hunt himself.
+#
+#   ;bard-bot
+#   (kill it from the script list, or ;e Script.kill('bard-bot'), when done)
+#
+# Each pass, alternates between two resource-gated actions so neither stamina
+# nor mana gets drained one-sided, falling back to a third, cheaper action if
+# both are too depleted to afford:
+#
+#   1. Feint (CMAN) -- https://gswiki.play.net/Feint
+#      9 stamina, sets a target up for an easier follow-up hit.
+#   2. Stunning Shout (spell 1008) -- https://gswiki.play.net/Stunning_Shout_(1008)
+#      5 mana, direct-damage + stun/disorient.
+#   3. Holding Song (spell 1001) -- https://gswiki.play.net/Holding_Song_(1001)
+#      only 1 mana (base, single target) -- the fallback for when both
+#      stamina and mana are too low for the other two. It's a *sustained*
+#      song (stays up as long as you keep singing/renewing it), so this only
+#      ever casts it once per target and leaves it running rather than trying
+#      to manage RENEW -- deliberately not attempting the upkeep mechanic,
+#      "dumb" per how tackle-bot.lic works.
+#
+# Unlike Brayis-attack.lic / tackle-bot.lic, this uses Lich's own CMan/Spell
+# APIs (CMan.available?/.use, Spell#known?/#affordable?/#cast) instead of
+# hand-rolled fput + roll-text regexes. Those APIs already carry Lich's own
+# accurate cost tables and success patterns per maneuver/spell -- exactly the
+# kind of thing a hand-copied regex got wrong for Brayis's tackle (assumed the
+# ordinary attack-roll format when CMAN/SMR rolls print differently). Using
+# them here avoids that whole class of bug. bigshot.lic itself leans on these
+# same APIs throughout (e.g. `CMan.affordable?(...)`, `Spell[1201].cast`).
+# Stance is still managed by hand (offensive for the action, defensive after)
+# via `force_stance: false` on the Spell#cast calls, so behavior stays
+# consistent across all three actions instead of depending on whichever
+# stance behavior happens to be baked into each spell's own XML metadata.
+
+# --- knobs -------------------------------------------------------------------
+
+SHOUT_MANA_COST = (Spell[1008].mana_cost.to_i.positive? ? Spell[1008].mana_cost.to_i : 5) unless defined?(SHOUT_MANA_COST)
+SONG_MANA_COST  = (Spell[1001].mana_cost.to_i.positive? ? Spell[1001].mana_cost.to_i : 1) unless defined?(SONG_MANA_COST)
+
+# --- helpers -----------------------------------------------------------------
+
+# Dead/gone check off GameObj.npcs directly -- there's no bigshot-maintained
+# target list to lean on here, same reasoning as tackle-bot.lic.
+def target_dead?(foe)
+  return true if foe.nil?
+  return true if foe.status.to_s =~ /dead|gone/
+  !GameObj.npcs.any? { |t| t.id.to_i == foe.id.to_i && t.status.to_s !~ /dead|gone/ }
+end
+
+# Feint, gated on CMan's own live stamina-cost table (9) rather than a
+# hardcoded number here.
+def try_feint(foe)
+  return nil unless CMan.available?("feint")
+  fput "stance offensive" if stance != "offensive"
+  CMan.use("feint", foe)
+  waitrt?
+  fput "stance defensive" if stance != "defensive"
+  :feint
+end
+
+# Stunning Shout. force_stance: false keeps stance management entirely in our
+# own hands (see header) instead of whatever Spell#cast would otherwise do.
+def try_shout
+  return nil unless Spell[1008].known? && Spell[1008].affordable?
+  fput "stance offensive" if stance != "offensive"
+  Spell[1008].cast(nil, nil, nil, force_stance: false)
+  waitcastrt?
+  waitrt?
+  fput "stance defensive" if stance != "defensive"
+  :shout
+end
+
+# Holding Song -- only reached when neither Feint nor Stunning Shout is
+# affordable. Skipped if already active so this doesn't spam recasts of a
+# sustained song every pass.
+def try_holding_song
+  return nil if Spell[1001].active?
+  return nil unless Spell[1001].known? && Spell[1001].affordable?
+  fput "stance offensive" if stance != "offensive"
+  Spell[1001].cast(nil, nil, nil, force_stance: false)
+  waitcastrt?
+  waitrt?
+  fput "stance defensive" if stance != "defensive"
+  :song
+end
+
+# --- main ----------------------------------------------------------------
+
+$bardbot_last_action ||= :shout
+
+loop do
+  foe = GameObj.npcs.find { |n| n.status.to_s !~ /dead|gone/ }
+
+  if foe.nil?
+    sleep 1
+    next
+  end
+
+  fput "target ##{foe.id}" unless XMLData.current_target_id.to_i == foe.id.to_i
+  waitrt?
+  waitcastrt?
+
+  if target_dead?(foe)
+    sleep 0.2
+    next
+  end
+
+  # Alternate between feint/shout (whichever wasn't done last, falling back
+  # to the other if that one isn't affordable right now); only reach for
+  # Holding Song once neither of those two can be afforded at all.
+  result =
+    if $bardbot_last_action == :feint
+      try_shout || try_feint(foe) || try_holding_song
+    else
+      try_feint(foe) || try_shout || try_holding_song
+    end
+
+  $bardbot_last_action = result if result
+  sleep result ? 0.2 : 1
+end
