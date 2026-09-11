@@ -2,10 +2,15 @@
 
 Attempts to cast non-attack spells from your collection of scrolls,
 vellums, parchments, etc. Utilizes separate containers to manage vibrant scrolls.
-Checks your reserve slots first (invoked directly, no need to hold them), then
-will rummage in your scrollsack for matching spell numbers, upon finding a vibrant
-scroll it will place that scroll in your vibrantscrollsack unless usage of vibrant
-scrolls is toggled on.
+
+Reads every scroll ONCE up front -- your reserve slots, your scrollsack, and your
+vibrantscrollsack -- silently (no game spam), prints what it found that matches the
+spells you asked for, then invokes only those specific scrolls.
+
+Reserve scrolls are invoked directly by id (no need to hold them). Container scrolls
+are picked up, invoked, and put back. Vibrant scrolls are skipped unless the vibrant
+toggle is on, in which case their spell knowledge is absorbed and incanted up to the
+spell's maximum duration.
 
 Invoke/casts normal scrolls.
 Incants spells absorbed from vibrant scrolls.
@@ -21,9 +26,24 @@ Configurable durations for stackable or refreshable spells
     author: Nihiladrem (todd.estabrooks@gmail.com)
       game: gs
       tags: invoke, scroll, scrolls, hunting
-      version: 0.1.14
+      version: 0.2.0
 
     CHANGELOG:
+    0.2.0 - Reworked to scan once instead of probing per spell. Old flow looped over
+            every requested spell and, for each, invoke-tested both reserve scrolls
+            then rummaged both containers -- dozens of "That spell is not on the ..."
+            and failed-rummage lines. New flow reads every candidate scroll a single
+            time (same silent Lich::Util.issue_command read that scrollinv.lic uses),
+            builds a spell -> scroll map, then invokes only the specific scrolls
+            chosen. A scroll carrying several requested spells is picked up once and
+            invoked for each. findscroll/castscroll replaced by read_spell_pairs /
+            scroll_contents / invoke_and_cast.
+            Quiet by default now: this script's own command echoes
+            ([scrollbuff3]>invoke ...) are hidden for the whole run via
+            Script.current.silent, cutting the noise from the old per-spell probing
+            without hiding the game's own responses to each cast, so you can still
+            see what's being cast. ;scrollbuff3 verbose un-hides the echoes too and
+            adds a SCROLL SCAN table; ;scrollbuff3 quiet reverts.
     0.1.14 - 0.1.13's reserve check re-tested every reserve item against every spell
              number, even ones already matched to a different spell -- spammy with a
              couple of reserve items and a long spell list (e.g. one item matched to
@@ -87,11 +107,6 @@ Configurable durations for stackable or refreshable spells
 =end
 
 debug = false
-## spell_num (string) => reserve item id, once a reserve scroll's fixed spell
-## has been confirmed by invoking it. Reset each run since $ vars persist for
-## the life of the Lich process. Global (not local) so findscroll, a top-level
-## def, can see it without threading it through every call.
-$scrollbuff3_reserve_matches = {}
 
 def echofmt(*lines)
     maxlen = lines.map(&:length).max + 1
@@ -160,14 +175,19 @@ if !(CharSettings["scrollbuff-refreshto"].to_i > 0)
 	refreshto_duration = 10
 end
 
+## Verbosity. Quiet by default: only the final summary (and this script's own
+## command echoes hidden). `;scrollbuff3 verbose` adds a SCROLL SCAN table of
+## every scroll and which requested spell it matches, and un-hides the echoes;
+## `;scrollbuff3 quiet` reverts.
+verbose = (CharSettings["scrollbuff-verbose"] == "True")
+
 ##Check for script commands
 SpellNums = script.vars[1..-1]
 if SpellNums.nil? || SpellNums.count == 0 || SpellNums.first.start_with?("h")
     echofmt "Attempts to cast defensive or self-cast spells from your collection of scrolls, vellums, parchments, etc.",
-			"Checks your reserve slots first -- reserved scrolls are invoked directly without needing",
-			"to be held -- then will rummage in your scrollsack for matching spell numbers, upon finding",
-			"a vibrant scroll it will place that scroll in your vibrantscrollsack unless usage of vibrant",
-			"scrolls is toggled on.",
+			"Reads every scroll once -- reserve slots, scrollsack, and vibrantscrollsack -- works out",
+			"which scrolls carry the spells you asked for, then invokes only those. Reserve scrolls are",
+			"invoked in place; container scrolls are picked up, invoked, and put back.",
             "",
             "Before running, you must set your scrollsack and vibrantscrollsack with a command like:",
             "   ;vars set scrollsack=pouch",
@@ -184,10 +204,15 @@ if SpellNums.nil? || SpellNums.count == 0 || SpellNums.first.start_with?("h")
             "#{refreshto_duration} minutes left.  To change this setting enter:",
 			"   ;#{script.name} refreshto (minutes)",
             "",				
-			"Vibrant ink scrolls will be skipped by default and moved to your set vibrantscrollsack. If vibrant",	
-			"toggle is on, will still prefer scrolls in scrollsack before checking vibrantscrollsack.",
-			"To toggle use of vibrant ink scrolls enter: ",	
-			"   ;#{script.name} vibrant",			
+			"Vibrant ink scrolls are skipped unless the vibrant toggle is on. Non-vibrant scrolls are",
+			"preferred over vibrant ones, and reserve over containers, when more than one carries a spell.",
+			"To toggle use of vibrant ink scrolls enter: ",
+			"   ;#{script.name} vibrant",
+            "",
+			"By default the scan is silent and this script's own command echoes are hidden,",
+			"but you'll still see the game's response to each spell actually cast. For a full",
+			"SCROLL SCAN table of every scroll and which requested spell it matches:",
+			"   ;#{script.name} verbose      (and ;#{script.name} quiet to turn it back off)",
             "",
             "Usage: ;#{script.name} 101 107 509 ...",
             "List up to 30 spell numbers separated by a space.",
@@ -195,12 +220,14 @@ if SpellNums.nil? || SpellNums.count == 0 || SpellNums.first.start_with?("h")
 			"To list all relevant settings for this script:",
 			"Current settings:"
 			
-			if (CharSettings["scrollbuff-usevibranttoggle"] == "True");usevibrant="True";else;usevibrant="No";end			
+			if (CharSettings["scrollbuff-usevibranttoggle"] == "True");usevibrant="True";else;usevibrant="No";end
+			vmode = (CharSettings["scrollbuff-verbose"] == "True") ? "Verbose" : "Quiet"
 			echofmt "scrollsack: #{Vars["scrollsack"]}",
 			"Vibrantscrollsack: #{Vars["vibrantscrollsack"]}",	
 			"Use vibrant Scrolls: #{usevibrant}",	
 			"Stack spells to: #{stackto_duration} minutes",
-			"Refresh spells below: #{refreshto_duration} minutes"			
+			"Refresh spells below: #{refreshto_duration} minutes",
+			"Output: #{vmode}"
 
 
     exit
@@ -216,6 +243,14 @@ elsif SpellNums.first.start_with?("vibrant")
 		"knowledge, then incant stackable spells until they hit their maximum duration",
 		"(refreshable and one-shot spells are still just cast once)."
 	end
+	exit
+elsif SpellNums.first.start_with?("verbose")
+	CharSettings["scrollbuff-verbose"] = "True"
+	echofmt "scrollbuff3 is now VERBOSE: it prints a SCROLL SCAN table of every scroll and which requested spell it matches."
+	exit
+elsif SpellNums.first.start_with?("quiet")
+	CharSettings["scrollbuff-verbose"] = "False"
+	echofmt "scrollbuff3 is now QUIET: it scans silently and prints only the final summary."
 	exit
 elsif SpellNums.first.start_with?("stackto")
 		if debug == true; echo "Second value: #{SpellNums[1]}";end
@@ -239,13 +274,15 @@ elsif SpellNums.first.start_with?("refreshto")
 		exit		
 elsif SpellNums.first.start_with?("settings")
 	if (CharSettings["scrollbuff-usevibranttoggle"] == "True");usevibrant="True";else;usevibrant="No";end
+	vmode = (CharSettings["scrollbuff-verbose"] == "True") ? "Verbose" : "Quiet"
 
 	
 	echofmt "scrollsack: #{Vars["scrollsack"]}",
 			"Vibrantscrollsack: #{Vars["vibrantscrollsack"]}",	
 			"Use vibrant Scrolls: #{usevibrant}",	
 			"Stack spells to: #{stackto_duration} minutes",
-			"Refresh spells below: #{refreshto_duration} minutes"			
+			"Refresh spells below: #{refreshto_duration} minutes",
+			"Output: #{vmode}"
 
 	exit			
 end
@@ -307,245 +344,249 @@ if SpellNumsNeeded.count.zero?
     exit
 end
 
-## Make sure scroll sacks are open
+## ---------------------------------------------------------------------------
+## Scan phase -- read every candidate scroll ONCE, silently, and build a map of
+## spell number => the scrolls that carry it. No per-spell trial-and-error.
+## ---------------------------------------------------------------------------
+
+## Quiet mode (default): hide this script's own command echoes
+## ([scrollbuff3]>invoke ...) for the whole scan + cast. The game's own
+## responses to those commands (the actual "you feel more confident" /
+## "Cast Roundtime" messages) still show, so you can see what's being cast.
+## `;#{script.name} verbose` also un-hides the command echoes and adds a
+## SCROLL SCAN table.
+Script.current.silent = true unless verbose
+
+SCROLL_NOUN_RE = /\b(?:scroll|vellum|parchment|papyrus|palimpsest|paper)\b/i
+
+## Same read-parse approach as scrollinv.lic: issue "read" through
+## Lich::Util.issue_command so nothing hits the game window, then pull the
+## "(NNN) Spell Name" lines out of the response.
+READ_START_RE = /^(?:It takes you a moment to focus on|You continue to read|On the .* you see|You (?:don't|do not) see|There isn't any|nothing (?:scrawled|written|inscribed)|cannot be read|too dark to read|can't make out|You are unable to read)/i
+
+def read_spell_pairs(command)
+  waitrt?
+  lines = Lich::Util.issue_command(
+    command, READ_START_RE, /<prompt/,
+    include_end: false, timeout: 4, silent: true, usexml: true, quiet: true
+  )
+  waitrt?
+  pairs = []
+  lines.each do |line|
+    clean = line.gsub(/<\/?[^>]*>/, "")
+    pairs << [$1.to_i, $2.strip] if clean =~ /\((\d+)\)\s+(.*?)\s*$/
+  end
+  pairs
+rescue StandardError
+  []
+end
+
+## Returns [ [spell numbers], vibrant? ] for one candidate scroll. Reserved
+## scrolls are read by id first and by name as a fallback (some reserve items
+## don't resolve by "#id").
+def scroll_contents(cand)
+  pairs = read_spell_pairs("read ##{cand[:id]}")
+  if pairs.empty? && cand[:loc] == :reserve
+    noun = cand[:name].to_s.sub(/\A(?:a|an|some)\s+/i, "").strip
+    pairs = read_spell_pairs("read #{noun}") unless noun.empty?
+  end
+  [pairs.map(&:first).uniq, pairs.any? { |_n, nm| nm =~ /vibrant\s+ink/i }]
+end
+
+use_vibrant = (CharSettings["scrollbuff-usevibranttoggle"] == "True")
+
 fput "open ##{scrollsack.id}"
 fput "open ##{vibrantscrollsack.id}"
-
-def findscroll(spell_num, scrollsack, vibrantscrollsack)
-	## Reserved scrolls can be invoked directly without ever being in hand.
-	## Try those first before rummaging through the containers. Each reserve
-	## item's spell is fixed for the life of the run, so once we've matched
-	## one to a spell number, reuse that match instead of re-testing it
-	## against every other spell number too.
-	fput("reserve list") if GameObj.reserve.nil?
-	if (known_id = $scrollbuff3_reserve_matches[spell_num.to_s])
-		return ["reserve", known_id, nil]
-	end
-	already_matched = $scrollbuff3_reserve_matches.values
-	GameObj.reserve.to_a.find_all { |o| o.noun =~ /scroll|paper|papyrus|parchment|vellum|palimpsest/i }.reject { |o| already_matched.include?(o.id) }.each do |candidate|
-		result = dothis "invoke #{spell_num} from ##{candidate.id}", /As you begin your invocation the ink leaps from the page and seeps into your skin.|and gesture to invoke the|That spell is not on the|Invoke from what/
-		next if result =~ /That spell is not on the|Invoke from what/
-		$scrollbuff3_reserve_matches[spell_num.to_s] = candidate.id
-		return ["reserve", candidate.id, result]
-	end
-
-        result = dothis "rummage in ##{scrollsack.id} spell #{spell_num}", /You rummage through .+ (and remove .+ with .+ scrawled upon it|but can't seem to locate anything with that spell on it)/
-
-        if result =~ /but can't seem to locate anything with that spell on it/
-			if CharSettings["scrollbuff-usevibranttoggle"] == "True"
-				result = dothis "rummage in ##{vibrantscrollsack.id} spell #{spell_num}", /You rummage through .+ (and remove .+ with .+ scrawled upon it|but can't seem to locate anything with that spell on it)/
-				if result =~ /but can't seem to locate anything with that spell on it/
-					if debug == true; echo "Missing scroll for #{spell_num}";end
-					return ["none", nil, nil]
-				else
-					scrollid = checkright ? GameObj.right_hand.id : GameObj.left_hand.id
-					return ["vibrant", scrollid, nil]
-				end
-			end
-
-			if debug == true; echo "Missing scroll for #{spell_num}";end
-			return ["none", nil, nil]
-
-		else
-			## The first rummage already succeeded and put a scroll in hand.
-			scrolltype = "normal"
-			unless CharSettings["scrollbuff-usevibranttoggle"] == "True"
-				scrolltype = ""
-				until (scrolltype == "normal" || scrolltype == "none")
-					if checkright =~ /scroll|paper|papyrus|parchment|vellum|palimpsest/			
-						result = dothistimeout "read ##{GameObj.right_hand.id}", 0.5, /vibrant/
-						if result =~ /vibrant/
-							fput "put right in ##{vibrantscrollsack.id}"
-							scrolltype="vibrant"
-						else
-							scrolltype="normal"
-						end
-					elsif checkleft =~ /scroll|paper|papyrus|parchment|vellum|palimpsest/
-						result = dothistimeout "read ##{GameObj.left_hand.id}", 0.5, /vibrant/
-						if result =~ /vibrant/
-							fput "put left in ##{vibrantscrollsack.id}"
-							scrolltype="vibrant"						
-						else
-							scrolltype="normal"
-						end
-					else
-						if debug == true; echo "Error, no scroll found in hands when expected";end
-						exit
-					end
-					if !(scrolltype == "normal")
-						result = dothis "rummage in ##{scrollsack.id} spell #{spell_num}", /You rummage through .+ (and remove .+ with .+ scrawled upon it|but can't seem to locate anything with that spell on it)/
-						if result =~ /but can't seem to locate anything with that spell on it/
-							if debug == true; echo "missing scroll";end
-							scrolltype = "none"
-						end
-					end
-				end
-			end
-			scrollid = (scrolltype == "none") ? nil : (checkright ? GameObj.right_hand.id : GameObj.left_hand.id)
-			return [scrolltype, scrollid, nil]
-		end
+[scrollsackVar, vibrantscrollsackVar].compact.uniq.each do |noun|
+  Lich::Util.issue_command("look in my #{noun}", /(?:In|Inside) the|There (?:is|are)|That is (?:closed|empty)|don't see|could not find/i, /<prompt/, silent: true, quiet: true, timeout: 5) rescue nil
+end
+if GameObj.reserve.nil?
+  fput "reserve list"
+  30.times { break unless GameObj.reserve.nil?; sleep 0.1 }
 end
 
-def castscroll(spell_num, scrollid, scrollsack, vibrantscrollsack, stackto_duration, refreshto_duration, scrolltype, prefetched_result = nil)
-
-	if (Spell[spell_num].stackable?)
-		if debug == true; echo "#{spell_num} is stackable";end
-		## Vibrant scrolls grant temporary knowledge of the spell instead of consuming
-		## a scroll per cast, so stack all the way to the spell's real max duration
-		## rather than stopping at the (scroll-conserving) stackto_duration.
-		target_duration = (scrolltype == "vibrant") ? Spell[spell_num].max_duration.to_f : stackto_duration.to_f
-		if debug == true; echo (Spell[spell_num].timeleft >= target_duration);end
-		if debug == true; echo scrolltype;end
-	
-		until ((Spell[spell_num].timeleft >= target_duration)||(scrolltype == "none"))
-			if debug == true; echo "Current #{spell_num} duration: #{Spell[spell_num].timeleft}";end
-			if Spell[spell_num].timeleft >= target_duration; echo "Spell already above target duration"; break; end
-			waitcastrt?
-			waitrt?							
-			if prefetched_result
-				result = prefetched_result
-				prefetched_result = nil
-			else
-				result = dothis "invoke #{spell_num} from ##{scrollid}", /As you begin your invocation the ink leaps from the page and seeps into your skin.|and gesture to invoke the|That spell is not on the|Invoke from what/
-			end
-			if result =~ /and gesture to invoke the/
-				fput "cast"
-			elsif result =~ /As you begin your invocation the ink leaps from the page and seeps into your skin./
-				## Guard against the spell's true server-enforced cap being lower than
-				## target_duration (e.g. missing/incorrect max data): if a cast doesn't
-				## actually add duration, we've hit the real cap, so stop instead of
-				## incanting forever.
-				until (Spell[spell_num].timeleft >= target_duration)
-					previous_duration = Spell[spell_num].timeleft
-					if !(Spell[spell_num].affordable?); echo "waiting for mana...";end
-					wait_until { Spell[spell_num].affordable? }				
-					waitcastrt?
-					waitrt?					
-					fput "incant #{spell_num}" if Spell[spell_num].affordable?
-					waitcastrt?
-					waitrt?									
-					## The duration feed can lag a beat behind the cast confirmation, so
-					## give it a few seconds to catch up before concluding the spell is
-					## capped and it's time to stop incanting.
-					made_progress = false
-					6.times do
-						break if (made_progress = Spell[spell_num].timeleft > previous_duration + 0.5)
-						sleep 0.5
-					end
-					unless made_progress
-						if debug == true; echo "#{spell_num} duration did not increase (#{Spell[spell_num].timeleft} min), stopping at the real cap";end
-						break
-					end
-				end
-			elsif result =~ /That spell is not on the|Invoke from what/
-				if scrolltype == "reserve"
-					## Never picked up -- nothing to put away.
-				elsif scrolltype == "vibrant"
-					if GameObj.right_hand.id == scrollid
-						fput "put right in ##{vibrantscrollsack.id}"
-					elsif GameObj.left_hand.id == scrollid
-						fput "put left in ##{vibrantscrollsack.id}"
-					end
-				else
-					if GameObj.right_hand.id == scrollid
-						fput "put right in ##{scrollsack.id}"
-					elsif GameObj.left_hand.id == scrollid
-						fput "put left in ##{scrollsack.id}"
-					end
-				end
-				scrolltype, scrollid, prefetched_result = findscroll(spell_num, scrollsack, vibrantscrollsack)
-				target_duration = (scrolltype == "vibrant") ? Spell[spell_num].max_duration.to_f : stackto_duration.to_f
-			end
-			waitcastrt?
-			waitrt?					
-		end
-
-		
-	elsif (Spell[spell_num].refreshable?)
-		if debug == true; echo "#{spell_num} is refreshable";end
-		if debug == true; echo "Current #{spell_num} duration: #{Spell[spell_num].timeleft}";end
-			if Spell[spell_num].timeleft < refreshto_duration.to_f
-				waitcastrt?
-				waitrt?							
-				result = prefetched_result || dothis("invoke #{spell_num} from ##{scrollid}", /As you begin your invocation the ink leaps from the page and seeps into your skin.|and gesture to invoke the|That spell is not on the|Invoke from what/)
-				if result =~ /and gesture to invoke the/
-					fput "cast"
-				elsif result =~ /As you begin your invocation the ink leaps from the page and seeps into your skin./
-					if !(Spell[spell_num].affordable?); echo "waiting for mana...";end
-					wait_until { Spell[spell_num].affordable? }
-					waitcastrt?
-					waitrt?					
-					fput "incant #{spell_num}" if Spell[spell_num].affordable?
-					waitcastrt?
-					waitrt?											
-				end
-				waitcastrt?
-				waitrt?			else
-				if debug == true; echo "Spell already above refresh to duration";end
-			end
-		
-	else
-		if debug == true;echo "Scroll is not stackable or refreshable, casting once";end
-				waitcastrt?
-				waitrt?							
-				result = prefetched_result || dothis("invoke #{spell_num} from ##{scrollid}", /As you begin your invocation the ink leaps from the page and seeps into your skin.|and gesture to invoke the|That spell is not on the|Invoke from what/)
-				if result =~ /and gesture to invoke the/
-					fput "cast"
-				elsif result =~ /As you begin your invocation the ink leaps from the page and seeps into your skin./
-					if !(Spell[spell_num].affordable?); echo "waiting for mana...";end
-					wait_until { Spell[spell_num].affordable? }
-					waitcastrt?
-					waitrt?					
-					fput "incant #{spell_num}" if Spell[spell_num].affordable?
-					waitcastrt?
-					waitrt?											
-				end
-				waitcastrt?
-				waitrt?
-	end
-     
-	## The scroll may have already been put away (e.g. by the "That spell is
-	## not on the ..." retry above), or may have come from reserve and never
-	## been picked up at all -- only put it away here if it's still in a hand.
-	if [GameObj.right_hand.id, GameObj.left_hand.id].include?(scrollid)
-		if scrolltype == "vibrant"
-			fput "put ##{scrollid} in ##{vibrantscrollsack.id}"
-		else
-			fput "put ##{scrollid} in ##{scrollsack.id}"
-		end
-	end
+candidates = []
+GameObj.reserve.to_a.each do |o|
+  candidates << { id: o.id, name: o.name, loc: :reserve } if "#{o.noun} #{o.name}" =~ SCROLL_NOUN_RE
+end
+Array(GameObj.containers[scrollsack.id]).each do |o|
+  candidates << { id: o.id, name: o.name, loc: :scrollsack } if o.noun.to_s =~ SCROLL_NOUN_RE
+end
+Array(GameObj.containers[vibrantscrollsack.id]).each do |o|
+  candidates << { id: o.id, name: o.name, loc: :vibrantscrollsack } if o.noun.to_s =~ SCROLL_NOUN_RE
 end
 
-spells_cast = []
-spells_not_found = []
+if candidates.empty?
+  echofmt "No scrolls found in reserve, #{scrollsackVar}, or #{vibrantscrollsackVar}."
+  exit
+end
+
+echo "scrollbuff3: reading #{candidates.size} scroll(s)..." if verbose || candidates.size > 6
+
+sources     = Hash.new { |h, k| h[k] = [] }   # spell num (Integer) => [candidate, ...]
+needed_ints = SpellNumsNeeded.map(&:to_i)
+usable      = proc { |c| c[:loc] == :reserve || !c[:vibrant] || use_vibrant }
+
+candidates.each do |c|
+  nums, vibrant = scroll_contents(c)
+  c[:vibrant] = vibrant
+  c[:spells]  = nums
+  nums.each { |n| sources[n] << c }
+  break if needed_ints.all? { |n| sources[n].any?(&usable) }
+end
+
+## ---------------------------------------------------------------------------
+## Plan phase -- pick one scroll per needed spell and report what was found.
+## ---------------------------------------------------------------------------
+
+LOC_PRIORITY = { reserve: 0, scrollsack: 1, vibrantscrollsack: 2 }.freeze
+
+plan    = []   # [ [spell_num_string, candidate], ... ]
+missing = []
+report  = []
 
 SpellNumsNeeded.each do |spell_num|
+  opts = sources[spell_num.to_i].select(&usable)
+  if opts.empty?
+    missing << spell_num
+    note = sources[spell_num.to_i].any? ? "vibrant only (toggle off)" : "no scroll found"
+    report << "  #{spell_num} #{Spell[spell_num].name}: #{note}"
+    next
+  end
+  best = opts.min_by { |c| [LOC_PRIORITY[c[:loc]], c[:vibrant] ? 1 : 0] }
+  plan << [spell_num, best]
+  tags = [best[:loc].to_s]
+  tags << "vibrant" if best[:vibrant]
+  report << "  #{spell_num} #{Spell[spell_num].name}: #{best[:name]} (#{tags.join(', ')})"
+end
 
-    spell = Spell[spell_num]
+echofmt("SCROLL SCAN", "", *report) if verbose
 
-    if spell && !(spell.type =~ /attack/)
+if plan.empty?
+  nn = SpellNums - SpellNumsNeeded
+  lines = ["SCROLL BUFFS COMPLETE", "", "Cast: (none)"]
+  lines << "No scroll: #{missing.uniq.join(' ')}"                unless missing.empty?
+  lines << "Already up / not needed: #{nn.join(' ')}"           unless nn.empty?
+  echofmt(*lines)
+  exit
+end
 
-		scrolltype, scrollid, prefetched_result = findscroll(spell_num, scrollsack, vibrantscrollsack)
+## ---------------------------------------------------------------------------
+## Cast phase -- only touch the specific scrolls chosen above.
+## ---------------------------------------------------------------------------
 
-		if scrolltype == "none" || scrollid.nil?
-			echo "No scroll found for #{spell_num} #{spell.name}, skipping."
-			spells_not_found << spell_num
-		else
-			castscroll(spell_num, scrollid, scrollsack, vibrantscrollsack, stackto_duration, refreshto_duration, scrolltype, prefetched_result)
-			spells_cast << spell_num
-		end
+def hand_holding(id)
+  return :right if GameObj.right_hand.id == id
+  return :left  if GameObj.left_hand.id == id
+  nil
+end
 
+def invoke_and_cast(spell_num, id, vibrant, stackto_duration, refreshto_duration)
+  spell = Spell[spell_num]
+
+  if spell.stackable?
+    ## vibrant scrolls are free to re-incant, so stack them to the spell's real
+    ## cap; ordinary/reserve scrolls only stack to the configured stackto.
+    target = stackto_duration.to_f
+    target = [spell.max_duration.to_f, target].max if vibrant
+    return true if spell.timeleft >= target
+  elsif spell.refreshable?
+    target = nil
+    return true if spell.timeleft >= refreshto_duration.to_f
+  else
+    target = nil
+    return true if spell.active?
+  end
+
+  did = false
+  invoke_re = /ink leaps from the page and seeps into your skin|and gesture to invoke the|That spell is not on the|Invoke from what|You don't have|no more prepared|can't quite recall|unable to/i
+
+  loop do
+    break if did && target.nil?                 # non-stacking: one cast is enough
+    break if target && spell.timeleft >= target
+
+    waitcastrt?
+    waitrt?
+    prev = spell.timeleft
+    result = dothistimeout "invoke #{spell_num} from ##{id}", 8, invoke_re
+
+    if result =~ /and gesture to invoke the/
+      fput "cast"
+      did = true
+      waitcastrt?
+      waitrt?
+    elsif result =~ /ink leaps from the page and seeps into your skin/
+      ## Vibrant: temporary knowledge granted -- incant at least once, and up
+      ## to target if the spell stacks.
+      loop do
+        unless spell.affordable?
+          echo "scrollbuff3: waiting for mana to incant #{spell_num}..."
+          wait_until { spell.affordable? }
+        end
+        waitcastrt?
+        waitrt?
+        p2 = spell.timeleft
+        fput "incant #{spell_num}"
+        did = true
+        waitcastrt?
+        waitrt?
+        break if target.nil?
+        break if spell.timeleft >= target
+        ## The duration feed can lag the cast confirmation -- give it a few
+        ## seconds before concluding the spell is capped.
+        moved = false
+        6.times { break if (moved = spell.timeleft > p2 + 0.5); sleep 0.5 }
+        break unless moved
+      end
+      break
     else
-		echo "Not a viable spell type"
-	end
+      break   # "That spell is not on the ...", out of charges, timeout, etc.
+    end
 
+    next if target.nil?
+    moved = false
+    6.times { break if (moved = spell.timeleft > prev + 0.5); sleep 0.5 }
+    break unless moved
+  end
+
+  did
+end
+
+cast_ok   = []
+cast_fail = []
+
+plan.group_by { |(_sn, c)| c[:id] }.each do |id, entries|
+  c       = entries.first[1]
+  reserve = (c[:loc] == :reserve)
+
+  unless reserve
+    fput "get ##{id}"
+    unless hand_holding(id)
+      echo "scrollbuff3: couldn't retrieve #{c[:name]}; skipping #{entries.map { |e| e[0] }.join(' ')}."
+      entries.each { |sn, _| cast_fail << sn }
+      next
+    end
+  end
+
+  entries.each do |spell_num, _c|
+    ok = invoke_and_cast(spell_num, id, c[:vibrant], stackto_duration, refreshto_duration)
+    (ok ? cast_ok : cast_fail) << spell_num
+  end
+
+  unless reserve
+    dest = c[:vibrant] ? vibrantscrollsack.id : scrollsack.id
+    h = hand_holding(id)
+    fput "put #{h} in ##{dest}" if h
+  end
 end
 
 ##fput "close ##{scrollsack.id}"
 ##fput "close ##{vibrantscrollsack.id}"
 
-echofmt "SCROLL BUFFS COMPLETE",
-        "",
-        "Spells cast: #{spells_cast.join(" ")}",
-        "Spells not found: #{spells_not_found.join(" ")}",
-        "Spells not needed: #{(SpellNums - SpellNumsNeeded).join(" ")}"
+summary = ["SCROLL BUFFS COMPLETE", ""]
+summary << "Cast: #{cast_ok.uniq.join(' ')}"                        unless cast_ok.empty?
+summary << "Scroll found but not cast: #{cast_fail.uniq.join(' ')}" unless cast_fail.empty?
+summary << "No scroll: #{missing.uniq.join(' ')}"                   unless missing.empty?
+not_needed = SpellNums - SpellNumsNeeded
+summary << "Already up / not needed: #{not_needed.join(' ')}"       unless not_needed.empty?
+echofmt(*summary)
