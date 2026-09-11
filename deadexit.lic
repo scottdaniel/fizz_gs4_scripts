@@ -1,0 +1,85 @@
+=begin
+      author: Scott
+        name: deadexit
+        game: gemstone
+        tags: safety, bigshot
+    requires: Lich > 5.14.2
+     version: 0.1
+        note: Written with assistance from Claude (Anthropic).
+
+  Unattended-death safety net for bigshot hunts.
+
+  bigshot's dead_man_switch() always runs while ;bigshot is active, but unless
+  its profile has "Dead man's switch" (GSF only) or "Depart/rerun if dead"
+  turned on, its default behavior on death is just to kill the bigshot script
+  -- it leaves you connected, dead, sitting in the room. Fine if you're
+  watching, but bad if you're AFK: you decay, and anyone who wanders by can
+  raise/resurrect you while you're not there to say no to it.
+
+  This script watches for you dying while ;bigshot is (or was just) running
+  and quits the game outright, so an AFK session ends in a clean logout
+  instead of a decaying, rezzable corpse. It doesn't touch bigshot's own
+  Dead man's switch / Depart-rerun settings -- those still fire first; this
+  is a belt-and-suspenders exit for whatever bigshot leaves behind.
+
+  Gated by the UserVar afk_now, which defaults ON. When you're actually at
+  the keyboard doing interactive hunting and would rather handle your own
+  death yourself (get rezzed, keep playing), turn it off for the session:
+
+    ;vars set afk_now=false
+
+  and flip it back on before you walk away again:
+
+    ;vars set afk_now=true
+
+  Meant to be autostarted for every character:
+
+    ;autostart add --global deadexit
+
+  Usage:  ;deadexit
+  Stop:   ;kill deadexit
+=end
+
+module DeadExit
+  # === config =====================================================================
+  BIGSHOT_SCRIPT_NAME    = "bigshot"
+  CHECK_INTERVAL_SECONDS = 3
+  BIGSHOT_GRACE_SECONDS  = 20 # bridges bigshot self-killing on death just before we poll
+
+  # === helpers ====================================================================
+
+  # afk_now defaults ON (unset counts as on). A real boolean set via
+  # `;vars set afk_now=true/false` is honored directly; any other stored
+  # string only counts as OFF when it's explicitly one of false/off/no/0
+  # (case-insensitive) -- everything else, including unrecognized text, stays ON.
+  def self.afk_now?
+    value = UserVars.afk_now
+    return true if value.nil?
+    return value if value == true || value == false
+
+    value.to_s !~ /\A\s*(?:0|false|off|no)\s*\z/i
+  end
+
+  # === main =======================================================================
+  def self.run
+    echo "deadexit started! Watching for death while ;#{BIGSHOT_SCRIPT_NAME} is running (afk_now defaults ON)."
+    echo "Hunting interactively? ;vars set afk_now=false to stop the auto-quit."
+    echo "Stop with ;kill deadexit"
+
+    bigshot_last_seen = nil
+
+    loop do
+      bigshot_last_seen = Time.now if Script.running?(BIGSHOT_SCRIPT_NAME)
+      bigshot_recently_hunting = bigshot_last_seen && (Time.now - bigshot_last_seen) < BIGSHOT_GRACE_SECONDS
+
+      if dead? && bigshot_recently_hunting && afk_now?
+        echo "deadexit: you're dead and afk_now is on -- quitting so you don't decay or get rezzed unattended."
+        fput "quit"
+      end
+
+      sleep CHECK_INTERVAL_SECONDS
+    end
+  end
+end
+
+DeadExit.run
