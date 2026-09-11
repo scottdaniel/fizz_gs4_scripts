@@ -5,7 +5,7 @@
         game: gemstone
         tags: bounty, adventurer's guild, undead, voln
     requires: Lich > 5.4.0
-     version: 1.6
+     version: 1.7
 
   Want to keep earning favor with Voln while at the same time completing bounties?
 
@@ -77,7 +77,20 @@
   level), the script stops with a clear message instead of burning through
   the attempt cap uselessly.
 
+  Handles zero Bounty Boosts gracefully too (common on F2P accounts): it
+  still tries asking the taskmaster in case a free task is available, but
+  only a couple of times instead of the full attempt cap, and exits with a
+  clean "nothing to do right now" message - including the "eligible again
+  in about N minutes" cooldown from `bounty`, when the game reports one -
+  instead of treating it as a failure. Meant to play nicely with something
+  like a bigshot hunt/rest loop calling this in between sessions.
+
   changelog:
+    1.7
+      - handle zero Bounty Boosts gracefully: still try the taskmaster once
+        or twice in case a free task is available, then exit cleanly
+        (mentioning the "eligible again in N minutes" cooldown when known)
+        instead of failing or burning through the full attempt cap
     1.6
       - fix creature_undead? missing creatures whose full in-game name
         always carries a fixed descriptor (e.g. "voluptuous magna vereri")
@@ -192,6 +205,15 @@ module UndeadBounty
     wait_for_bounty { true }
   end
 
+  ELIGIBLE_IN_PATTERN = /eligible for new task assignment in about (\d+) minutes?/i.freeze
+
+  # pulls "...eligible for new task assignment in about 43 minutes" out of
+  # a bounty status description, e.g. for accounts with no Bounty Boosts
+  def self.minutes_until_eligible(description)
+    m = ELIGIBLE_IN_PATTERN.match(description.to_s)
+    m && m[1].to_i
+  end
+
   # sends a command once (no auto-resend) and watches incoming lines for up
   # to `timeout` seconds for any of the given patterns; returns the matching
   # pattern, or nil if none showed up in time
@@ -246,18 +268,24 @@ module UndeadBounty
     waitrt?
   end
 
+  # returns true if a Bounty Boost is active (already was, or "boost bounty"
+  # just activated one); false if there are none to redeem - in that case
+  # we still go ahead and ask the taskmaster, since F2P accounts sometimes
+  # have a free task available even with zero boosts (it's the "eligible
+  # for new task assignment in about N minutes" cooldown that gates that,
+  # not the boost itself).
   def self.boost_bounty
     if Effects::Buffs.active?('Bounty Boost')
       respond 'UndeadBounty: Bounty Boost already active, skipping "boost bounty".'
-      return
+      return true
     end
 
     result = dothistimeout('boost bounty', 5, /You do not have any Bounty Boosts to redeem\.|You have activated a Bounty Boost\./)
     waitrt?
 
     if result =~ /You do not have any Bounty Boosts to redeem/
-      respond "UndeadBounty: #{result}"
-      exit
+      respond "UndeadBounty: #{result} Trying the taskmaster anyway in case a free task is available."
+      return false
     end
 
     # the Buffs dialog data lags a bit behind the chat confirmation, so give
@@ -274,6 +302,8 @@ module UndeadBounty
       respond 'UndeadBounty: Bounty Boost does not appear to be active after "boost bounty", stopping.'
       exit
     end
+
+    true
   end
 
   ALREADY_ASSIGNED_PATTERN = /already been assigned a task/i.freeze
@@ -282,9 +312,12 @@ module UndeadBounty
 
   def self.ask_master_for_bounty(bounty_type, max_attempts: 10)
     go_to_advguild
-    boost_bounty
+    had_boost = boost_bounty
+    # without a boost, this is a real multi-minute game cooldown, not
+    # something a quick retry will fix - don't spam the taskmaster
+    attempts = had_boost ? max_attempts : 2
 
-    max_attempts.times do
+    attempts.times do
       matched = fput_and_check(
         "ask #{BOUNTY_MASTER_NAME} for bounty #{bounty_type}",
         [ALREADY_ASSIGNED_PATTERN, TASKMASTER_BUSY_PATTERN, NO_SUITABLE_TASK_PATTERN]
@@ -310,7 +343,13 @@ module UndeadBounty
       return task if task
     end
 
-    respond 'UndeadBounty: never got a new assignment from the bounty master, stopping.'
+    if had_boost
+      respond 'UndeadBounty: never got a new assignment from the bounty master, stopping.'
+    else
+      wait_note = @eligible_in_minutes ? " (eligible again in about #{@eligible_in_minutes} minutes)" : ''
+      respond "UndeadBounty: no Bounty Boost available and no free task assignment right now#{wait_note}."
+      respond "UndeadBounty: nothing to do - stopping so the hunt/rest cycle can just try again later."
+    end
     exit
   end
 
@@ -400,6 +439,13 @@ module UndeadBounty
       turn_in_bounty(task)
       return
     end
+
+    # :none can still carry a "You will be eligible for new task assignment
+    # in about N minutes" cooldown notice - stash it so a later "couldn't
+    # get a task" exit message can mention it instead of just failing blind.
+    # NOTE: Task#description is never actually populated by the parser, so
+    # we have to go back to the raw bounty stream text via checkbounty.
+    @eligible_in_minutes = minutes_until_eligible(checkbounty) if task.type == :none
 
     return unless task.creature
 
@@ -579,6 +625,7 @@ module UndeadBounty
     # module-level state survives across separate script runs in the same
     # Lich session, so reset it at the start of each run
     @bounty_history = []
+    @eligible_in_minutes = nil
     start_room = Room.current.id
 
     return if handle_existing_bounty(creature_filter) == :already_matching
@@ -664,6 +711,9 @@ module UndeadBounty
     respond ''
     respond 'If the taskmaster has no suitable tasks left for your level (hunting ground got too'
     respond 'easy), the script stops with a clear message instead of retrying uselessly.'
+    respond ''
+    respond 'With zero Bounty Boosts (common on F2P), it still tries the taskmaster a couple of'
+    respond 'times in case a free task is available, then exits cleanly - no boost needed to run this.'
   end
 end
 
