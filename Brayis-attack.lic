@@ -1,6 +1,6 @@
 # Brayis-attack.lic
-# Bigshot custom attack routine for Brayis (Warrior). Drop it into a bigshot
-# hunting-commands list as a single command:
+# Bigshot custom attack routine for Brayis (Warrior, Claidhmore). Drop it into
+# a bigshot hunting-commands list as a single command:
 #
 #   script Brayis-attack
 #
@@ -17,28 +17,40 @@
 #     see ALREADY_DOWN_MSG below -- so this always attempts the tackle rather
 #     than trusting a remembered flag. Once the target actually goes down
 #     (this attempt or an earlier one), follows up immediately with a plain
-#     attack instead of waiting for the next bigshot pass. Back to stance
-#     defensive either way.
+#     attack instead of waiting for the next bigshot pass.
 #
-#   otherwise (stamina too low to tackle): stance defensive and wait for
-#     stamina to regenerate.
+#   otherwise (stamina too low to tackle): just a plain attack with the
+#     Claidhmore instead of sitting idle waiting for stamina to regenerate.
 #
-# BUG FIXED 2026-09-11: the original version tried to remember "target is
-# down" in a global, set from the endroll of the tackle's own combat roll.
-# That parsing used the ordinary-attack roll format ("... + d100 roll: +N =
-# +M"), but Tackle (a CMAN) actually prints "SMR SvD: ... + o100 roll: +N ==
-# +M" -- different letter (o, not d) and a double "==". The regex never
-# matched, the flag never got set, and the script kept re-issuing "cman
-# tackle" against a target that was already down, which GS4 just refuses:
+# Every branch ends back in stance defensive.
+#
+# BUG FIXED 2026-09-11 (spam): the original low-stamina branch just held
+# stance defensive and returned -- a no-op once already defensive, so nothing
+# was ever sent to the game. bigshot's cmd_run_script -> run_script starts
+# this script and spins in `wait_until { !Script.running?(...) }` with no
+# pacing of its own, so an instant, silent exit made it restart this script
+# again immediately -- hundreds of "Lich: custom/Brayis-attack active/has
+# exited" pairs a second with no game text in between, confirmed live in
+# "Brayis - Prime/Brayis-Prime 09.11.2026 - 1.txt". Fixed by always doing a
+# real, RT-incurring action (a plain attack) instead of idling: that RT is
+# what naturally paces bigshot's next call, same as every other branch here.
+#
+# BUG FIXED 2026-09-11 (tackle detection): the original version tried to
+# remember "target is down" in a global, set from the endroll of the tackle's
+# own combat roll. That parsing used the ordinary-attack roll format ("... +
+# d100 roll: +N = +M"), but Tackle (a CMAN) actually prints "SMR SvD: ... +
+# o100 roll: +N == +M" -- different letter (o, not d) and a double "==". The
+# regex never matched, the flag never got set, and the script kept re-issuing
+# "cman tackle" against a target that was already down, which GS4 just
+# refuses:
 #   "A greater ghoul is lying down -- attempting to tackle it would be a
 #   rather awkward proposition."
 # -- burning the whole 5-second read window on that refusal every single pass
-# and never reaching the finishing attack. Confirmed live in
-# "Brayis - Prime/Brayis-Prime 09.11.2026 - 1.txt". Fixed by keying off that
-# exact refusal text (and the knockdown success text) instead of re-deriving
-# "is it down" from the roll numbers -- it's what GS4 itself just told us,
-# free of any roll-format assumptions, and it self-corrects every pass instead
-# of trusting a flag that goes stale the moment the target stands back up
+# and never reaching the finishing attack. Fixed by keying off that exact
+# refusal text (and the knockdown success text) instead of re-deriving "is it
+# down" from the roll numbers -- it's what GS4 itself just told us, free of
+# any roll-format assumptions, and it self-corrects every pass instead of
+# trusting a flag that goes stale the moment the target stands back up
 # ("A greater ghoul slowly stands back up.", also seen in that log).
 
 # --- knobs -------------------------------------------------------------------
@@ -90,29 +102,35 @@ def action_and_collect(cmd)
   text_lines.join(' ')
 end
 
-# Plain attack against a downed target. No-ops if it's already dead (tackle
-# itself throws a real hit alongside the knockdown attempt and can finish a
+# Plain attack with the Claidhmore, offensive -> attack -> defensive. Safe to
+# call regardless of prone state -- "attack" always works, tackle is just the
+# better option when stamina allows it. No-ops if the target is already dead
+# (tackle throws a real hit alongside the knockdown attempt and can finish a
 # weak target outright).
 def finish_attack(foe)
   return if target_dead?(foe)
+  fput "stance offensive" if stance != "offensive"
   fput "attack"
   waitrt?
+  fput "stance defensive" if stance != "defensive"
 end
 
-# One tackle attempt, then capitalizes on it immediately if the target is (or
-# just went) down instead of waiting for the next bigshot pass.
+# One tackle attempt, then capitalizes on it immediately (finish_attack) if
+# the target is (or just went) down instead of waiting for the next bigshot
+# pass. Falls back to plain stance defensive if the roll just misses.
 def tackle_then_maybe_finish(foe)
   fput "stance offensive" if stance != "offensive"
   text = action_and_collect("cman tackle")
 
   if text =~ ALREADY_DOWN_MSG
     finish_attack(foe)
+  elsif text =~ KNOCKED_DOWN_MSG
+    waitrt?
+    finish_attack(foe)
   else
     waitrt?
-    finish_attack(foe) if text =~ KNOCKED_DOWN_MSG
+    fput "stance defensive" if stance != "defensive"
   end
-
-  fput "stance defensive"
 end
 
 # --- main ----------------------------------------------------------------
@@ -132,5 +150,5 @@ exit if target_dead?(foe)
 if checkstamina >= TACKLE_STAMINA_COST
   tackle_then_maybe_finish(foe)
 else
-  fput "stance defensive" if stance != "defensive"
+  finish_attack(foe)
 end
