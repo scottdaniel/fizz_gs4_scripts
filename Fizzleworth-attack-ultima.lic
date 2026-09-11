@@ -23,18 +23,6 @@
 #     pestilent vision           spellcasting ~15s. All three cast, so silencing
 #                                them is worth more than a web. 3 mana, once per
 #                                target ($ult_silenced_id).
-#   * pestilent vision         -> ALSO Symbol of Disruption (Voln, favor not
-#     (additionally)             mana) BEFORE the 703. It's a self-AURA, not a
-#                                per-target strike: one cast ("A churning
-#                                spectral aura surrounds you.") and for
-#                                rank x 10s every noncorporeal undead you hit
-#                                gets an AS/DS/CS/TD/UDF/CMAN penalty. So it's
-#                                cast once when a vision is in the room and the
-#                                aura isn't already up ($ult_disruption_until
-#                                timestamp), not once per creature. gswiki:
-#                                Seething_pestilent_vision explicitly
-#                                recommends it. Makes the 703 ward + Maelstrom
-#                                land better on visions.
 #   * anything unrecognised    -> Web (118), same as -base.
 #
 # ONE-SHOT ANIMATE BUDDY: the first Ivasian inciter of a hunt, if we don't
@@ -50,19 +38,14 @@
 # Fizzleworth-anim-cleanup.lic (weapon back to verlok -> "tell anim die" ->
 # ;eloot), same as the -cat variant.
 #
-# SYMBOL OF RETRIBUTION: also a self-aura (Voln, favor). "You feel an aura of
-# righteous wrath surround you." -- reactively flares divine damage back at
-# any UNDEAD that strikes you (visions are noncorporeal undead; the inciters'
-# kicks / maneuvers count as strikes). rank x 10s, stackable. When on, kept up
-# every pass there's a live target, tracked by $ult_retribution_until, same
-# lapse-timestamp scheme as Disruption.
-#
-# OFF BY DEFAULT. gs4-wings-compare measured it at ~7% of damage output for
-# ~300-600 favor per recast, and with every other symbol running Fizzleworth
-# was net -450 Voln favor/hunt. Favor only refills by releasing undead, so
-# that's a slow bleed. Turn it back on with:
-#   ;vars set ult_retribution=on      (on/true/yes/1 -> on; anything else off)
-# Needs Voln step 15.
+# NO VOLN SYMBOLS. Symbol of Retribution and Symbol of Disruption were both
+# tried here (2026-09-08 through 09-10) and ripped back out: gs4-wings-compare
+# measured Retribution at ~7% of damage for ~300-600 favor/recast, and a
+# follow-up run with Disruption alone showed no measurable benefit either --
+# neither earned back what it spent, and with everything on Fizzleworth was
+# net -450 Voln favor/hunt (favor only refills by releasing undead, so that's
+# a real bleed, not noise). If you want to revisit either, the aura-casting
+# machinery (cast_voln_aura et al.) is in git history as of this commit.
 #
 # --- offense finish (identical to -base) --------------------------------
 #
@@ -116,8 +99,7 @@ SAC_DONE = /forming shadow essence|thrown back in a small blast|unable to comple
 # buddy makes it hungrier still, so recovery is inline here.
 SACRIFICE_AT = 45 unless defined?(SACRIFICE_AT)
 
-# Creature buckets. vereri -> web; the three casters (inciter/incubus/vision)
-# -> 703; vision additionally puts up the Disruption aura first.
+# Creature buckets. vereri -> web; the three casters (inciter/incubus/vision) -> 703.
 VERERI_RE  = /magna vereri/i    unless defined?(VERERI_RE)
 INCITER_RE = /Ivasian inciter/i unless defined?(INCITER_RE)
 INCUBUS_RE = /incubus/i         unless defined?(INCUBUS_RE)
@@ -126,22 +108,7 @@ VISION_RE  = /pestilent vision/i unless defined?(VISION_RE)
 REANIM_SCRIPT = "reanim" unless defined?(REANIM_SCRIPT)
 ANIMATE_SPELL = 730      unless defined?(ANIMATE_SPELL)
 
-# Voln self-auras (Disruption, Retribution) last Voln rank x 10s; re-arm this
-# many seconds early. If a cast can't happen (no favor / rank too low / not a
-# member) back off AURA_RETRY seconds instead of hammering it every pass.
-AURA_MARGIN = 5  unless defined?(AURA_MARGIN)
-AURA_RETRY  = 45 unless defined?(AURA_RETRY)
-
-# Symbol of Retribution -- reactive divine flare vs undead that strike you.
-# UserVar-backed so it can be flipped without a code edit; OFF unless
-# ult_retribution is set to one of on/true/yes/1. Favor is ~3x Symbol of
-# Protection per recast and it's only ~7% of damage (see gs4-wings-compare),
-# so it stays off to keep Voln favor net-positive.
-RETRIBUTION = (UserVars.ult_retribution.to_s =~ /\A\s*(?:1|true|on|yes)\s*\z/i) ? true : false unless defined?(RETRIBUTION)
-
 WINGGUARD_SCRIPT_NAME = "Fizzleworth-wingguard" unless defined?(WINGGUARD_SCRIPT_NAME)
-
-VOLN = (defined?(Lich::Gemstone::Societies::OrderOfVoln) ? Lich::Gemstone::Societies::OrderOfVoln : nil) unless defined?(VOLN)
 
 # --- patterns ------------------------------------------------------------
 
@@ -225,10 +192,6 @@ def inciter?(foe)
   foe && foe.name.to_s =~ INCITER_RE
 end
 
-def vision?(foe)
-  foe && foe.name.to_s =~ VISION_RE
-end
-
 # inciter / incubus / vision -- the three that cast and so get 703
 def caster?(foe)
   foe && (foe.name.to_s =~ INCITER_RE || foe.name.to_s =~ INCUBUS_RE || foe.name.to_s =~ VISION_RE)
@@ -280,60 +243,6 @@ def land_corrupt(foe)
   $ult_silenced_id = foe.id.to_i
   waitcastrt?
   waitrt?
-end
-
-# --- Voln self-auras (Disruption, Retribution) --------------------------
-#
-# Both are rank x 10s self-buffs, not per-target strikes: cast once, and while
-# the aura holds it works on every valid creature. Tracked by a hunt-wide
-# expiry timestamp ($ult_*_until), NOT reset on target change. Favor, not mana.
-# No-op / back off AURA_RETRY seconds if not a Voln member, rank too low, or
-# out of favor (VOLN.available? covers all three).
-
-def voln_rank
-  (VOLN.rank rescue Society.rank rescue 0).to_i
-end
-
-def aura_up?(until_ts)
-  until_ts.is_a?(Numeric) && Time.now.to_f < until_ts
-end
-
-# Cast `symbol of <short>`, confirm on `success_re`, and return the new expiry
-# timestamp (rank x 10s out, less AURA_MARGIN) -- or a short back-off stamp if
-# it couldn't be cast / confirmed. Never returns nil.
-def cast_voln_aura(short, success_re)
-  backoff = Time.now.to_f + AURA_RETRY
-  return backoff if VOLN.nil?
-  begin
-    return backoff unless VOLN.available?(short)
-  rescue StandardError
-    return backoff
-  end
-  waitcastrt?
-  waitrt?
-  text = dothistimeout("symbol of #{short}", 4,
-    Regexp.union(success_re,
-      /already (?:surround|aura)|do not have (?:enough|sufficient) favor|don't have (?:enough|sufficient) favor|must wait/i)).to_s
-  waitrt?
-  if text =~ success_re || text =~ /already (?:surround|aura)/i
-    r = voln_rank
-    Time.now.to_f + (r.positive? ? r * 10 : 60) - AURA_MARGIN
-  else
-    backoff
-  end
-end
-
-# gswiki Symbol_of_Disruption: "A churning spectral aura surrounds you."
-def raise_disruption_aura
-  return if aura_up?($ult_disruption_until)
-  $ult_disruption_until = cast_voln_aura("disruption", /churning spectral aura surrounds you/i)
-end
-
-# gswiki Symbol_of_Retribution: "You feel an aura of righteous wrath surround you."
-def raise_retribution_aura
-  return unless RETRIBUTION
-  return if aura_up?($ult_retribution_until)
-  $ult_retribution_until = cast_voln_aura("retribution", /aura of righteous wrath surround you/i)
 end
 
 # prep 710 + cast at foe. @return true only if prep confirmed AND cast went out.
@@ -409,14 +318,12 @@ end
 
 Script.kill(WINGGUARD_SCRIPT_NAME) if Script.running?(WINGGUARD_SCRIPT_NAME)
 
-$ult_target            = nil   unless defined?($ult_target)
-$ult_webbed_id         = nil   unless defined?($ult_webbed_id)
-$ult_silenced_id       = nil   unless defined?($ult_silenced_id)
-$ult_tethered_id       = nil   unless defined?($ult_tethered_id)
-$ult_disruption_until  = nil   unless defined?($ult_disruption_until)   # aura expiry, hunt-wide
-$ult_retribution_until = nil   unless defined?($ult_retribution_until)  # aura expiry, hunt-wide
-$ult_reanim_done       = false unless defined?($ult_reanim_done)
-$ult_essence_run       = false unless defined?($ult_essence_run)   # one fizzsac grind per hunt
+$ult_target      = nil   unless defined?($ult_target)
+$ult_webbed_id   = nil   unless defined?($ult_webbed_id)
+$ult_silenced_id = nil   unless defined?($ult_silenced_id)
+$ult_tethered_id = nil   unless defined?($ult_tethered_id)
+$ult_reanim_done = false unless defined?($ult_reanim_done)
+$ult_essence_run = false unless defined?($ult_essence_run)   # one fizzsac grind per hunt
 
 foe = GameObj.targets.find { |t| t.id.to_i == XMLData.current_target_id.to_i } if XMLData.current_target_id
 foe ||= GameObj.targets.find { |t| t.status.to_s !~ /dead|gone/ && t.name !~ /animated/ }
@@ -428,7 +335,6 @@ if $ult_target != foe.id.to_i
   $ult_webbed_id   = nil
   $ult_silenced_id = nil
   $ult_tethered_id = nil
-  # $ult_disruption_until is deliberately NOT reset -- the aura spans targets
 end
 
 fput "target ##{foe.id}" unless XMLData.current_target_id.to_i == foe.id.to_i
@@ -437,10 +343,6 @@ waitcastrt?
 exit if target_dead?(foe)
 
 go_defensive
-
-# Protective Voln aura up first -- favor not mana, so do it even when OOM
-# (that's exactly when the reactive flare matters most).
-raise_retribution_aura
 
 # top mana off before committing to a pass (703 + 710 + 706 + the reanim
 # path add up fast, and sac4mana never gets a window here)
@@ -470,10 +372,6 @@ if !$ult_essence_run && have_animate? &&
   Script.run("fizzsac")
   exit
 end
-
-# Visions: make sure the Disruption aura is up before the ward (it penalizes
-# every noncorporeal undead we hit while it lasts).
-raise_disruption_aura if vision?(foe)
 
 # Creature-specific disable.
 if vereri?(foe)
