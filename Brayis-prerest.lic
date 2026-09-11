@@ -1,0 +1,14 @@
+#Brayis-prerest.lic
+#Warrior version of Salvi-prerest.lic (Brayis) -- no wands, so this skips the
+#fresh-wand sweep those casters need; the rest of the resting chores are
+#profession-agnostic.
+
+module BrayisPrerest
+
+Script.run("eherbs")
+Script.run("eloot", "sell")
+Script.run("undead_bounty", "kill greater ghoul")
+Script.run("buyitems")
+Script.run("timequit")
+
+end #End of module

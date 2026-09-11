@@ -1,0 +1,28 @@
+#Brayis-prep.lic
+#Warrior version of Fizzleworth-prep.lic (Brayis) -- no spellcasting, no
+#instrument, no wands, so gearing up for combat is clearing hands, rubbing the
+#couple of items he can use without a spellcasting skill, and readying the
+#weapon.
+
+module BrayisPrep
+
+# clear hands -- "store weapon" routes the weapon to the readied sheath per
+# the in-game STORE config (STORE SET WEAPON SHEATH); "stow all" mops up
+# anything left in the off-hand.
+fput "store weapon"
+fput "stow all"
+
+# rub stuff, but only if the spell isn't already active -- and only pause
+# after ones that actually ran, instead of always eating 3s per item
+unless Spell[1712].active?
+  Script.run("qverb", "rub small statue")
+  pause 3
+end
+unless Spell[509].active?
+  Script.run("qverb", "rub white crystal")
+  pause 3
+end
+
+fput "ready weapon"
+
+end #End of module

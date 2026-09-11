@@ -1,0 +1,126 @@
+# Brayis-attack.lic
+# Bigshot custom attack routine for Brayis (Warrior). Drop it into a bigshot
+# hunting-commands list as a single command:
+#
+#   script Brayis-attack
+#
+# bigshot pauses itself, runs this once against the target it already has
+# locked, then resumes to loot / wander / retarget -- so this does exactly ONE
+# attack decision per call and returns; bigshot re-invokes it every pass while
+# the target is still up. Death is read off GameObj status (what bigshot itself
+# uses), not a per-creature kill-message regex.
+#
+# Decision each pass:
+#
+#   target not yet knocked down, stamina >= TACKLE_STAMINA_COST:
+#     stance offensive, cman tackle, back to stance defensive. The tackle's
+#     own combat roll (the "... + d100 roll: +N = +M" line, the same format
+#     every GS4 combat/spell roll uses) is checked against
+#     TACKLE_ENDROLL_FLOOR -- once one lands at or above it the target is
+#     down, and this script switches to plain attacks against it for the
+#     rest of the fight.
+#
+#   target already knocked down:
+#     stance offensive, attack, back to stance defensive.
+#
+#   otherwise (stamina too low to tackle, target still standing):
+#     stance defensive and wait for stamina to regenerate.
+#
+# Whether the current target has been knocked down lives in a global keyed off
+# its id ($brayis_downed_target_id) so it survives this script being
+# re-invoked fresh each pass; it's cleared the moment the id no longer matches
+# the live target, i.e. at the start of the next fight.
+
+# --- knobs -------------------------------------------------------------------
+
+TACKLE_STAMINA_COST  = 7   unless defined?(TACKLE_STAMINA_COST)
+TACKLE_ENDROLL_FLOOR = 101 unless defined?(TACKLE_ENDROLL_FLOOR)
+
+# --- helpers -----------------------------------------------------------------
+
+# Monster-agnostic death check: bigshot itself never text-matches kill messages
+# (they vary per creature) -- it reads GameObj status, which Lich core keeps
+# current from the room/combat XML. A dead creature reads "dead" while the
+# corpse lingers, then "gone" once it decays or is looted.
+def target_dead?(foe)
+  return true if foe.nil?
+  return true if foe.status.to_s =~ /dead|gone/
+  !GameObj.targets.any? { |t| t.id.to_i == foe.id.to_i && t.status.to_s !~ /dead|gone/ }
+end
+
+# Sends cmd and collects every line through the roundtime message (a single
+# dothistimeout match only sees the first matching line, not the whole result
+# block) -- same reasoning as the cast_and_collect helper in the Salvi/Picko
+# attack scripts, just for a physical action instead of a spell.
+def action_and_collect(cmd)
+  text_lines = []
+  put cmd
+  end_time = Time.now.to_f + 5
+  loop do
+    line = get?
+    if line.nil?
+      sleep 0.1
+    else
+      text_lines << line
+      break if line =~ /Roundtime: \d+ sec\.?/i
+    end
+    break if Time.now.to_f >= end_time
+  end
+  text_lines.join(' ')
+end
+
+# The endroll off a combat roll line, e.g. "... + d100 roll: +30 - 25 = +105"
+# -- the same format every GS4 combat/spell roll uses, already relied on for
+# endroll capture in Picko-attack.lic / Salvi-duskattack.lic.
+def extract_endroll(text)
+  text =~ /d100 roll:.*?=\s*([+-]?\d+)/ ? Regexp.last_match(1).to_i : nil
+end
+
+def downed?(foe)
+  $brayis_downed_target_id == foe.id.to_i
+end
+
+# One tackle attempt. Only lands stance back on defensive -- the caller is
+# responsible for checking stamina before calling this, same as every other
+# gated attack step in the Salvi/Picko routines.
+def tackle(foe)
+  fput "stance offensive" if stance != "offensive"
+  text = action_and_collect("cman tackle")
+  waitrt?
+  endroll = extract_endroll(text)
+  $brayis_downed_target_id = foe.id.to_i if endroll && endroll >= TACKLE_ENDROLL_FLOOR
+  fput "stance defensive"
+end
+
+# One plain attack against an already-downed target.
+def finish(foe)
+  fput "stance offensive" if stance != "offensive"
+  fput "attack"
+  waitrt?
+  fput "stance defensive"
+end
+
+# --- main ----------------------------------------------------------------
+
+foe = GameObj.targets.find { |t| t.id.to_i == XMLData.current_target_id.to_i } if XMLData.current_target_id
+foe ||= GameObj.targets.find { |t| t.status.to_s !~ /dead|gone/ }
+
+# nothing (live) to hit -- hand control straight back to bigshot, which loots
+exit if target_dead?(foe)
+
+fput "target ##{foe.id}" unless XMLData.current_target_id.to_i == foe.id.to_i
+
+waitrt?
+
+exit if target_dead?(foe)
+
+# New target -- a downed flag from a previous fight doesn't carry over.
+$brayis_downed_target_id = nil if $brayis_downed_target_id && $brayis_downed_target_id != foe.id.to_i
+
+if downed?(foe)
+  finish(foe)
+elsif checkstamina >= TACKLE_STAMINA_COST
+  tackle(foe)
+else
+  fput "stance defensive" if stance != "defensive"
+end
