@@ -23,18 +23,23 @@
 #      to manage RENEW -- deliberately not attempting the upkeep mechanic,
 #      "dumb" per how tackle-bot.lic works.
 #
-# MANA_RESERVE (7) is kept in the bank at all times, on top of whatever a cast
-# costs -- Holding Song's own upkeep needs manual RENEW (1 mana, +1 per extra
-# target) from the user, and since this script doesn't drive that itself (see
-# above), it must never spend the mana that renewal will need. Both
-# Stunning Shout and Holding Song are gated on `checkmana - cost > MANA_RESERVE`
-# instead of plain `Spell#affordable?`, which only checks `checkmana >= cost`
-# and knows nothing about this reserve.
+# MANA_RESERVE (8) is kept in the bank at all times, on top of whatever a cast
+# costs -- Holding Song's own upkeep needs manual RENEW from the user (8 mana
+# is this character's actual current renewal cost, not the wiki's generic
+# base figure), and since this script doesn't drive that itself (see above),
+# it must never spend the mana that renewal will need. Both Stunning Shout and
+# Holding Song are gated on `checkmana - cost > MANA_RESERVE` instead of plain
+# `Spell#affordable?`, which only checks `checkmana >= cost` and knows nothing
+# about this reserve.
 #
 # Auto-pauses (skips acting, keeps watching) while standing in the same town
-# as this character's own bigshot resting_room_id (room 228, Wehnimer's
-# Landing Town Square Central, per data/GSIV/Fizzlestiks/bigshot_profiles/*.yaml)
-# -- see in_town? below. Resumes on its own the moment you leave town.
+# as this character's own bigshot resting_room_id -- see in_town? below.
+# Resumes on its own the moment you leave town. That id (and therefore the
+# actual town) is read dynamically from UserVars.op, not hardcoded here, since
+# it already changed once this session (was room 228 / Wehnimer's Landing,
+# now 1438 / the free port of Solhaven, per
+# data/GSIV/Fizzlestiks/bigshot_profiles/default.yaml) -- don't assume either
+# value is current without checking that file.
 #
 # Unlike Brayis-attack.lic / tackle-bot.lic, this uses Lich's own CMan/Spell
 # APIs (CMan.available?/.use, Spell#known?/#affordable?/#cast) instead of
@@ -55,8 +60,9 @@ SHOUT_MANA_COST = (Spell[1008].mana_cost.to_i.positive? ? Spell[1008].mana_cost.
 SONG_MANA_COST  = (Spell[1001].mana_cost.to_i.positive? ? Spell[1001].mana_cost.to_i : 1) unless defined?(SONG_MANA_COST)
 
 # Never spend mana past this floor -- kept in reserve for Holding Song's own
-# manual RENEW upkeep (see header).
-MANA_RESERVE = 7 unless defined?(MANA_RESERVE)
+# manual RENEW upkeep (see header). 8 is this character's actual current
+# renewal cost, not a generic default.
+MANA_RESERVE = 8 unless defined?(MANA_RESERVE)
 
 # --- helpers -----------------------------------------------------------------
 
