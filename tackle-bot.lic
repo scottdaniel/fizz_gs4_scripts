@@ -111,20 +111,24 @@ def target_dead?(foe)
   !GameObj.npcs.any? { |t| t.id.to_i == foe.id.to_i && t.status.to_s !~ /dead|gone/ }
 end
 
-# Sends cmd and collects every line, giving the read a short quiet period
-# after the roundtime line shows up rather than stopping the instant it does
-# -- Brayis-attack.lic hit a real bug from breaking immediately on that line
-# (it can land in a script's downstream queue before trailing descriptive
-# text does, even though that text prints first in the visible client
-# window), copied the fix here too to keep both files in sync even though
-# this script doesn't currently inspect the returned text for anything.
-# ALREADY_DOWN_MSG still breaks immediately since that refusal is confirmed
-# to never have anything trailing it.
+# Sends cmd and just reads for a flat READ_WINDOW instead of trying to guess
+# when the response block is "done" from its text. Brayis-attack.lic went
+# through two failed attempts at a text-based end marker (breaking on the
+# "Roundtime:" line, then a quiet period after it) before finding both
+# unreliable -- a reactive item proc can add an unpredictable number of
+# lines before OR after the roundtime line, so there's no safe text-based
+# stopping point. Copied the fixed version here too to keep both files in
+# sync, even though this script doesn't currently inspect the returned text
+# for anything. ALREADY_DOWN_MSG still breaks immediately -- confirmed
+# across every observed log to always be a single standalone line with
+# nothing trailing it.
+READ_WINDOW = 1.5 unless defined?(READ_WINDOW)
+
 def action_and_collect(cmd)
   text_lines = []
   put cmd
   end_time = Time.now.to_f + 5
-  rt_seen_at = nil
+  read_until = Time.now.to_f + READ_WINDOW
   loop do
     line = get?
     if line.nil?
@@ -132,10 +136,9 @@ def action_and_collect(cmd)
     else
       text_lines << line
       break if line =~ ALREADY_DOWN_MSG
-      rt_seen_at ||= Time.now.to_f if line =~ /Roundtime: \d+ sec\.?/i
     end
+    break if Time.now.to_f >= read_until
     break if Time.now.to_f >= end_time
-    break if rt_seen_at && (Time.now.to_f - rt_seen_at) >= 0.5
   end
   text_lines.join(' ')
 end

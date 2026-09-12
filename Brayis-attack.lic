@@ -82,11 +82,27 @@
 # text (the knockdown line) does, even though the knockdown line prints
 # first in the visible client window -- so `text` sometimes didn't actually
 # contain "You knock ... flat" by the time detection ran, despite the human
-# transcript clearly showing it. Fixed by giving the read loop a short
-# (0.5s) quiet period after the roundtime line before finalizing, instead of
-# stopping the instant that line appears -- catches any trailing lines still
-# in flight. ALREADY_DOWN_MSG still breaks immediately since that refusal is
-# confirmed to never have anything trailing it.
+# transcript clearly showing it. First attempted fix: a 0.5s quiet period
+# after the roundtime line before finalizing, instead of stopping the
+# instant that line appears.
+#
+# BUG FIXED 2026-09-12 (double tackling, take 3): the quiet-period fix
+# above still wasn't enough -- a knockdown with an even cleaner match
+# (endroll +129, "You knock a fire salamander flat...") STILL fell through,
+# this time with a reactive item proc firing after the knockdown line
+# ("** Your cuirbouilli leather emits a searing bolt of lightning... **",
+# several more lines including "The fire salamander is stunned!") before
+# "Roundtime: 2 sec." finally appeared. There is no reliable text-based
+# marker for "the response block is done" -- a proc can add an unpredictable
+# amount of trailing (or, per take 2, out-of-order) text around the
+# roundtime line. Gave up guessing the end from text entirely: replaced the
+# whole "watch for the right stop marker" approach with a flat READ_WINDOW
+# (1.5s) read -- collect everything that arrives for that fixed window,
+# full stop, except ALREADY_DOWN_MSG (confirmed across every observed log to
+# always be a single standalone line with nothing trailing it, safe to
+# short-circuit on immediately). This adds no real net latency since
+# whatever isn't spent reading here just gets spent in the waitrt? call that
+# already follows every use of this method, waiting out the same roundtime.
 
 # --- knobs -------------------------------------------------------------------
 
@@ -126,15 +142,25 @@ def target_dead?(foe)
   !GameObj.targets.any? { |t| t.id.to_i == foe.id.to_i && t.status.to_s !~ /dead|gone/ }
 end
 
-# Sends cmd and collects every line, giving the read a short quiet period
-# after the roundtime line shows up rather than stopping the instant it does
-# -- see the "double tackling, take 2" bug note above for why. ALREADY_DOWN_MSG
-# still breaks immediately since that refusal never has anything trailing it.
+# Sends cmd and just reads for a flat READ_WINDOW instead of trying to guess
+# when the response block is "done" from its text -- see the "double
+# tackling, take 3" bug note above for why guessing that from a
+# "Roundtime:"/quiet-period heuristic kept failing (a reactive item proc can
+# add several more lines of unpredictable length and timing after the
+# roundtime line, or before it -- there's no reliable text-based end marker).
+# The only early-exit kept is ALREADY_DOWN_MSG, confirmed across every
+# observed log to always be a single standalone line with nothing trailing
+# it (no roundtime, no proc text, nothing) -- safe to stop on immediately.
+# READ_WINDOW (1.5s) comfortably fits inside tackle's own 2s roundtime, so
+# this doesn't add net latency: whatever time isn't spent here just gets
+# spent in the waitrt? call that already follows every use of this method.
+READ_WINDOW = 1.5 unless defined?(READ_WINDOW)
+
 def action_and_collect(cmd)
   text_lines = []
   put cmd
   end_time = Time.now.to_f + 5
-  rt_seen_at = nil
+  read_until = Time.now.to_f + READ_WINDOW
   loop do
     line = get?
     if line.nil?
@@ -142,10 +168,9 @@ def action_and_collect(cmd)
     else
       text_lines << line
       break if line =~ ALREADY_DOWN_MSG
-      rt_seen_at ||= Time.now.to_f if line =~ /Roundtime: \d+ sec\.?/i
     end
+    break if Time.now.to_f >= read_until
     break if Time.now.to_f >= end_time
-    break if rt_seen_at && (Time.now.to_f - rt_seen_at) >= 0.5
   end
   text_lines.join(' ')
 end
