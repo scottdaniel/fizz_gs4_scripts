@@ -111,23 +111,31 @@ def target_dead?(foe)
   !GameObj.npcs.any? { |t| t.id.to_i == foe.id.to_i && t.status.to_s !~ /dead|gone/ }
 end
 
-# Sends cmd and collects every line through the roundtime message (a single
-# dothistimeout match only sees the first matching line, not the whole result
-# block). Also breaks early on ALREADY_DOWN_MSG, which never gets a roundtime
-# line at all.
+# Sends cmd and collects every line, giving the read a short quiet period
+# after the roundtime line shows up rather than stopping the instant it does
+# -- Brayis-attack.lic hit a real bug from breaking immediately on that line
+# (it can land in a script's downstream queue before trailing descriptive
+# text does, even though that text prints first in the visible client
+# window), copied the fix here too to keep both files in sync even though
+# this script doesn't currently inspect the returned text for anything.
+# ALREADY_DOWN_MSG still breaks immediately since that refusal is confirmed
+# to never have anything trailing it.
 def action_and_collect(cmd)
   text_lines = []
   put cmd
   end_time = Time.now.to_f + 5
+  rt_seen_at = nil
   loop do
     line = get?
     if line.nil?
-      sleep 0.1
+      sleep 0.05
     else
       text_lines << line
-      break if line =~ /Roundtime: \d+ sec\.?/i || line =~ ALREADY_DOWN_MSG
+      break if line =~ ALREADY_DOWN_MSG
+      rt_seen_at ||= Time.now.to_f if line =~ /Roundtime: \d+ sec\.?/i
     end
     break if Time.now.to_f >= end_time
+    break if rt_seen_at && (Time.now.to_f - rt_seen_at) >= 0.5
   end
   text_lines.join(' ')
 end

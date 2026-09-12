@@ -12,18 +12,24 @@
 #
 # Decision each pass:
 #
-#   stamina >= TACKLE_STAMINA_COST: stance offensive, cman tackle. The game
-#     itself is the source of truth for whether the target is already down --
-#     see ALREADY_DOWN_MSG below -- so this always attempts the tackle rather
-#     than trusting a remembered flag. Once the target actually goes down
-#     (this attempt or an earlier one), follows up immediately with a plain
-#     attack instead of waiting for the next bigshot pass.
+#   stance offensive (once, if not already), then:
+#
+#   stamina >= TACKLE_STAMINA_COST: cman tackle. The game itself is the source
+#     of truth for whether the target is already down -- see ALREADY_DOWN_MSG
+#     below -- so this always attempts the tackle rather than trusting a
+#     remembered flag. Once the target actually goes down (this attempt or an
+#     earlier one), follows up immediately with a plain attack instead of
+#     waiting for the next bigshot pass.
 #
 #   otherwise (stamina too low to tackle): just a plain attack with his
 #     current weapon instead of sitting idle waiting for stamina to
 #     regenerate.
 #
-# Every branch ends back in stance defensive.
+# Deliberately does NOT switch back to stance defensive itself -- bigshot
+# already puts Brayis into stance defensive on its own between fights (while
+# wandering/looting), so doing it here too was just extra chatter with no
+# effect on anything other than adding more commands per pass. Removed
+# 2026-09-12, per the user: "just stance offensive, cman tackle, and attack."
 #
 # BUG FIXED 2026-09-11 (spam): the original low-stamina branch just held
 # stance defensive and returned -- a no-op once already defensive, so nothing
@@ -54,18 +60,33 @@
 # trusting a flag that goes stale the moment the target stands back up
 # ("A greater ghoul slowly stands back up.", also seen in that log).
 #
-# BUG FIXED 2026-09-12 (double tackling): KNOCKED_DOWN_MSG only matched
-# "You knock X flat..." but tackle has more than one success-message wording
-# depending on the margin -- "You hammer a fire salamander to the ground.
-# You jump to your feet." is an equally successful knockdown (endroll +151)
-# that the old regex never matched, so the elsif fell through to the "missed"
-# branch and just went back to stance defensive without attacking. Bigshot
-# then re-invoked this script, which tackled the same (now-prone) target a
-# second time before ever landing the finishing attack -- confirmed live
-# against a fire salamander. Fixed by widening KNOCKED_DOWN_MSG to catch both
-# phrasings, AND cross-checking against the roll's own endroll
-# (TACKLE_ENDROLL_FLOOR) so a knockdown claim from text alone still isn't
-# blindly trusted -- see extract_endroll below.
+# BUG FIXED 2026-09-12 (double tackling, take 1): KNOCKED_DOWN_MSG only
+# matched "You knock X flat..." but tackle has more than one success-message
+# wording depending on the margin -- "You hammer a fire salamander to the
+# ground.  You jump to your feet." is an equally successful knockdown
+# (endroll +151) that the old regex never matched, so the elsif fell through
+# to the "missed" branch and just went back to stance defensive without
+# attacking. Bigshot then re-invoked this script, which tackled the same
+# (now-prone) target a second time before ever landing the finishing attack.
+# Fixed by widening KNOCKED_DOWN_MSG to catch both phrasings, AND
+# cross-checking against the roll's own endroll (TACKLE_ENDROLL_FLOOR) so a
+# knockdown claim from text alone still isn't blindly trusted.
+#
+# BUG FIXED 2026-09-12 (double tackling, take 2): still double-tackled even
+# with the wording fixed above -- a knockdown with a "You knock a fire
+# salamander flat..." line AND endroll +109 (both matching the widened
+# check) still fell through to the missed-roll branch. Root cause was in
+# action_and_collect, not the detection regexes: it broke out of the read
+# loop the INSTANT it saw the "Roundtime: 2 sec." line, but that line can
+# land in this script's own downstream queue before the trailing descriptive
+# text (the knockdown line) does, even though the knockdown line prints
+# first in the visible client window -- so `text` sometimes didn't actually
+# contain "You knock ... flat" by the time detection ran, despite the human
+# transcript clearly showing it. Fixed by giving the read loop a short
+# (0.5s) quiet period after the roundtime line before finalizing, instead of
+# stopping the instant that line appears -- catches any trailing lines still
+# in flight. ALREADY_DOWN_MSG still breaks immediately since that refusal is
+# confirmed to never have anything trailing it.
 
 # --- knobs -------------------------------------------------------------------
 
@@ -105,24 +126,26 @@ def target_dead?(foe)
   !GameObj.targets.any? { |t| t.id.to_i == foe.id.to_i && t.status.to_s !~ /dead|gone/ }
 end
 
-# Sends cmd and collects every line through the roundtime message (a single
-# dothistimeout match only sees the first matching line, not the whole result
-# block) -- same reasoning as the cast_and_collect helper in the Salvi/Picko
-# attack scripts, just for a physical action instead of a spell. Also breaks
-# early on ALREADY_DOWN_MSG, which never gets a roundtime line at all.
+# Sends cmd and collects every line, giving the read a short quiet period
+# after the roundtime line shows up rather than stopping the instant it does
+# -- see the "double tackling, take 2" bug note above for why. ALREADY_DOWN_MSG
+# still breaks immediately since that refusal never has anything trailing it.
 def action_and_collect(cmd)
   text_lines = []
   put cmd
   end_time = Time.now.to_f + 5
+  rt_seen_at = nil
   loop do
     line = get?
     if line.nil?
-      sleep 0.1
+      sleep 0.05
     else
       text_lines << line
-      break if line =~ /Roundtime: \d+ sec\.?/i || line =~ ALREADY_DOWN_MSG
+      break if line =~ ALREADY_DOWN_MSG
+      rt_seen_at ||= Time.now.to_f if line =~ /Roundtime: \d+ sec\.?/i
     end
     break if Time.now.to_f >= end_time
+    break if rt_seen_at && (Time.now.to_f - rt_seen_at) >= 0.5
   end
   text_lines.join(' ')
 end
@@ -133,28 +156,24 @@ def extract_endroll(text)
   text =~ /o100 roll:.*?==\s*([+-]?\d+)/ ? Regexp.last_match(1).to_i : nil
 end
 
-# Plain attack with whatever weapon is in hand, offensive -> attack ->
-# defensive. Safe to call regardless of prone state -- "attack" always works,
-# tackle is just the better option when stamina allows it. No-ops if the
+# Plain attack with whatever weapon is in hand. No stance management here --
+# the caller already ensured offensive stance for the pass. No-ops if the
 # target is already dead (tackle throws a real hit alongside the knockdown
 # attempt and can finish a weak target outright).
 def finish_attack(foe)
   return if target_dead?(foe)
-  fput "stance offensive" if stance != "offensive"
   fput "attack"
   waitrt?
-  fput "stance defensive" if stance != "defensive"
 end
 
 # One tackle attempt, then capitalizes on it immediately (finish_attack) if
 # the target is (or just went) down instead of waiting for the next bigshot
-# pass. Falls back to plain stance defensive if the roll just misses.
+# pass. Does nothing further if the roll just misses -- next pass tries again.
 #
 # Knockdown requires BOTH KNOCKED_DOWN_MSG text AND an endroll over
 # TACKLE_ENDROLL_FLOOR -- text alone isn't enough (see the "double tackling"
-# fix note above the knobs section).
+# fix notes above the knobs section).
 def tackle_then_maybe_finish(foe)
-  fput "stance offensive" if stance != "offensive"
   text = action_and_collect("cman tackle")
 
   if text =~ ALREADY_DOWN_MSG
@@ -162,11 +181,7 @@ def tackle_then_maybe_finish(foe)
   else
     waitrt?
     endroll = extract_endroll(text)
-    if text =~ KNOCKED_DOWN_MSG && endroll && endroll > TACKLE_ENDROLL_FLOOR
-      finish_attack(foe)
-    else
-      fput "stance defensive" if stance != "defensive"
-    end
+    finish_attack(foe) if text =~ KNOCKED_DOWN_MSG && endroll && endroll > TACKLE_ENDROLL_FLOOR
   end
 end
 
@@ -183,6 +198,8 @@ fput "target ##{foe.id}" unless XMLData.current_target_id.to_i == foe.id.to_i
 waitrt?
 
 exit if target_dead?(foe)
+
+fput "stance offensive" if stance != "offensive"
 
 if checkstamina >= TACKLE_STAMINA_COST
   tackle_then_maybe_finish(foe)
