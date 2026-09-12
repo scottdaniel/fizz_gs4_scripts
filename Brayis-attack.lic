@@ -1,5 +1,5 @@
 # Brayis-attack.lic
-# Bigshot custom attack routine for Brayis (Warrior, Claidhmore). Drop it into
+# Bigshot custom attack routine for Brayis (Warrior). Drop it into
 # a bigshot hunting-commands list as a single command:
 #
 #   script Brayis-attack
@@ -19,8 +19,9 @@
 #     (this attempt or an earlier one), follows up immediately with a plain
 #     attack instead of waiting for the next bigshot pass.
 #
-#   otherwise (stamina too low to tackle): just a plain attack with the
-#     Claidhmore instead of sitting idle waiting for stamina to regenerate.
+#   otherwise (stamina too low to tackle): just a plain attack with his
+#     current weapon instead of sitting idle waiting for stamina to
+#     regenerate.
 #
 # Every branch ends back in stance defensive.
 #
@@ -52,6 +53,19 @@
 # any roll-format assumptions, and it self-corrects every pass instead of
 # trusting a flag that goes stale the moment the target stands back up
 # ("A greater ghoul slowly stands back up.", also seen in that log).
+#
+# BUG FIXED 2026-09-12 (double tackling): KNOCKED_DOWN_MSG only matched
+# "You knock X flat..." but tackle has more than one success-message wording
+# depending on the margin -- "You hammer a fire salamander to the ground.
+# You jump to your feet." is an equally successful knockdown (endroll +151)
+# that the old regex never matched, so the elsif fell through to the "missed"
+# branch and just went back to stance defensive without attacking. Bigshot
+# then re-invoked this script, which tackled the same (now-prone) target a
+# second time before ever landing the finishing attack -- confirmed live
+# against a fire salamander. Fixed by widening KNOCKED_DOWN_MSG to catch both
+# phrasings, AND cross-checking against the roll's own endroll
+# (TACKLE_ENDROLL_FLOOR) so a knockdown claim from text alone still isn't
+# blindly trusted -- see extract_endroll below.
 
 # --- knobs -------------------------------------------------------------------
 
@@ -64,9 +78,20 @@ TACKLE_STAMINA_COST = 7 unless defined?(TACKLE_STAMINA_COST)
 # just read this back instead of tracking down-state ourselves.
 ALREADY_DOWN_MSG = /is lying down.*awkward proposition/i unless defined?(ALREADY_DOWN_MSG)
 
-# Tackle's own knockdown-success line, e.g.
-# "You knock a greater ghoul flat and jump to your feet.  Smooth!"
-KNOCKED_DOWN_MSG = /\bknock\b.*\bflat\b/i unless defined?(KNOCKED_DOWN_MSG)
+# Tackle's own knockdown-success line -- there's more than one flavor of this
+# message depending on the margin, e.g.
+#   "You knock a greater ghoul flat and jump to your feet.  Smooth!"
+#   "You hammer a fire salamander to the ground.  You jump to your feet."
+KNOCKED_DOWN_MSG = /\bknock\b.*\bflat\b|to the ground/i unless defined?(KNOCKED_DOWN_MSG)
+
+# Confirms the knockdown independently of KNOCKED_DOWN_MSG's wording --
+# require the SMR roll to have actually cleared triple digits too, not just a
+# text match, before treating the target as down. Tackle's own roll line
+# looks like "SMR SvD: +88 - Penalty: +10 + o100 roll: +73 == +151" -- the
+# endroll is the value after "==". Note this is NOT the ordinary d100-roll
+# attack/spell format (single "=", "d100" not "o100") -- see the tackle
+# detection bug note above.
+TACKLE_ENDROLL_FLOOR = 100 unless defined?(TACKLE_ENDROLL_FLOOR)
 
 # --- helpers -----------------------------------------------------------------
 
@@ -102,11 +127,17 @@ def action_and_collect(cmd)
   text_lines.join(' ')
 end
 
-# Plain attack with the Claidhmore, offensive -> attack -> defensive. Safe to
-# call regardless of prone state -- "attack" always works, tackle is just the
-# better option when stamina allows it. No-ops if the target is already dead
-# (tackle throws a real hit alongside the knockdown attempt and can finish a
-# weak target outright).
+# The endroll off tackle's own SMR roll line, or nil if it's not there (e.g.
+# the ALREADY_DOWN_MSG refusal, which never rolls at all).
+def extract_endroll(text)
+  text =~ /o100 roll:.*?==\s*([+-]?\d+)/ ? Regexp.last_match(1).to_i : nil
+end
+
+# Plain attack with whatever weapon is in hand, offensive -> attack ->
+# defensive. Safe to call regardless of prone state -- "attack" always works,
+# tackle is just the better option when stamina allows it. No-ops if the
+# target is already dead (tackle throws a real hit alongside the knockdown
+# attempt and can finish a weak target outright).
 def finish_attack(foe)
   return if target_dead?(foe)
   fput "stance offensive" if stance != "offensive"
@@ -118,18 +149,24 @@ end
 # One tackle attempt, then capitalizes on it immediately (finish_attack) if
 # the target is (or just went) down instead of waiting for the next bigshot
 # pass. Falls back to plain stance defensive if the roll just misses.
+#
+# Knockdown requires BOTH KNOCKED_DOWN_MSG text AND an endroll over
+# TACKLE_ENDROLL_FLOOR -- text alone isn't enough (see the "double tackling"
+# fix note above the knobs section).
 def tackle_then_maybe_finish(foe)
   fput "stance offensive" if stance != "offensive"
   text = action_and_collect("cman tackle")
 
   if text =~ ALREADY_DOWN_MSG
     finish_attack(foe)
-  elsif text =~ KNOCKED_DOWN_MSG
-    waitrt?
-    finish_attack(foe)
   else
     waitrt?
-    fput "stance defensive" if stance != "defensive"
+    endroll = extract_endroll(text)
+    if text =~ KNOCKED_DOWN_MSG && endroll && endroll > TACKLE_ENDROLL_FLOOR
+      finish_attack(foe)
+    else
+      fput "stance defensive" if stance != "defensive"
+    end
   end
 end
 
