@@ -13,16 +13,30 @@
 #   (kill it from the script list, or ;e Script.kill('tackle-bot'), when done)
 #
 # Loop, forever:
-#   1. Pick any non-dead/gone NPC in the room (GameObj.npcs -- whatever the
-#      group is fighting, not a target list Brayis himself has any reason to
-#      have built).
-#   2. Nothing there -> sleep and keep watching.
+#   1. Pick any non-dead/gone, non-prone NPC in the room (GameObj.npcs --
+#      whatever the group is fighting, not a target list Brayis himself has
+#      any reason to have built; npc_prone? below is bigshot.lic's own
+#      prone-detection logic). Deliberately excludes already-prone targets
+#      up front -- see the 2026-09-12 fix note below for why.
+#   2. Nothing tacklable there -> sleep and keep watching.
 #   3. Otherwise target it if needed, then: stamina >= TACKLE_STAMINA_COST ->
 #      stance offensive, cman tackle, stance defensive. Not enough stamina ->
-#      just wait for it to regenerate. Tackling an already-downed target is
-#      a free no-op refusal from GS4 (no stamina spent, no roundtime -- see
-#      ALREADY_DOWN_MSG below), so this doesn't bother checking whether the
-#      target is already down before trying.
+#      just wait for it to regenerate.
+#
+# FIX 2026-09-12 (spam again): v1 picked ANY non-dead/gone NPC, including
+# ones already knocked prone, and only found out via GS4's refusal ("A pale
+# crab is lying down -- attempting to tackle it would be a rather awkward
+# proposition."). That refusal costs no stamina and no roundtime, so with
+# nothing else in this script to throttle it, it just re-issued stance
+# offensive -> cman tackle -> stance defensive in a tight loop for as long as
+# the crab stayed down -- confirmed live, visible as a wall of that refusal
+# message. Checked ;bigshot itself (npc_prone?/npc_has_status?, further down
+# in bigshot.lic) for how it avoids this: it reads the live <crtrStatus> feed
+# via Creature[id].has_status? rather than guessing from GameObj#status text
+# (a creature holding multiple statuses -- e.g. prone + stunned -- only ever
+# advertises ONE of them there), falling back to a status-string regex only
+# for a target with no CreatureInstance registered yet. Copied that same
+# npc_prone? logic here so a prone target is never even attempted.
 #
 # The tackle helpers below are copy-pasted from Brayis-attack.lic rather than
 # shared, matching how Picko-attack.lic / Salvi-attack.lic duplicate their own
@@ -44,8 +58,19 @@ TACKLE_STAMINA_COST = 7 unless defined?(TACKLE_STAMINA_COST)
 
 # GS4's outright refusal when the target is already down -- no stamina spent,
 # no roundtime, so it's cheap to just let this cut the read short instead of
-# burning the whole 5-second window every time it happens.
+# burning the whole 5-second window every time it happens. Kept only as a
+# rare-case safety net now that npc_prone? filters prone targets out up
+# front (see below) -- e.g. a target that goes prone in the gap between
+# picking it and actually sending the tackle.
 ALREADY_DOWN_MSG = /is lying down.*awkward proposition/i unless defined?(ALREADY_DOWN_MSG)
+
+# bigshot.lic's own PRONE regex (its PRONE/PRONE_STATUSES constants) -- the
+# GameObj#status fallback for a target with no live CreatureInstance yet.
+PRONE_REGEX = /sleeping|webbed|stunned|kneeling|sitting|^lying|prone|frozen|held in place|entangled/ unless defined?(PRONE_REGEX)
+
+# The native <crtrStatus> statuses covering everything PRONE_REGEX matches --
+# same list bigshot.lic's PRONE_STATUSES uses.
+PRONE_STATUSES = %w[sleeping webbed stunned kneeling sitting prone immobilized].freeze unless defined?(PRONE_STATUSES)
 
 # --- helpers -----------------------------------------------------------------
 
@@ -61,6 +86,21 @@ def in_town?
   resting_room = Room.list[resting_room_id.to_i]
   return false unless resting_room
   Room.current.location == resting_room.location
+end
+
+# True if the creature is already down (prone/stunned/sleeping/etc) -- same
+# logic as bigshot.lic's npc_prone?/npc_has_status?: prefer the live
+# <crtrStatus> feed via Creature[id].has_status?, since a creature holding
+# several statuses at once only ever advertises ONE of them through
+# GameObj#status (e.g. prone + stunned prints just "stunned" -- bigshot.lic
+# measured this against ~1000 real creature observations). Falls back to the
+# status-string regex only when there's no CreatureInstance registered yet
+# for this id.
+def npc_prone?(foe)
+  return false if foe.nil?
+  creature = defined?(Creature) ? Creature[foe.id] : nil
+  return PRONE_STATUSES.any? { |s| creature.has_status?(s) } if creature
+  !!(foe.status.to_s =~ PRONE_REGEX)
 end
 
 # Dead/gone check off GameObj.npcs directly -- there's no bigshot-maintained
@@ -109,7 +149,7 @@ loop do
     next
   end
 
-  foe = GameObj.npcs.find { |n| n.status.to_s !~ /dead|gone/ }
+  foe = GameObj.npcs.find { |n| n.status.to_s !~ /dead|gone/ && !npc_prone?(n) }
 
   if foe.nil?
     sleep 1
@@ -119,8 +159,8 @@ loop do
   fput "target ##{foe.id}" unless XMLData.current_target_id.to_i == foe.id.to_i
   waitrt?
 
-  if target_dead?(foe)
-    sleep 0.2
+  if target_dead?(foe) || npc_prone?(foe)
+    sleep 0.5
     next
   end
 
