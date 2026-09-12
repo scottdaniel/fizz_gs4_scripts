@@ -23,6 +23,19 @@
 #      to manage RENEW -- deliberately not attempting the upkeep mechanic,
 #      "dumb" per how tackle-bot.lic works.
 #
+# MANA_RESERVE (7) is kept in the bank at all times, on top of whatever a cast
+# costs -- Holding Song's own upkeep needs manual RENEW (1 mana, +1 per extra
+# target) from the user, and since this script doesn't drive that itself (see
+# above), it must never spend the mana that renewal will need. Both
+# Stunning Shout and Holding Song are gated on `checkmana - cost > MANA_RESERVE`
+# instead of plain `Spell#affordable?`, which only checks `checkmana >= cost`
+# and knows nothing about this reserve.
+#
+# Auto-pauses (skips acting, keeps watching) while standing in the same town
+# as this character's own bigshot resting_room_id (room 228, Wehnimer's
+# Landing Town Square Central, per data/GSIV/Fizzlestiks/bigshot_profiles/*.yaml)
+# -- see in_town? below. Resumes on its own the moment you leave town.
+#
 # Unlike Brayis-attack.lic / tackle-bot.lic, this uses Lich's own CMan/Spell
 # APIs (CMan.available?/.use, Spell#known?/#affordable?/#cast) instead of
 # hand-rolled fput + roll-text regexes. Those APIs already carry Lich's own
@@ -41,7 +54,27 @@
 SHOUT_MANA_COST = (Spell[1008].mana_cost.to_i.positive? ? Spell[1008].mana_cost.to_i : 5) unless defined?(SHOUT_MANA_COST)
 SONG_MANA_COST  = (Spell[1001].mana_cost.to_i.positive? ? Spell[1001].mana_cost.to_i : 1) unless defined?(SONG_MANA_COST)
 
+# Never spend mana past this floor -- kept in reserve for Holding Song's own
+# manual RENEW upkeep (see header).
+MANA_RESERVE = 7 unless defined?(MANA_RESERVE)
+
 # --- helpers -----------------------------------------------------------------
+
+# True while standing in the same town as this character's configured bigshot
+# resting_room_id (UserVars.op, persisted once bigshot.lic has been set up for
+# this character -- see bigshot_profiles/*.yaml). Read dynamically instead of
+# hardcoding a town name so this keeps working if that ever changes. Falls
+# back to "not in town" (never pauses) if no resting room is configured or its
+# id isn't in the local map data, rather than guessing. This is a soft,
+# self-resuming pause (skip acting, keep watching) -- not a literal Lich
+# Script#pause -- so it comes back on its own the moment you leave town.
+def in_town?
+  resting_room_id = (defined?(UserVars) && UserVars.op.is_a?(Hash)) ? UserVars.op["resting_room_id"].to_s.strip : ""
+  return false if resting_room_id.empty?
+  resting_room = Room.list[resting_room_id.to_i]
+  return false unless resting_room
+  Room.current.location == resting_room.location
+end
 
 # Dead/gone check off GameObj.npcs directly -- there's no bigshot-maintained
 # target list to lean on here, same reasoning as tackle-bot.lic.
@@ -65,7 +98,8 @@ end
 # Stunning Shout. force_stance: false keeps stance management entirely in our
 # own hands (see header) instead of whatever Spell#cast would otherwise do.
 def try_shout
-  return nil unless Spell[1008].known? && Spell[1008].affordable?
+  return nil unless Spell[1008].known?
+  return nil unless (checkmana - SHOUT_MANA_COST) > MANA_RESERVE
   fput "stance offensive" if stance != "offensive"
   Spell[1008].cast(nil, nil, nil, force_stance: false)
   waitcastrt?
@@ -79,7 +113,8 @@ end
 # sustained song every pass.
 def try_holding_song
   return nil if Spell[1001].active?
-  return nil unless Spell[1001].known? && Spell[1001].affordable?
+  return nil unless Spell[1001].known?
+  return nil unless (checkmana - SONG_MANA_COST) > MANA_RESERVE
   fput "stance offensive" if stance != "offensive"
   Spell[1001].cast(nil, nil, nil, force_stance: false)
   waitcastrt?
@@ -93,6 +128,11 @@ end
 $bardbot_last_action ||= :shout
 
 loop do
+  if in_town?
+    sleep 2
+    next
+  end
+
   foe = GameObj.npcs.find { |n| n.status.to_s !~ /dead|gone/ }
 
   if foe.nil?

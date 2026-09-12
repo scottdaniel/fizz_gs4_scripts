@@ -28,6 +28,13 @@
 # shared, matching how Picko-attack.lic / Salvi-attack.lic duplicate their own
 # near-identical helpers instead of pulling in a shared library -- keep both
 # files in sync by hand if the tackle logic changes.
+#
+# Auto-pauses (skips acting, keeps watching) while standing in the same town
+# as Brayis's own bigshot resting_room_id (room 228, Wehnimer's Landing Town
+# Square Central, per data/GSIV/Brayis/bigshot_profiles/*.yaml) -- see
+# in_town? below. This is a soft pause, not a literal Lich Script#pause: it
+# resumes acting on its own the moment you leave town, no manual unpause
+# needed, which matters since this script isn't meant to be babysat.
 
 # --- knobs -------------------------------------------------------------------
 
@@ -41,6 +48,20 @@ TACKLE_STAMINA_COST = 7 unless defined?(TACKLE_STAMINA_COST)
 ALREADY_DOWN_MSG = /is lying down.*awkward proposition/i unless defined?(ALREADY_DOWN_MSG)
 
 # --- helpers -----------------------------------------------------------------
+
+# True while standing in the same town as this character's configured bigshot
+# resting_room_id (UserVars.op, persisted once bigshot.lic has been set up for
+# this character -- see the bigshot_profiles/*.yaml files). Read dynamically
+# instead of hardcoding a town name so this keeps working if that ever
+# changes. Falls back to "not in town" (never pauses) if no resting room is
+# configured or its room id isn't in the local map data, rather than guessing.
+def in_town?
+  resting_room_id = (defined?(UserVars) && UserVars.op.is_a?(Hash)) ? UserVars.op["resting_room_id"].to_s.strip : ""
+  return false if resting_room_id.empty?
+  resting_room = Room.list[resting_room_id.to_i]
+  return false unless resting_room
+  Room.current.location == resting_room.location
+end
 
 # Dead/gone check off GameObj.npcs directly -- there's no bigshot-maintained
 # target list to lean on here, since Brayis isn't the one driving the hunt.
@@ -83,6 +104,11 @@ end
 # --- main ----------------------------------------------------------------
 
 loop do
+  if in_town?
+    sleep 2
+    next
+  end
+
   foe = GameObj.npcs.find { |n| n.status.to_s !~ /dead|gone/ }
 
   if foe.nil?
