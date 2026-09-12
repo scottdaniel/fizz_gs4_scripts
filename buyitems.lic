@@ -68,6 +68,12 @@ BUY_SUCCESS = /You decide to purchase/
 BUY_HANDS_FULL = /hands are full/
 BUY_FAILURE = /#{BUY_HANDS_FULL}|don't have enough|don't see|can't afford/
 
+# Wands go in bigshot's configured fresh_wand_container (Attacking tab of the
+# active profile) instead of a plain stow, so attack scripts find them where
+# they expect. Falls back to a plain stow if that setting is blank.
+_op = (defined?(UserVars) && UserVars.op.is_a?(Hash)) ? UserVars.op : {}
+FRESH_WAND_CONTAINER = _op["fresh_wand_container"].to_s.strip
+
 def self.order_and_buy(item_name)
 	buy_result = dothistimeout "buy #{item_name}", 5, /#{BUY_SUCCESS}|#{BUY_FAILURE}/
 	if buy_result =~ BUY_HANDS_FULL
@@ -75,7 +81,11 @@ def self.order_and_buy(item_name)
 		buy_result = dothistimeout "buy #{item_name}", 5, /#{BUY_SUCCESS}|#{BUY_FAILURE}/
 	end
 	if buy_result =~ BUY_SUCCESS
-		fput "stow my #{item_name}"
+		if item_name =~ /\bwand\b/i && !FRESH_WAND_CONTAINER.empty?
+			fput "put my #{item_name} in my #{FRESH_WAND_CONTAINER}"
+		else
+			fput "stow my #{item_name}"
+		end
 	else
 		echo "Failed to buy '#{item_name}': #{buy_result}"
 	end
