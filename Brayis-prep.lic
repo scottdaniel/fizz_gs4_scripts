@@ -3,13 +3,18 @@
 #instrument, no wands, so gearing up for combat is clearing hands, rubbing the
 #couple of items he can use without a spellcasting skill, and readying the
 #weapon.
+#
+#Katana, not the Claidhmore, for now -- "ready weapon"/"store weapon", not the
+#"2weap" noun (that's specific to the two-handed Claidhmore). "grip two" after
+#readying makes sure it's actually being wielded two-handed instead of GS4's
+#one-handed default grip for it.
 
 module BrayisPrep
 
-# clear hands -- "store 2weap" routes the Claidhmore to the readied sheath per
+# clear hands -- "store weapon" routes the katana to the readied sheath per
 # the in-game STORE config (STORE SET WEAPON SHEATH); "stow all" mops up
 # anything left in the off-hand.
-fput "store 2weap"
+fput "store weapon"
 fput "stow all"
 
 # rub stuff, but only if the spell isn't already active -- and only pause
@@ -23,6 +28,7 @@ unless Spell[509].active?
   pause 3
 end
 
-fput "ready 2weap"
+fput "ready weapon"
+fput "grip two"
 
 end #End of module
