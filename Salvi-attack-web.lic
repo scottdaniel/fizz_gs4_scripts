@@ -15,16 +15,19 @@
 # Death is read off GameObj status (what bigshot itself uses), not a
 # per-creature kill-message regex.
 #
-# Bandits pull in groups, so every fresh pull opens with Censure (316) -- an AoE
-# stun/immobilize (see the Censure section below) -- before settling into the
-# per-target Web/Condemn rotation. Modeled on Fizzleworth-attack-base.lic's
-# Web-then-DoT shape:
+# Bandits pull in groups, so a fresh pull of CENSURE_MIN_TARGETS (2) or more
+# opens with Censure (316) -- an AoE stun/immobilize (see the Censure section
+# below) -- before settling into the per-target Web/Condemn rotation. A lone
+# bandit skips straight to Web/Condemn -- not worth the mana on an AoE for one
+# target. Modeled on Fizzleworth-attack-base.lic's Web-then-DoT shape:
 #
-#   0. Censure (316), ONCE per pull (tracked via $salvi_censure_done, reset the
-#      moment no living target is visible -- see main) -- stuns or immobilizes
-#      up to a handful of the room's creatures at once. Uses this pass's
-#      roundtime on its own; the Web/Condemn rotation below picks up on the
-#      next pass.
+#   0. Censure (316), ONCE per pull once the room has CENSURE_MIN_TARGETS+
+#      living targets (tracked via $salvi_censure_done, reset the moment no
+#      living target is visible -- see main; a room stuck below the threshold
+#      just leaves it unset and re-checks every pass, so reinforcements
+#      arriving mid-fight still get AoE'd) -- stuns or immobilizes up to a
+#      handful of the room's creatures at once. Uses this pass's roundtime on
+#      its own; the Web/Condemn rotation below picks up on the next pass.
 #   1. Web (118) -- an SMRv2 attack, recast until the endroll clears
 #      WEB_ENDROLL (101) or WEB_MAX_TRIES (3) is hit. Per
 #      https://gswiki.play.net/Web_(118): "Web your target before using a
@@ -115,6 +118,10 @@ EMPOWER_EVERY = 10 unless defined?(EMPOWER_EVERY)
 # Fizzleworth-attack-base.lic's use of the profile's flee_count) -- don't sit
 # still holding for the DoT once the room's this full.
 FLEE_HINT = 7 unless defined?(FLEE_HINT)
+
+# Minimum living targets in the room before Censure's AoE is worth the mana --
+# a lone bandit doesn't call for it. See the Censure opener in main.
+CENSURE_MIN_TARGETS = 2 unless defined?(CENSURE_MIN_TARGETS)
 
 # Wand config is read straight from bigshot's own loaded settings (UserVars.op)
 # so it always tracks whatever profile is active -- Fresh/Dead wand container and
@@ -377,12 +384,17 @@ exit if target_dead?(foe)
 # wave_wand (a bolt-style item, not SMR) steps into offensive for its own cast.
 fput "stance defensive" if stance != "defensive"
 
-# Fresh pull -> open with Censure before settling into single-target work.
-# Marked done up front regardless of outcome (try-once semantics): if it
-# actually fired, it used this pass's roundtime, so stop here and let the
-# normal rotation pick up next pass; if it didn't (mana short, wound-blocked,
-# prep never confirmed), fall straight through instead of wasting the pass.
-unless $salvi_censure_done
+# Fresh pull with a real group (CENSURE_MIN_TARGETS+) -> open with Censure
+# before settling into single-target work. A lone bandit isn't worth the mana
+# on an AoE, so that case is left $salvi_censure_done = false and just falls
+# straight through below -- if reinforcements show up mid-fight and push the
+# room to CENSURE_MIN_TARGETS, this re-checks and fires then instead of never.
+# Once a real group IS present, marked done up front regardless of outcome
+# (try-once semantics): if it actually fired, it used this pass's roundtime, so
+# stop here and let the normal rotation pick up next pass; if it didn't (mana
+# short, wound-blocked, prep never confirmed), fall straight through instead of
+# wasting the pass.
+if !$salvi_censure_done && living_targets >= CENSURE_MIN_TARGETS
   $salvi_censure_done = true
   exit if cast_censure
 end
