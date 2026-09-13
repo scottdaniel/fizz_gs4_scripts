@@ -14,13 +14,14 @@
 #
 # Decision each pass:
 #
-#   mana >= 301 + 309 cost:  incant 301 in stance offensive, then Condemn (309) --
-#                            an empowered evoke every EMPOWER_EVERY (10) plain
-#                            casts, a plain incant otherwise -- then drop to
-#                            stance defensive and hold while the DoT ticks
-#                            (bailing early if the target dies): CONDEMN_WAIT for
-#                            a plain cast, the shorter EMPOWERED_CONDEMN_WAIT for
-#                            an empowered one.
+#   mana >= 301 + 309 cost:  incant 301 in stance offensive (retried up to
+#                            SPELL_301_MAX_TRIES on a FUMBLE -- see below), then
+#                            Condemn (309) -- an empowered evoke every
+#                            EMPOWER_EVERY (10) plain casts, a plain incant
+#                            otherwise -- then drop to stance defensive and hold
+#                            while the DoT ticks (bailing early if the target
+#                            dies): CONDEMN_WAIT for a plain cast, the shorter
+#                            EMPOWERED_CONDEMN_WAIT for an empowered one.
 #
 #   otherwise (low mana):    cast Symbol of Mana if it's known and off cooldown
 #                            (cooldown-only check -- never spends deeds),
@@ -40,6 +41,12 @@
 # If a wound blocks spellcasting outright ("You can't think clearly enough to
 # prepare a spell!" -- no roundtime at all), fires ;eherbs --spellcast once
 # instead of retrying the dead cast, same as Salvi-duskattack.lic.
+#
+# A FUMBLE on 301 ("d100 == 1 FUMBLE!") means it fizzled with zero effect on the
+# target -- confirmed live: the cast still burns the mana and the roundtime, but
+# nothing landed, and the very next pass just walked straight into Condemn
+# anyway. Recasts up to SPELL_301_MAX_TRIES on a fumble before moving on, same
+# retry-on-miss shape as Salvi-attack-web.lic's land_web.
 
 # --- knobs -------------------------------------------------------------------
 
@@ -66,6 +73,12 @@ EMPOWERED_CONDEMN_WAIT = 3  unless defined?(EMPOWERED_CONDEMN_WAIT)
 # to 0 on a Lich restart, which at worst mistimes one evoke before it re-syncs.
 EMPOWER_EVERY = 10 unless defined?(EMPOWER_EVERY)
 
+# How many times to retry 301 if it fumbles before giving up and moving on to
+# Condemn anyway -- a fumble is a low-probability roll, so a couple of retries
+# should clear it almost always without risking burning the whole mana pool on
+# a freak streak.
+SPELL_301_MAX_TRIES = 3 unless defined?(SPELL_301_MAX_TRIES)
+
 # Wand config is read straight from bigshot's own loaded settings (UserVars.op)
 # so it always tracks whatever profile is active -- Fresh/Dead wand container and
 # the wand type(s) from the Attacking tab. The "wand" field may be comma- or
@@ -87,6 +100,11 @@ DEAD_WAND_CONTAINER  = (_op["dead_wand_container"].to_s.strip.empty?  ? "bag"   
 # spellcasting outright -- no roundtime at all, so a naive retry loop just
 # burns the whole cast timeout every tick with nothing to show for it.
 CANT_CAST_WOUNDED = /can't think clearly enough to prepare a spell/i unless defined?(CANT_CAST_WOUNDED)
+
+# GS4's own casting-fumble check, independent of the spell's SMR-vs-target roll
+# -- a fumbled cast has zero effect on the target no matter how the fight was
+# going otherwise.
+FUMBLE = /FUMBLE/i unless defined?(FUMBLE)
 
 # --- helpers --------------------------------------------------------------
 
@@ -159,23 +177,41 @@ def cast_condemn(foe)
   empowered
 end
 
-# incant 301 in stance offensive, chain into Condemn, then hold defensive while
-# the DoT ticks. Heals with ;eherbs --spellcast (touches only casting-blocking
-# wounds) if a wound blocks the 301 cast outright.
+# incant 301 at foe, retrying on a FUMBLE (zero effect on the target, see file
+# header) up to SPELL_301_MAX_TRIES before giving up and letting the caller
+# move on to Condemn regardless. Heals with ;eherbs --spellcast (touches only
+# casting-blocking wounds) if a wound blocks the cast outright -- that stops
+# the retry loop entirely rather than burning tries against a wound that isn't
+# going away on its own.
+# @return [Boolean] true if 301 actually landed (non-fumble); false if a wound
+#   blocked it, the target died mid-loop, mana ran out, or it fumbled every try.
+def cast_301(foe)
+  tries = 0
+  while tries < SPELL_301_MAX_TRIES
+    return false if target_dead?(foe)
+    return false if checkmana < SPELL_301_MANA
+    text = cast_and_collect("incant 301")
+    if text =~ CANT_CAST_WOUNDED
+      Script.run("eherbs", "--spellcast")
+      return false
+    end
+    waitcastrt?
+    waitrt?
+    tries += 1
+    return true unless text =~ FUMBLE
+  end
+  false
+end
+
+# 301 (retrying through fumbles), chain into Condemn, then hold defensive while
+# the DoT ticks.
 def attack_sequence(foe)
   fput "release" if checkprep != "None"
   fput "stance offensive" if stance != "offensive"
 
   return fput("stance defensive") if checkmana < SPELL_301_MANA
 
-  text = cast_and_collect("incant 301")
-  if text =~ CANT_CAST_WOUNDED
-    Script.run("eherbs", "--spellcast")
-    fput "stance defensive"
-    return
-  end
-  waitcastrt?
-  waitrt?
+  cast_301(foe)
 
   # 301 may have finished the target off -- don't Condemn a corpse or sit out
   # the DoT wait for nothing.
