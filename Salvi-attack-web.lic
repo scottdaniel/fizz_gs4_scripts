@@ -15,8 +15,16 @@
 # Death is read off GameObj status (what bigshot itself uses), not a
 # per-creature kill-message regex.
 #
-# Modeled on Fizzleworth-attack-base.lic's Web-then-DoT shape:
+# Bandits pull in groups, so every fresh pull opens with Censure (316) -- an AoE
+# stun/immobilize (see the Censure section below) -- before settling into the
+# per-target Web/Condemn rotation. Modeled on Fizzleworth-attack-base.lic's
+# Web-then-DoT shape:
 #
+#   0. Censure (316), ONCE per pull (tracked via $salvi_censure_done, reset the
+#      moment no living target is visible -- see main) -- stuns or immobilizes
+#      up to a handful of the room's creatures at once. Uses this pass's
+#      roundtime on its own; the Web/Condemn rotation below picks up on the
+#      next pass.
 #   1. Web (118) -- an SMRv2 attack, recast until the endroll clears
 #      WEB_ENDROLL (101) or WEB_MAX_TRIES (3) is hit. Per
 #      https://gswiki.play.net/Web_(118): "Web your target before using a
@@ -55,6 +63,18 @@
 # same as Salvi-attack.lic. This is a pure mana check -- no mind-%/rest guard
 # (bigshot handles rest-on-mind itself).
 #
+# CENSURE (316): https://gswiki.play.net/Censure_(316) -- an area warding spell
+# that stuns (or, above a 150 endroll, immobilizes) up to a handful of
+# creatures at once (base 3 targets, +1 per 50 Spiritual Mana Control, capping
+# at 12), exactly the group-pull answer bandits call for. Lich's spell data
+# flags it incant='no': it MUST be PREP + CAST, never `incant 316`. Deliberately
+# never EVOKE -- per the wiki, evoke widens targeting to include ungrouped
+# players too, which an automated script should never risk. Priests/arkati
+# favorites are naturally immune and simply won't be affected; nothing special
+# needs to be done about that here. Certain-immune targets who happen to be
+# alone would just eat the mana for nothing, which is why this only fires once
+# per pull rather than being retried -- see $salvi_censure_done in main.
+#
 # If a wound blocks spellcasting outright ("You can't think clearly enough to
 # prepare a spell!" -- no roundtime at all), fires ;eherbs --spellcast once
 # instead of retrying the dead cast, same as Salvi-attack.lic.
@@ -62,10 +82,14 @@
 # --- knobs -------------------------------------------------------------------
 
 # Targeted Web is a flat 5 -- hardcoded rather than looked up (effect-list.xml's
-# 10 is the untargeted cast). Condemn tracks the lookup with its known value as
-# fallback, same as Salvi-attack.lic.
-SPELL_WEB_MANA = 5 unless defined?(SPELL_WEB_MANA)
-SPELL_309_MANA = (Spell[309].mana_cost.to_i.positive? ? Spell[309].mana_cost.to_i : 9) unless defined?(SPELL_309_MANA)
+# 10 is the untargeted cast). Condemn and Censure track the lookup with their
+# known values as fallback, same as Salvi-attack.lic. Censure is always an
+# untargeted/room cast (it has no single-target form), so unlike Web its
+# effect-list.xml cost isn't suspect the same way -- still gated on the LIVE
+# value right before casting regardless, same as everything else here.
+SPELL_WEB_MANA     = 5 unless defined?(SPELL_WEB_MANA)
+SPELL_309_MANA     = (Spell[309].mana_cost.to_i.positive? ? Spell[309].mana_cost.to_i : 9)  unless defined?(SPELL_309_MANA)
+SPELL_CENSURE_MANA = (Spell[316].mana_cost.to_i.positive? ? Spell[316].mana_cost.to_i : 10) unless defined?(SPELL_CENSURE_MANA)
 
 # Web is an SMR attack; the endroll is the `== +N` on its result line. Keep
 # recasting until it lands at least this high, or give up after this many tries
@@ -161,6 +185,31 @@ def cast_and_collect(cast_cmd)
     break if Time.now.to_f >= end_time
   end
   text_lines.join(' ')
+end
+
+# Censure (316) -- the once-per-pull AoE opener (see file header). PREP + CAST
+# with no target: it's a mass/room effect, and evoking it would also reach
+# ungrouped players, which this never does. Mirrors land_maelstrom's
+# prep-then-confirm-then-cast shape: never fires the CAST off an unconfirmed
+# PREP. @return [Boolean] true if it actually went out (used this pass's
+# roundtime) -- false (mana short, wound-blocked, or prep never confirmed)
+# means the pass is free to fall straight through to the normal rotation.
+def cast_censure
+  return false if checkmana < SPELL_CENSURE_MANA
+  fput "release" if checkprep != "None"
+  waitcastrt?
+  waitrt?
+  text = dothistimeout("prep 316", 6, /Your spell is ready|can't think clearly enough to prepare/i).to_s
+  if text =~ CANT_CAST_WOUNDED
+    Script.run("eherbs", "--spellcast")
+    return false
+  end
+  return false unless text =~ /Your spell is ready/i   # prep never confirmed -- don't cast blind
+  return false if checkmana < SPELL_CENSURE_MANA        # last gate before the cast
+  cast_and_collect("cast")
+  waitcastrt?
+  waitrt?
+  true
 end
 
 # Web (118) at foe -- recast until the SMR endroll clears WEB_ENDROLL or
@@ -295,11 +344,17 @@ end
 
 # --- main ----------------------------------------------------------------
 
-$salvi_web_target = nil unless defined?($salvi_web_target)
-$salvi_webbed_id    = nil unless defined?($salvi_webbed_id)
+$salvi_web_target    = nil  unless defined?($salvi_web_target)
+$salvi_webbed_id     = nil  unless defined?($salvi_webbed_id)
+$salvi_censure_done  = false unless defined?($salvi_censure_done)
 
 foe = GameObj.targets.find { |t| t.id.to_i == XMLData.current_target_id.to_i } if XMLData.current_target_id
 foe ||= GameObj.targets.find { |t| t.status.to_s !~ /dead|gone/ && t.name !~ /animated/ }
+
+# No living target visible -- treat this as "between pulls" so the next fresh
+# group gets opened with Censure again instead of staying permanently "done"
+# from the last one.
+$salvi_censure_done = false if target_dead?(foe)
 
 # nothing (live) to hit -- hand control straight back to bigshot, which loots
 exit if target_dead?(foe)
@@ -321,6 +376,16 @@ exit if target_dead?(foe)
 # (see file header) -- so just park in defensive and leave it there. Only
 # wave_wand (a bolt-style item, not SMR) steps into offensive for its own cast.
 fput "stance defensive" if stance != "defensive"
+
+# Fresh pull -> open with Censure before settling into single-target work.
+# Marked done up front regardless of outcome (try-once semantics): if it
+# actually fired, it used this pass's roundtime, so stop here and let the
+# normal rotation pick up next pass; if it didn't (mana short, wound-blocked,
+# prep never confirmed), fall straight through instead of wasting the pass.
+unless $salvi_censure_done
+  $salvi_censure_done = true
+  exit if cast_censure
+end
 
 if checkmana >= SPELL_WEB_MANA
   attack_sequence(foe)
