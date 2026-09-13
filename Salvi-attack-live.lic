@@ -1,0 +1,333 @@
+# Salvi-attack-live.lic
+# Bigshot custom attack routine for Salvi (Cleric) against LIVING targets.
+# Prayer of Holding (301) -- the opener Salvi-attack.lic uses -- doesn't affect
+# living creatures, so this swaps it for Web (118) and keeps the same Condemn
+# (309) follow-up. Drop it into a bigshot hunting-commands list as a single
+# command:
+#
+#   script Salvi-attack-live
+#
+# bigshot pauses itself, runs this once against the target it already has
+# locked, then resumes to loot / wander / retarget -- so this does exactly ONE
+# attack decision per call and returns; bigshot re-invokes it every pass while
+# the target is still up. The moment the target dies -- at any point, including
+# mid-hold after Condemn -- the script returns so bigshot resumes and loots.
+# Death is read off GameObj status (what bigshot itself uses), not a
+# per-creature kill-message regex.
+#
+# Modeled on Fizzleworth-attack-base.lic's Web-then-DoT shape:
+#
+#   1. Web (118) -- an SMRv2 attack, recast until the endroll clears
+#      WEB_ENDROLL (101) or WEB_MAX_TRIES (3) is hit. Per
+#      https://gswiki.play.net/Web_(118): "Web your target before using a
+#      damaging SMR spell such as Condemn (309), as they'll suffer a -100
+#      penalty to avoiding your attack" -- literally this combo. Landed once
+#      per target ($salvi_webbed_id tracker), so bigshot re-invoking every pass
+#      doesn't rewebb (and burn mana) once it's already stuck.
+#   2. Condemn (309) -- same empowered-evoke-every-EMPOWER_EVERY-casts logic as
+#      Salvi-attack.lic, sharing its $salvi_condemn_casts tally (same
+#      character, same server-side empowerment counter, whichever script casts
+#      it) rather than tracking a separate count.
+#   3. Hold up to CONDEMN_WAIT (or the shorter EMPOWERED_CONDEMN_WAIT) for the
+#      DoT, bailing early if the target dies or the room fills past FLEE_HINT
+#      living targets (bigshot's about to flee -- don't sit still for it).
+#
+# Stays in stance DEFENSIVE throughout and never goes offensive: Web is
+# SMRv2, and per https://gswiki.play.net/SMR "typically stance is not a factor
+# for any spell based SMRv2 abilities" -- neither 118 nor 309 carry Lich's
+# stance='yes' flag either (unlike, say, Holy Bolt/306 or Minor Water/903, which
+# do), same reasoning Fizzleworth-attack-base.lic uses for Energy
+# Maelstrom/Tenebrous Tether.
+#
+# Low mana: Symbol of Mana if known and off cooldown (cooldown-only check --
+# never spends deeds), otherwise wave a wand at the target (same wand logic as
+# Salvi-attack.lic: fresh/dead containers and wand type from UserVars.op, full
+# multi-line LOOK IN so a categorizing container doesn't read as empty, GET by
+# a single adjective since GS chokes on double ones). No pray.
+#
+# OVEREXERTION: casting a spell without its full mana cost in hand doesn't fail
+# cleanly -- the cast goes through and hurts you ("You have overextended
+# yourself!  You feel yourself going into shock!"). So every cast here is
+# gated on the LIVE checkmana against that spell's real cost. TARGETED Web 118
+# costs 5 mana, NOT the 10 effect-list.xml reports (that's the
+# untargeted/room-cast cost -- confirmed the same way Fizzleworth-attack-base
+# hardcodes it rather than trusting the lookup); Condemn (309) is a flat 9,
+# same as Salvi-attack.lic. This is a pure mana check -- no mind-%/rest guard
+# (bigshot handles rest-on-mind itself).
+#
+# If a wound blocks spellcasting outright ("You can't think clearly enough to
+# prepare a spell!" -- no roundtime at all), fires ;eherbs --spellcast once
+# instead of retrying the dead cast, same as Salvi-attack.lic.
+
+# --- knobs -------------------------------------------------------------------
+
+# Targeted Web is a flat 5 -- hardcoded rather than looked up (effect-list.xml's
+# 10 is the untargeted cast). Condemn tracks the lookup with its known value as
+# fallback, same as Salvi-attack.lic.
+SPELL_WEB_MANA = 5 unless defined?(SPELL_WEB_MANA)
+SPELL_309_MANA = (Spell[309].mana_cost.to_i.positive? ? Spell[309].mana_cost.to_i : 9) unless defined?(SPELL_309_MANA)
+
+# Web is an SMR attack; the endroll is the `== +N` on its result line. Keep
+# recasting until it lands at least this high, or give up after this many tries
+# (and remember not to bother again on this target -- see land_web).
+WEB_ENDROLL   = 101 unless defined?(WEB_ENDROLL)
+WEB_MAX_TRIES = 3   unless defined?(WEB_MAX_TRIES)
+
+# Flat hold in stance defensive after Condemn goes off, letting the DoT work
+# instead of instantly re-engaging. The empowered (evoke) cast lands harder and
+# doesn't need the same long pause, so it gets its own shorter wait.
+CONDEMN_WAIT           = 10 unless defined?(CONDEMN_WAIT)
+EMPOWERED_CONDEMN_WAIT = 3  unless defined?(EMPOWERED_CONDEMN_WAIT)
+
+# Condemn banks an empowered charge server-side every N normal casts. Rather
+# than querying `spell` every cycle (slow, >2s), just tally casts locally: every
+# EMPOWER_EVERY plain incants, the next Condemn is an evoke. The tally lives in
+# a global ($salvi_condemn_casts, shared with Salvi-attack.lic -- it's the same
+# character's empowerment counter regardless of which script is casting) so it
+# survives this script being re-invoked each attack pass.
+EMPOWER_EVERY = 10 unless defined?(EMPOWER_EVERY)
+
+# Living-target count past which bigshot is about to flee (mirrors
+# Fizzleworth-attack-base.lic's use of the profile's flee_count) -- don't sit
+# still holding for the DoT once the room's this full.
+FLEE_HINT = 7 unless defined?(FLEE_HINT)
+
+# Wand config is read straight from bigshot's own loaded settings (UserVars.op)
+# so it always tracks whatever profile is active -- Fresh/Dead wand container and
+# the wand type(s) from the Attacking tab. The "wand" field may be comma- or
+# pipe-separated. WAND_PATTERN just checks the fresh container actually holds a
+# matching wand; WAND_GET is the noun handed to GET -- a single adjective +
+# "wand" (GS chokes on double adjectives like "slender blue wand", so we never
+# name the full thing). Container values here are the fallback if the profile
+# leaves them blank.
+_op = (defined?(UserVars) && UserVars.op.is_a?(Hash)) ? UserVars.op : {}
+_wand_tokens = _op["wand"].to_s.split(/[,|]\s*/).map(&:strip).reject(&:empty?)
+WAND_PATTERN = (_wand_tokens.empty? ? /\bwand\b/i : /#{_wand_tokens.map { |t| Regexp.escape(t) }.join('|')}/i) unless defined?(WAND_PATTERN)
+WAND_GET = (_wand_tokens.empty? || _wand_tokens.first =~ /\bwand\b/i ? "wand" : "#{_wand_tokens.first} wand") unless defined?(WAND_GET)
+FRESH_WAND_CONTAINER = (_op["fresh_wand_container"].to_s.strip.empty? ? "greatcloak" : _op["fresh_wand_container"].to_s.strip) unless defined?(FRESH_WAND_CONTAINER)
+DEAD_WAND_CONTAINER  = (_op["dead_wand_container"].to_s.strip.empty?  ? "bag"        : _op["dead_wand_container"].to_s.strip)  unless defined?(DEAD_WAND_CONTAINER)
+
+# --- patterns --------------------------------------------------------------
+
+# GS4 shows this when a wound (nerve/head wound, concussion, etc.) blocks
+# spellcasting outright -- no roundtime at all, so a naive retry loop just
+# burns the whole cast timeout every tick with nothing to show for it.
+CANT_CAST_WOUNDED = /can't think clearly enough to prepare a spell/i unless defined?(CANT_CAST_WOUNDED)
+
+# --- helpers --------------------------------------------------------------
+
+# Monster-agnostic death check: bigshot itself never text-matches kill messages
+# (they vary per creature) -- it reads GameObj status, which Lich core keeps
+# current from the room/combat XML. A dead creature reads "dead" while the corpse
+# lingers, then "gone" once it decays or is looted.
+def target_dead?(foe)
+  return true if foe.nil?
+  return true if foe.status.to_s =~ /dead|gone/
+  !GameObj.targets.any? { |t| t.id.to_i == foe.id.to_i && t.status.to_s !~ /dead|gone/ }
+end
+
+def living_targets
+  GameObj.targets.count { |t| t.status.to_s !~ /dead|gone/ }
+end
+
+# Sleeps up to `seconds`, checked ~4x/sec, bailing the instant the target dies
+# (hand back to bigshot so it loots) or the room fills past FLEE_HINT (bigshot's
+# about to flee -- stop holding still for the DoT).
+def hold_for_dot(seconds, foe)
+  deadline = Time.now.to_f + seconds
+  until Time.now.to_f >= deadline
+    return if target_dead?(foe)
+    return if living_targets >= FLEE_HINT
+    sleep 0.25
+  end
+end
+
+# Sends cast_cmd and collects every line through the roundtime/resolution
+# message (a single dothistimeout match only sees the first matching line, not
+# the whole result block). Stops early on CANT_CAST_WOUNDED (never gets a
+# roundtime line) or Web's own resolution text.
+def cast_and_collect(cast_cmd)
+  text_lines = []
+  put cast_cmd
+  end_time = Time.now.to_f + 6
+  loop do
+    line = get?
+    if line.nil?
+      sleep 0.1
+    else
+      text_lines << line
+      break if line =~ /Roundtime: \d+ sec|Cast Roundtime \d+ Sec|Warded off|Warding failed|is rooted in place/i || line =~ CANT_CAST_WOUNDED
+    end
+    break if Time.now.to_f >= end_time
+  end
+  text_lines.join(' ')
+end
+
+# Web (118) at foe -- recast until the SMR endroll clears WEB_ENDROLL or
+# WEB_MAX_TRIES is hit. Landing it (or running out of tries) marks this target
+# handled via $salvi_webbed_id so later passes skip straight to Condemn instead
+# of rewebbing a target that's already stuck (or whose TD we just can't clear).
+def land_web(foe)
+  return if $salvi_webbed_id == foe.id.to_i
+  fput "release" if checkprep != "None"
+
+  tries = 0
+  while tries < WEB_MAX_TRIES
+    return if target_dead?(foe)
+    return if checkmana < SPELL_WEB_MANA
+    waitcastrt?
+    waitrt?
+    text = cast_and_collect("incant 118")
+    if text =~ CANT_CAST_WOUNDED
+      Script.run("eherbs", "--spellcast")
+      return
+    end
+    tries += 1
+    roll = (text =~ /==\s*\+?(-?\d+)/ ? Regexp.last_match(1).to_i : nil)
+    break if (roll && roll >= WEB_ENDROLL) || text =~ /becomes ensnared|is rooted in place/i
+    sleep 0.2
+  end
+  $salvi_webbed_id = foe.id.to_i
+end
+
+# Casts Condemn (309) at foe -- an empowered evoke once EMPOWER_EVERY plain
+# incants have been logged (then the tally resets), a plain incant otherwise --
+# and waits out its roundtime. Costs SPELL_309_MANA either way; the caller has
+# already checked the mana, this re-checks against the LIVE value one more time
+# right before the cast so nothing slips through. Identical to
+# Salvi-attack.lic's version, sharing its $salvi_condemn_casts tally.
+# @return [Boolean] true if the empowered (evoke) path was used.
+def cast_condemn(foe)
+  return false if checkmana < SPELL_309_MANA
+
+  $salvi_condemn_casts ||= 0
+  empowered = $salvi_condemn_casts >= EMPOWER_EVERY
+
+  if empowered
+    fput "prep 309"
+    waitcastrt?
+    waitrt?
+    return false if checkmana < SPELL_309_MANA   # last gate before the evoke
+    fput "evoke ##{foe.id}"
+    $salvi_condemn_casts = 0
+  else
+    fput "incant 309"
+    $salvi_condemn_casts += 1
+  end
+  waitcastrt?
+  waitrt?
+  empowered
+end
+
+# Web (once per target), then Condemn, then hold for the DoT.
+def attack_sequence(foe)
+  land_web(foe)
+  return if target_dead?(foe)
+  return if checkmana < SPELL_309_MANA
+
+  empowered = cast_condemn(foe)
+  hold_for_dot(empowered ? EMPOWERED_CONDEMN_WAIT : CONDEMN_WAIT, foe)
+end
+
+# True if the fresh container holds a wand matching WAND_PATTERN, read from a
+# full multi-line LOOK IN. Containers that categorize their contents print
+#   In the mail large sack:
+#   Wands [20]: a slender blue wand, a copper wand (2), a drake wand (3), ...
+#   Total items: 20
+# -- while a plain container prints one "In the <c> you see ..." line; a single
+# dothistimeout would only ever see the first line, so collect the whole block.
+def fresh_wand_present?
+  fput "open my #{FRESH_WAND_CONTAINER}"
+  lines = []
+  put "look in my #{FRESH_WAND_CONTAINER}"
+  deadline = Time.now.to_f + 3
+  until Time.now.to_f >= deadline
+    line = get?
+    if line.nil?
+      sleep 0.05
+      next
+    end
+    lines << line
+    break if line =~ /^Total items:|^In .+ you see |There (?:is|are) nothing|is closed|can't look/i
+  end
+  lines.join(' ') =~ WAND_PATTERN ? true : false
+end
+
+# Tell bigshot to rest -- out of mana and out of wands, nothing left to do.
+def rest_out_of_wands
+  echo "out of mana and no usable wands in #{FRESH_WAND_CONTAINER} -- resting."
+  $bigshot_should_rest = true
+  $rest_reason = "Out of mana, no wands"
+end
+
+# One wand wave at foe. If neither hand holds a wand, confirms the fresh
+# container has one (full multi-line LOOK IN, not a blind GET) and draws it with
+# a plain "get <WAND_GET>"; a spent wand (no roll/roundtime on the wave) is
+# retired to the dead container. Nothing to wave, nothing to draw -> flag
+# bigshot to rest.
+def wave_wand(foe)
+  in_hand = [GameObj.right_hand, GameObj.left_hand].compact.find { |o| o.name.to_s =~ /\bwand\b/i }
+
+  unless in_hand
+    unless fresh_wand_present?
+      rest_out_of_wands
+      return
+    end
+
+    r = dothistimeout("get #{WAND_GET} from my #{FRESH_WAND_CONTAINER}", 3,
+                      /You (?:remove|slip|slide|get|pull)|Get what\?|What were you referring to|I could not find/i)
+    unless r =~ /You (?:remove|slip|slide|get|pull)/i
+      rest_out_of_wands
+      return
+    end
+  end
+
+  fput "stance offensive" if stance != "offensive"
+  result = cast_and_collect("wave my wand at ##{foe.id}")
+  fput "stance defensive"
+
+  # A wand that fired -- even one the target fully resisted -- still shows a
+  # combat roll or a roundtime. A genuinely depleted wand gives neither
+  # ("Nothing happens."), so only then retire it to the dead container.
+  fired = result =~ /d100|You hurl|Roundtime: \d+ sec|Cast Roundtime \d+ Seconds?/i
+  fput "put my wand in my #{DEAD_WAND_CONTAINER}" unless fired
+end
+
+# --- main ----------------------------------------------------------------
+
+$salvi_live_target = nil unless defined?($salvi_live_target)
+$salvi_webbed_id    = nil unless defined?($salvi_webbed_id)
+
+foe = GameObj.targets.find { |t| t.id.to_i == XMLData.current_target_id.to_i } if XMLData.current_target_id
+foe ||= GameObj.targets.find { |t| t.status.to_s !~ /dead|gone/ && t.name !~ /animated/ }
+
+# nothing (live) to hit -- hand control straight back to bigshot, which loots
+exit if target_dead?(foe)
+
+# fresh target -> forget whether Web already landed on the last one
+if $salvi_live_target != foe.id.to_i
+  $salvi_live_target = foe.id.to_i
+  $salvi_webbed_id    = nil
+end
+
+fput "target ##{foe.id}" unless XMLData.current_target_id.to_i == foe.id.to_i
+
+waitrt?
+waitcastrt?
+
+exit if target_dead?(foe)
+
+# Web and Condemn are both SMR-based -- stance doesn't affect either landing
+# (see file header) -- so just park in defensive and leave it there. Only
+# wave_wand (a bolt-style item, not SMR) steps into offensive for its own cast.
+fput "stance defensive" if stance != "defensive"
+
+if checkmana >= SPELL_WEB_MANA
+  attack_sequence(foe)
+elsif Spell[9813].known? && !Effects::Cooldowns.active?("Symbol of Mana")
+  # Off-cooldown check only -- never touches deeds (same check bigshot.lic and
+  # Salvi-attack.lic use).
+  fput "symbol of mana"
+else
+  wave_wand(foe)
+end
