@@ -1003,9 +1003,10 @@ else
 		fput "lie on altar"
 		waitfor "overwhelmed by a sudden tingling sensation"
 		fput "stand" until standing?
-		fput "go shaft"
-		gowater.call
-		wait_until { XMLData.room_id == 52020 }
+		# A portal was added at the altar room (2026) that drops you straight back
+		# at the bottom of Melgorehn's Reach - use it instead of the shaft/water
+		# tunnel slide (gowater, above), which is no longer necessary.
+		fput "go portal"
 		Script.run('go2', 'u312024')
 		exit
     #Step 24 Ta'Vaalor Tested but unverified
