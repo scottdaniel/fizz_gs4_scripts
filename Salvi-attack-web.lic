@@ -1,11 +1,11 @@
-# Salvi-attack-live.lic
+# Salvi-attack-web.lic
 # Bigshot custom attack routine for Salvi (Cleric) against LIVING targets.
 # Prayer of Holding (301) -- the opener Salvi-attack.lic uses -- doesn't affect
 # living creatures, so this swaps it for Web (118) and keeps the same Condemn
 # (309) follow-up. Drop it into a bigshot hunting-commands list as a single
 # command:
 #
-#   script Salvi-attack-live
+#   script Salvi-attack-web
 #
 # bigshot pauses itself, runs this once against the target it already has
 # locked, then resumes to loot / wander / retarget -- so this does exactly ONE
@@ -295,7 +295,7 @@ end
 
 # --- main ----------------------------------------------------------------
 
-$salvi_live_target = nil unless defined?($salvi_live_target)
+$salvi_web_target = nil unless defined?($salvi_web_target)
 $salvi_webbed_id    = nil unless defined?($salvi_webbed_id)
 
 foe = GameObj.targets.find { |t| t.id.to_i == XMLData.current_target_id.to_i } if XMLData.current_target_id
@@ -305,8 +305,8 @@ foe ||= GameObj.targets.find { |t| t.status.to_s !~ /dead|gone/ && t.name !~ /an
 exit if target_dead?(foe)
 
 # fresh target -> forget whether Web already landed on the last one
-if $salvi_live_target != foe.id.to_i
-  $salvi_live_target = foe.id.to_i
+if $salvi_web_target != foe.id.to_i
+  $salvi_web_target = foe.id.to_i
   $salvi_webbed_id    = nil
 end
 
