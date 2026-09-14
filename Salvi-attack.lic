@@ -14,14 +14,13 @@
 #
 # Decision each pass:
 #
-#   mana >= 301 + 309 cost:  incant 301 in stance offensive (retried up to
-#                            SPELL_301_MAX_TRIES while the endroll stays below
-#                            SPELL_301_ENDROLL -- see below), then Condemn
-#                            (309) -- an empowered evoke every
-#                            EMPOWER_EVERY (10) plain casts, a plain incant
-#                            otherwise -- then drop to stance defensive and hold
-#                            while the DoT ticks (bailing early if the target
-#                            dies): CONDEMN_WAIT for a plain cast, the shorter
+#   mana >= 301 + 309 cost:  incant 301 (retried up to SPELL_301_MAX_TRIES while
+#                            the endroll stays below SPELL_301_ENDROLL -- see
+#                            below), then Condemn (309) -- an empowered evoke
+#                            every EMPOWER_EVERY (10) plain casts, a plain
+#                            incant otherwise -- then hold while the DoT ticks
+#                            (bailing early if the target dies): CONDEMN_WAIT
+#                            for a plain cast, the shorter
 #                            EMPOWERED_CONDEMN_WAIT for an empowered one.
 #
 #   otherwise (low mana):    cast Symbol of Mana if it's known and off cooldown
@@ -42,6 +41,14 @@
 # If a wound blocks spellcasting outright ("You can't think clearly enough to
 # prepare a spell!" -- no roundtime at all), fires ;eherbs --spellcast once
 # instead of retrying the dead cast, same as Salvi-duskattack.lic.
+#
+# Stays in stance DEFENSIVE throughout and never goes offensive for 301 or 309:
+# per Lich's spell data, neither carries the stance='yes' flag (unlike Holy
+# Bolt/306, which does -- that's the 302/306 pair Salvi-duskattack.lic
+# alternates, not this script), so offensive stance buys nothing for either
+# and just gives up defense for no reason. Only wave_wand -- an AS-vs-DS wand
+# attack, not a CS/TD or SMR spell roll -- steps into offensive for its own
+# cast, same reasoning Salvi-attack-web.lic uses.
 #
 # 301 resolves as a CS/TD "warding" roll -- confirmed live:
 #   CS: +190 - TD: +99 + CvA: +25 + d100: +64 == +180
@@ -213,33 +220,27 @@ def cast_301(foe)
 end
 
 # 301 (retrying below-threshold rolls, including fumbles), chain into Condemn,
-# then hold defensive while the DoT ticks.
+# then hold while the DoT ticks. Caller (main) already parked stance in
+# defensive and leaves it there -- neither cast needs offensive (see file
+# header), so nothing here touches stance at all.
 def attack_sequence(foe)
   fput "release" if checkprep != "None"
-  fput "stance offensive" if stance != "offensive"
 
-  return fput("stance defensive") if checkmana < SPELL_301_MANA
+  return if checkmana < SPELL_301_MANA
 
   cast_301(foe)
 
   # 301 may have finished the target off -- don't Condemn a corpse or sit out
   # the DoT wait for nothing.
-  if target_dead?(foe)
-    fput "stance defensive"
-    return
-  end
+  return if target_dead?(foe)
 
   # 301 just spent its mana -- re-check the LIVE value before chaining 309.
   # Casting it short overextends you (nerve damage), so if we can't cover it,
   # just hold and let the next pass (or a rest) sort the mana out.
-  if checkmana < SPELL_309_MANA
-    fput "stance defensive"
-    return
-  end
+  return if checkmana < SPELL_309_MANA
 
   empowered = cast_condemn(foe)
 
-  fput "stance defensive"
   hold_unless_dead(empowered ? EMPOWERED_CONDEMN_WAIT : CONDEMN_WAIT, foe)
 end
 
@@ -321,6 +322,11 @@ waitrt?
 waitcastrt?
 
 exit if target_dead?(foe)
+
+# 301 and 309 don't need offensive stance (see file header) -- park in
+# defensive and leave it there. Only wave_wand steps into offensive for its
+# own cast.
+fput "stance defensive" if stance != "defensive"
 
 if checkmana >= COMBO_MANA
   # Enough for the full 301 -> 309 combo without overextending on either.
