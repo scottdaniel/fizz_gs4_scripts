@@ -1207,14 +1207,14 @@ else
 			result = dothis "search", /^You/
 			break if result =~/staircase/
 			}
-		fput "stand"
+		fput "stand" until standing?
 		fput "go stair"
 		fput "lie"
 		loop {
 		    	result = dothis "search", /^You/
 			    break if result =~/curtain/
 			 }
-		fput "stand"
+		fput "stand" until standing?
 		fput "go curtain"
 		fput "lie"
 		fput "search" until get =~/pot/
@@ -1233,14 +1233,14 @@ else
 				result = dothis "search", /^You/
 				break if result =~/curtain/
 			 }
-		fput "stand"
+		fput "stand" until standing?
 		fput "go curtain"
 		fput "lie"
 		loop {
 				result = dothis "search", /^You/
 				break if result =~/stair/
 			 }
-		fput "stand"
+		fput "stand" until standing?
 		fput "go stair"
 		fput "out"
 		Script.run('go2', 'u312025')
