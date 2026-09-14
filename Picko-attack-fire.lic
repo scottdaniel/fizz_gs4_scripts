@@ -1,0 +1,240 @@
+# Picko-attack-fire.lic
+# Bigshot custom attack routine for Picko (Wizard) -- fire-focused variant of
+# Picko-attack.lic. Drop it into a bigshot hunting-commands list as a single
+# command:
+#
+#   script Picko-attack-fire
+#
+# bigshot pauses itself, runs this once against the target it already has
+# locked, then resumes to loot / wander / retarget -- so this does exactly ONE
+# attack decision per call and returns; bigshot re-invokes it every pass while
+# the target is still up. If the target's already dead the script just returns
+# so bigshot loots. Death is read off GameObj status (what bigshot itself
+# uses), not a per-creature kill-message regex.
+#
+# Decision each pass:
+#
+#   mana >= MANA_FLOOR:  incant 908 (Major Fire, https://gswiki.play.net/Major_Fire_(908))
+#                        in stance offensive, then back to stance defensive --
+#                        the usual stance dance. 908 carries BOTH Lich's
+#                        stance='yes' flag AND channel='yes' -- unlike
+#                        301/309 in Salvi-attack.lic (neither flag, no
+#                        benefit), this one genuinely wants offensive on both
+#                        counts (the direct stance mechanic, and separately
+#                        the channel-damage bonus table channel='yes' spells
+#                        get -- see Smite/302's wiki page for that mechanic).
+#
+#   otherwise:           cast Symbol of Mana if it's known and off cooldown
+#                        (cooldown-only check -- never spends deeds); THEN, if
+#                        that's not available either, wave a FIRE-DAMAGE wand
+#                        at the target -- never a random one, since this
+#                        script is fire-themed. Per
+#                        https://gswiki.play.net/Wand, the fire-damage wand
+#                        nouns are golden (Minor Fire), drake and grooved
+#                        ebony (Fire Spirit family), and electrum (Fire
+#                        Spirit) -- "slender crimson rod" also does Major Fire
+#                        but it's a rod, not a wand, so \bwand\b already
+#                        excludes it without special-casing. Auto-draws a
+#                        fresh one from the fresh-wand container, retires a
+#                        spent one to the dead-wand container; if there are no
+#                        fire wands left it flags bigshot to rest (even if
+#                        the sack has other, non-fire wands in it).
+#
+# OVEREXERTION: casting a spell without its full mana cost in hand doesn't fail
+# cleanly -- the cast goes through and hurts you ("You have overextended
+# yourself!  You feel yourself going into shock!"), which then blocks casting
+# AND wand-waving for the rest of that fight (confirmed in
+# Picko-duskattack.lic for 903; same risk applies here). So the attack only
+# fires with MANA_FLOOR in hand, re-checked against the LIVE value right
+# before the cast.
+#
+# No pray fallback (Wizard), no empowered/evoke combo -- just the straight
+# incant, mirroring Picko-attack.lic's shape.
+#
+# If a wound blocks spellcasting outright ("You can't think clearly enough to
+# prepare a spell!" -- no roundtime at all), fires ;eherbs --spellcast once
+# instead of retrying the dead cast.
+
+# --- knobs -------------------------------------------------------------------
+
+# 908's base mana cost, read from Lich's spell data (effect-list.xml) with a
+# fallback to the current known value.
+SPELL_908_MANA = (Spell[908].mana_cost.to_i.positive? ? Spell[908].mana_cost.to_i : 8) unless defined?(SPELL_908_MANA)
+
+# Attack floor: 908's base cost plus a 1-mana cushion, same reasoning as
+# Picko-attack.lic's MANA_FLOOR for 903 -- incant's real targeted cost can run
+# a hair over what mana_cost reports, and casting short overextends you.
+MANA_FLOOR = SPELL_908_MANA + 1 unless defined?(MANA_FLOOR)
+
+# Fire-damage wand types per https://gswiki.play.net/Wand -- deliberately NOT
+# read from the bigshot profile's "wand" field (unlike Picko-attack.lic):
+# this script is fire-themed, so it only ever reaches for these regardless of
+# what the profile configures. FIRE_WAND_PATTERN confirms one is actually in
+# the fresh container; FIRE_WAND_GET_NOUNS is what's handed to GET, tried in
+# order until one succeeds -- a single adjective closest to "wand" in each
+# case, since GS chokes on double adjectives ("grooved ebony wand" only
+# parses as "ebony wand", never "grooved wand" or the full name).
+FIRE_WAND_PATTERN    = /\b(?:golden|drake|electrum|grooved ebony)\s+wand\b/i unless defined?(FIRE_WAND_PATTERN)
+FIRE_WAND_GET_NOUNS  = ["golden wand", "drake wand", "electrum wand", "ebony wand"].freeze unless defined?(FIRE_WAND_GET_NOUNS)
+
+# Fresh/Dead wand containers still come from bigshot's own loaded settings
+# (UserVars.op) -- those are just storage locations, not wand types, so no
+# reason to hardcode them the way the wand types above are.
+_op = (defined?(UserVars) && UserVars.op.is_a?(Hash)) ? UserVars.op : {}
+FRESH_WAND_CONTAINER = (_op["fresh_wand_container"].to_s.strip.empty? ? "sack" : _op["fresh_wand_container"].to_s.strip) unless defined?(FRESH_WAND_CONTAINER)
+DEAD_WAND_CONTAINER  = (_op["dead_wand_container"].to_s.strip.empty?  ? "bag"  : _op["dead_wand_container"].to_s.strip)  unless defined?(DEAD_WAND_CONTAINER)
+
+# --- patterns --------------------------------------------------------------
+
+# GS4 shows this when a wound (nerve/head wound, concussion, etc.) blocks
+# spellcasting outright -- no roundtime at all, so a naive retry loop just
+# burns the whole cast timeout every tick with nothing to show for it.
+CANT_CAST_WOUNDED = /can't think clearly enough to prepare a spell/i unless defined?(CANT_CAST_WOUNDED)
+
+# --- helpers --------------------------------------------------------------
+
+# Monster-agnostic death check: bigshot itself never text-matches kill messages
+# (they vary per creature) -- it reads GameObj status, which Lich core keeps
+# current from the room/combat XML. A dead creature reads "dead" while the corpse
+# lingers, then "gone" once it decays or is looted.
+def target_dead?(foe)
+  return true if foe.nil?
+  return true if foe.status.to_s =~ /dead|gone/
+  !GameObj.targets.any? { |t| t.id.to_i == foe.id.to_i && t.status.to_s !~ /dead|gone/ }
+end
+
+# Sends cast_cmd and collects every line through the roundtime message (a single
+# dothistimeout match only sees the first matching line, not the whole result
+# block). Stops early on CANT_CAST_WOUNDED, which never gets a roundtime line.
+def cast_and_collect(cast_cmd)
+  text_lines = []
+  put cast_cmd
+  end_time = Time.now.to_f + 5
+  loop do
+    line = get?
+    if line.nil?
+      sleep 0.1
+    else
+      text_lines << line
+      break if line =~ /Roundtime: \d+ sec|Cast Roundtime \d+ Seconds?\.?/i || line =~ CANT_CAST_WOUNDED
+    end
+    break if Time.now.to_f >= end_time
+  end
+  text_lines.join(' ')
+end
+
+# incant 908 at foe in stance offensive, then back to defensive. Heals with
+# ;eherbs --spellcast (touches only casting-blocking wounds) if a wound blocks
+# the cast outright.
+def attack_908(foe)
+  fput "release" if checkprep != "None"
+  fput "stance offensive" if stance != "offensive"
+
+  # Re-check the LIVE mana right before the cast -- casting 908 short
+  # overextends you, and that lockout kills the rest of the fight.
+  return fput("stance defensive") if checkmana < MANA_FLOOR
+
+  text = cast_and_collect("incant 908")
+  if text =~ CANT_CAST_WOUNDED
+    Script.run("eherbs", "--spellcast")
+    fput "stance defensive"
+    return
+  end
+  waitcastrt?
+  waitrt?
+  fput "stance defensive"
+end
+
+# True if the fresh container holds a fire-damage wand (FIRE_WAND_PATTERN),
+# read from a full multi-line LOOK IN. Containers that categorize their
+# contents print
+#   In the mail large sack:
+#   Wands [20]: a slender blue wand, a golden wand (2), a drake wand (3), ...
+#   Total items: 20
+# -- while a plain container prints one "In the <c> you see ..." line; a single
+# dothistimeout would only ever see the first line, so collect the whole block.
+def fresh_fire_wand_present?
+  fput "open my #{FRESH_WAND_CONTAINER}"
+  lines = []
+  put "look in my #{FRESH_WAND_CONTAINER}"
+  deadline = Time.now.to_f + 3
+  until Time.now.to_f >= deadline
+    line = get?
+    if line.nil?
+      sleep 0.05
+      next
+    end
+    lines << line
+    break if line =~ /^Total items:|^In .+ you see |There (?:is|are) nothing|is closed|can't look/i
+  end
+  lines.join(' ') =~ FIRE_WAND_PATTERN ? true : false
+end
+
+# Tell bigshot to rest -- out of mana and out of fire wands, nothing left to do.
+def rest_out_of_wands
+  echo "out of mana and no fire wands left in #{FRESH_WAND_CONTAINER} -- resting."
+  $bigshot_should_rest = true
+  $rest_reason = "Out of mana, no fire wands"
+end
+
+# One wand wave at foe. If neither hand holds a fire wand, confirms the fresh
+# container has one (full multi-line LOOK IN, not a blind GET) and draws it,
+# trying each FIRE_WAND_GET_NOUNS entry in turn until one succeeds (cheaper
+# than parsing exactly which fire type is present); a spent wand (no
+# roll/roundtime on the wave) is retired to the dead container. Nothing to
+# wave, nothing to draw -> flag bigshot to rest.
+def wave_wand(foe)
+  in_hand = [GameObj.right_hand, GameObj.left_hand].compact.find { |o| o.name.to_s =~ FIRE_WAND_PATTERN }
+
+  unless in_hand
+    unless fresh_fire_wand_present?
+      rest_out_of_wands
+      return
+    end
+
+    got = FIRE_WAND_GET_NOUNS.any? do |noun|
+      r = dothistimeout("get #{noun} from my #{FRESH_WAND_CONTAINER}", 3,
+                        /You (?:remove|slip|slide|get|pull)|Get what\?|What were you referring to|I could not find/i)
+      r =~ /You (?:remove|slip|slide|get|pull)/i
+    end
+    unless got
+      rest_out_of_wands
+      return
+    end
+  end
+
+  fput "stance offensive" if stance != "offensive"
+  result = cast_and_collect("wave my wand at ##{foe.id}")
+  fput "stance defensive"
+
+  # A wand that fired -- even one the target fully resisted -- still shows a
+  # combat roll or a roundtime. A genuinely depleted wand gives neither
+  # ("Nothing happens."), so only then retire it to the dead container.
+  fired = result =~ /d100|You hurl|Roundtime: \d+ sec|Cast Roundtime \d+ Seconds?/i
+  fput "put my wand in my #{DEAD_WAND_CONTAINER}" unless fired
+end
+
+# --- main ----------------------------------------------------------------
+
+foe = GameObj.targets.find { |t| t.id.to_i == XMLData.current_target_id.to_i } if XMLData.current_target_id
+foe ||= GameObj.targets.find { |t| t.status.to_s !~ /dead|gone/ && t.name !~ /animated/ }
+
+# nothing (live) to hit -- hand control straight back to bigshot, which loots
+exit if target_dead?(foe)
+
+fput "target ##{foe.id}" unless XMLData.current_target_id.to_i == foe.id.to_i
+
+waitrt?
+waitcastrt?
+
+exit if target_dead?(foe)
+
+if checkmana >= MANA_FLOOR
+  attack_908(foe)
+elsif Spell[9813].known? && !Effects::Cooldowns.active?("Symbol of Mana")
+  # Off-cooldown check only -- never touches deeds (same check bigshot.lic and
+  # Picko-duskattack.lic use).
+  fput "symbol of mana"
+else
+  wave_wand(foe)
+end
