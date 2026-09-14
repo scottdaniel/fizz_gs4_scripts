@@ -1226,7 +1226,10 @@ else
 		echo "Questions may include:"
 		echo "Who does Voln serve? Lorminstra"
 		echo "Does Voln have a secret agenda? No"
-		echo "How many steps are there on the path to enlightment? 26"
+		echo "How many steps are there on the path to enlightenment? 26"
+		echo "The Order of Voln is dedicated to freeing what? undead"
+		echo "What is the name of the founder of the Order of Voln? Fasthr"
+		echo "(Answer with 'word, e.g. 'undead - the leading apostrophe is GS's say-shortcut.)"
 		echo "Type ;u when done."
 		pause_script
 		loop {
