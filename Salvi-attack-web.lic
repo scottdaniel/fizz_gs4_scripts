@@ -145,6 +145,14 @@ DEAD_WAND_CONTAINER  = (_op["dead_wand_container"].to_s.strip.empty?  ? "bag"   
 # burns the whole cast timeout every tick with nothing to show for it.
 CANT_CAST_WOUNDED = /can't think clearly enough to prepare a spell/i unless defined?(CANT_CAST_WOUNDED)
 
+# GS4's own casting-fumble check ("d100 == 1 FUMBLE!"), independent of any
+# spell's own targeting roll -- a fumbled cast has zero effect no matter what.
+# land_web's roll parsing already catches this implicitly (a fumble's "== 1"
+# fails the >= WEB_ENDROLL check the same as a genuine miss, so it just
+# retries), but Censure has no such roll-vs-threshold retry loop of its own, so
+# cast_censure checks this explicitly instead.
+FUMBLE = /FUMBLE/i unless defined?(FUMBLE)
+
 # --- helpers --------------------------------------------------------------
 
 # Monster-agnostic death check: bigshot itself never text-matches kill messages
@@ -198,9 +206,12 @@ end
 # with no target: it's a mass/room effect, and evoking it would also reach
 # ungrouped players, which this never does. Mirrors land_maelstrom's
 # prep-then-confirm-then-cast shape: never fires the CAST off an unconfirmed
-# PREP. @return [Boolean] true if it actually went out (used this pass's
-# roundtime) -- false (mana short, wound-blocked, or prep never confirmed)
-# means the pass is free to fall straight through to the normal rotation.
+# PREP. @return [Boolean] true if it actually went out AND didn't fumble (used
+# this pass's roundtime for real effect) -- false (mana short, wound-blocked,
+# prep never confirmed, or a FUMBLE fizzled it with zero effect on the room)
+# means the pass is free to fall straight through to the normal rotation
+# instead of ending on a total whiff. $salvi_censure_done is still set either
+# way by the caller -- this only decides whether to also use the same pass.
 def cast_censure
   return false if checkmana < SPELL_CENSURE_MANA
   fput "release" if checkprep != "None"
@@ -213,16 +224,19 @@ def cast_censure
   end
   return false unless text =~ /Your spell is ready/i   # prep never confirmed -- don't cast blind
   return false if checkmana < SPELL_CENSURE_MANA        # last gate before the cast
-  cast_and_collect("cast")
+  result = cast_and_collect("cast")
   waitcastrt?
   waitrt?
-  true
+  result !~ FUMBLE
 end
 
 # Web (118) at foe -- recast until the SMR endroll clears WEB_ENDROLL or
 # WEB_MAX_TRIES is hit. Landing it (or running out of tries) marks this target
 # handled via $salvi_webbed_id so later passes skip straight to Condemn instead
 # of rewebbing a target that's already stuck (or whose TD we just can't clear).
+# A FUMBLE needs no separate check here: "d100 == 1 FUMBLE!" parses as an
+# endroll of 1 via the same regex below, which always fails the >= WEB_ENDROLL
+# check and triggers a retry same as a genuine miss.
 def land_web(foe)
   return if $salvi_webbed_id == foe.id.to_i
   fput "release" if checkprep != "None"
