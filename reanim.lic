@@ -70,6 +70,17 @@
                                Fired early (in the field) by
                                Fizzleworth-anim-cleanup.lic, with
                                Fizzleworth-prerest as a town fallback.
+
+  The animate isn't invincible -- it can be killed outright mid-fight (2026-
+  09-14: a pestilent vision's poison gas dropped it). That's a THIRD way the
+  buddy goes down, distinct from ";reanim die" and doesn't clear
+  $reanim_animate_live on its own. Fizzleworth-anim-cleanup.lic polls for
+  this (animate's GameObj id, tracked here as $reanim_animate_id, losing its
+  "animated" name prefix while $reanim_animate_live is still true) and races
+  to grab the weapon off the corpse before bigshot's own stock post-kill
+  eloot auto-discards it as "useless equipment" -- observed doing exactly
+  that ~9s after the death in the same log. See Fizzleworth-anim-cleanup.lic
+  for that side of it.
   Stop:   n/a (single pass, exits when done)
 =end
 
@@ -88,6 +99,11 @@ ANIMATE_CATCHUP     = 10   # ;reanim die: secs to wait for the animate to follow
 # after "tell anim die", so it's useless as a "do we still have a buddy?"
 # check -- this global is the source of truth. Survives across ;reanim runs.
 $reanim_animate_live = false unless defined?($reanim_animate_live)
+# The animate's own GameObj id (same id the corpse had before 730), so
+# Fizzleworth-anim-cleanup.lic can watch for it dying in COMBAT (not just a
+# deliberate ;reanim die) and grab the weapon off the corpse before bigshot's
+# own post-kill eloot auto-discards it. Cleared alongside $reanim_animate_live.
+$reanim_animate_id = nil unless defined?($reanim_animate_id)
 
 # The weapon the animate should wield.  Use the item's BASE noun -- the last
 # word of how it shows in inventory ("massive bone-hilted claidhmore" -> set
@@ -302,6 +318,7 @@ def dismiss_animate(noun)
 	fput "tell anim die"
 	sleep 1.5
 	$reanim_animate_live = false
+	$reanim_animate_id   = nil
 	echo "[reanim] animate still present after 'tell anim die' -- check it." if animate_here?
 
 	# reclaim the spare it just dropped (or died holding) -> verlok -> our pack
@@ -414,7 +431,8 @@ else
 		waitcastrt?
 		result = Spell[ANIMATE_SPELL].cast("##{find.id}")
 		debug("Cast #{ANIMATE_SPELL} on ##{find.id} -> #{result}")
-		$reanim_animate_live = true   # a buddy exists -> ;reanim die should tear it down
+		$reanim_animate_live = true      # a buddy exists -> ;reanim die should tear it down
+		$reanim_animate_id   = find.id   # same corpse id -- lets anim-cleanup watch for a combat death
 
 		waitrt?
 		waitcastrt?

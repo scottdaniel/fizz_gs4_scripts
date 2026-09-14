@@ -1,6 +1,6 @@
 # Fizzleworth-anim-cleanup.lic
 # Always-on companion. End-of-hunt cleanup, run the MOMENT bigshot decides to
-# rest -- before anything walks back to town. Two jobs:
+# rest -- before anything walks back to town. Three jobs:
 #
 #   1. Dismiss the ;reanim animate buddy (cat / ultima) in the field, so we
 #      don't drag an animated corpse through the tunnels or lose its weapon.
@@ -10,6 +10,9 @@
 #      hunt has already beaten these creatures down, so they're cheap
 #      sacrifice targets, unlike the fresh full-health room sac4mana's own
 #      harvest wanders off to (see the essence-spiral note in sac4mana.lic).
+#   3. Watch for the animate dying IN COMBAT, mid-hunt, and race to save its
+#      weapon. See "unexpected mid-hunt animate death" below -- this is what
+#      was losing the claidhmore every few hunts.
 #
 # Why a monitor and not a bigshot hook: bigshot has exactly two command seams,
 # hunting_prep_commands (before the hunt) and resting_commands (which runs
@@ -120,6 +123,79 @@ def harvest_room
   echo "Fizzleworth-anim-cleanup: nothing sacrificeable in the room." if got.zero?
 end
 
+# --- unexpected mid-hunt animate death (combat, not ;reanim die) ---------
+#
+# 2026-09-14: a pestilent vision's poison gas killed the animate outright,
+# mid-fight. reanim.lic only clears $reanim_animate_live on a DELIBERATE
+# ;reanim die, so nothing noticed -- and ~9s later bigshot's own stock
+# post-kill `eloot` auto-looted the corpse and discarded the claidhmore as
+# "useless equipment" ("You search the Ivasian inciter. She had a massive
+# bone-hilted claidhmore. You discard the inciter's remaining useless
+# equipment."). By the time the real end-of-hunt teardown ran, bigshot had
+# moved rooms and the weapon was sitting on the ground somewhere behind us --
+# dismiss_animate just logged "hasn't caught up" and gave up.
+#
+# The animate's display name drops its "animated" prefix the instant it
+# dies ("an animated supple Ivasian inciter" -> "a supple Ivasian inciter"),
+# same GameObj id -- reanim.lic tracks that id as $reanim_animate_id. Poll
+# for the prefix disappearing while $reanim_animate_live is still true and
+# race to grab the weapon off the corpse directly (NOT via search/loot --
+# that's the auto-discard mechanic that ate it in the first place) before
+# bigshot's eloot gets to it. 0.15s poll vs the ~9s bigshot took in the
+# observed log is plenty of runway.
+COMBAT_SCRIPTS = %w[Fizzleworth-attack-ultima Fizzleworth-attack-cat
+                     Fizzleworth-attack-base Fizzleworth-attack-wing
+                     Fizzleworth-wingguard] unless defined?(COMBAT_SCRIPTS)
+
+def animate_died_unexpectedly?
+  return false unless $reanim_animate_live
+  id = $reanim_animate_id
+  return false unless id
+  return false if Script.running?(REANIM_SCRIPT)   # a live cast/teardown owns this already
+  n = GameObj.npcs.find { |x| x && x.id.to_s == id.to_s }
+  n.nil? || n.name.to_s !~ /\banimate/i
+rescue StandardError
+  false
+end
+
+# Grab `noun` directly off corpse `id` -- NOT search/loot first, that's what
+# auto-discards it. Held/worn gear is visible to `get X from Y` without a
+# search. Hands it to verlok on success, same as dismiss_animate's reclaim.
+def reclaim_from_corpse(id, noun)
+  r = dothistimeout("get #{noun} from ##{id}", 4,
+        /You get|You pick up|is not carrying|doesn't have|could not find|not something you can|must be closer|dead and cannot/i).to_s
+  return false unless r =~ /You get|You pick up/i
+  sleep 0.3
+  dothistimeout("give #{noun} to verlok", 3,
+    /grudgingly accepts|hand(?:s)? .* to (?:a|an|the)|refuses|isn't interested/i)
+  true
+end
+
+# It's genuinely gone either way -- clear the globals up front so the real
+# end-of-hunt teardown doesn't waste ANIMATE_CATCHUP chasing a corpse that no
+# longer exists. Briefly pauses whichever attack script is mid-pass so its
+# fput/dothistimeout doesn't tangle with ours.
+def rescue_weapon_on_unexpected_death
+  id = $reanim_animate_id
+  $reanim_animate_live = false
+  $reanim_animate_id   = nil
+  return unless id
+
+  noun = UserVars.reanim_weapon.to_s.strip
+  return if noun.empty?
+
+  mine = COMBAT_SCRIPTS.select { |s| Script.running?(s) && !Script.paused?(s) }
+  mine.each { |s| Script.pause(s) }
+  begin
+    waitrt?
+    ok = reclaim_from_corpse(id, noun)
+    echo(ok ? "Fizzleworth-anim-cleanup: animate died mid-fight -- recovered the #{noun}." :
+              "Fizzleworth-anim-cleanup: animate died mid-fight and the #{noun} grab failed -- buyweapon will replace it next hunt.")
+  ensure
+    mine.each { |s| Script.unpause(s) if Script.paused?(s) }
+  end
+end
+
 # --- lifecycle ----------------------------------------------------------
 
 # $reanim_animate_live is reanim.lic's source of truth (set when Animate Dead
@@ -155,6 +231,8 @@ def run
   done = false
   loop do
     Script.current.kill if checkdead
+
+    rescue_weapon_on_unexpected_death if animate_died_unexpectedly?
 
     if !resting?
       done = false                    # $bigshot_status back to :hunting / :ready
