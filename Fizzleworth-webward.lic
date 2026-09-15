@@ -15,15 +15,26 @@
 # You can't invoke / prep / channel anything WHILE entangled, so the web has to
 # be cleared before you move onto it. This watches GameObj.loot for a web
 # object (same signal bigshot's flee_webs uses) and, out of combat and while
-# not already webbed, pauses go2 / bigshot and clears it:
+# not already webbed, pauses go2 / bigshot and clears it with Elemental
+# Dispel (417): `prep 417`, `channel web`. 17 mana.
 #
-#   1. Untrammel (209) from the reserve-slot scroll -- `invoke 209`, `cast web`.
-#      No mana (scroll charge). Tried first.
-#   2. Elemental Dispel (417) -- `prep 417`, `channel web`. 17 mana. Fallback
-#      if the scroll is out or Untrammel didn't take.
+# Used to try Untrammel (209) off the reserve scroll first -- dropped
+# 2026-09-14. Two problems, only one of which was the scroll's fault:
+#   1. The scroll's Untrammel charge is gone (confirmed in a 09.14 log: a
+#      failed invoke read "As your voice fades, so too does the ink on the
+#      scroll, leaving a blank space where the Untrammel spell had
+#      previously been written.").
+#   2. Even before that, `try_untrammel`'s own success regex never matched
+#      the real invoke text -- GS4 says "You raise the glittering scroll and
+#      gesture to invoke the [x] spell.", where "You" is followed by
+#      "raise", not "gesture"/"invoke" as the regex required. So `cast web`
+#      never actually fired, AND the invoked spell sat readied, blocking
+#      every subsequent `prep 417` with "You already have a spell readied!"
+#      -- one dead regex broke the whole fallback chain, not just its own
+#      step. Simplest fix: cut the step, go straight to 417.
 #
-# If both fail MAX_ATTEMPTS times it gives up and lets go2 wait the web out the
-# slow way -- no worse than today.
+# If it fails MAX_ATTEMPTS times it gives up and lets go2 wait the web out
+# the slow way -- no worse than before webward existed.
 #
 # Start it always-on: it's added to Fizzleworth-prerest.lic, or
 # `;autostart add Fizzleworth-webward`. Idle cost is one GameObj.loot scan per
@@ -32,7 +43,6 @@
 module FizzleworthWebward
 module_function
 
-UNTRAMMEL        = 209 unless defined?(UNTRAMMEL)
 ELEM_DISPEL      = 417 unless defined?(ELEM_DISPEL)
 ELEM_DISPEL_MANA = (Spell[417].mana_cost.to_i.positive? ? Spell[417].mana_cost.to_i : 17) unless defined?(ELEM_DISPEL_MANA)
 CLEAR_TIMEOUT    = 4 unless defined?(CLEAR_TIMEOUT)
@@ -61,16 +71,6 @@ ensure
   mine.to_a.each { |s| Script.unpause(s) if Script.paused?(s) }
 end
 
-def try_untrammel
-  r = dothistimeout("invoke #{UNTRAMMEL}", 3,
-        /Your spell is ready|faint slick sheen|nebulous shape|You (?:invoke|recite|trace|gesture)|(?:no|any) charges|can't seem to invoke|lack/i)
-  return false unless r =~ /Your spell is ready|faint slick sheen|nebulous shape|You (?:invoke|recite|trace|gesture)/i
-  dothistimeout("cast web", CLEAR_TIMEOUT, Regexp.union(WEB_GONE, /Cast Roundtime|Roundtime: \d+/i))
-  waitcastrt?
-  waitrt?
-  web_in_room.nil?
-end
-
 def try_elem_dispel
   return false if checkmana < ELEM_DISPEL_MANA
   pr = dothistimeout("prep #{ELEM_DISPEL}", 4, /Your spell is ready|can't think clearly enough to prepare/i)
@@ -89,7 +89,6 @@ def clear_web
     attempts += 1
     waitrt?
     waitcastrt?
-    return true if try_untrammel
     return true if try_elem_dispel
     sleep 0.3
   end
