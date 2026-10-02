@@ -99,6 +99,15 @@ SAC_DONE = /forming shadow essence|thrown back in a small blast|unable to comple
 # buddy makes it hungrier still, so recovery is inline here.
 SACRIFICE_AT = 45 unless defined?(SACRIFICE_AT)
 
+# When a pass can't afford its finish (mana < Maelstrom cost and no recovery
+# available -- essence 0 / sacrifice on cooldown), DON'T hand straight back to
+# bigshot: it relaunches us immediately, and with `oom: 0` in the profile it
+# never rests, so we spun ~380 launches in 3 minutes (3/sec) doing nothing
+# while the character stood idle (2026-10-02). Sleep this long first so mana
+# regens / sac4mana gets a window, and log it once per OOM_NOTE_EVERY secs.
+OOM_BACKOFF    = 4  unless defined?(OOM_BACKOFF)
+OOM_NOTE_EVERY = 30 unless defined?(OOM_NOTE_EVERY)
+
 # Creature buckets. vereri -> web; the three casters (inciter/incubus/vision) -> 703.
 VERERI_RE  = /magna vereri/i    unless defined?(VERERI_RE)
 INCITER_RE = /Ivasian inciter/i unless defined?(INCITER_RE)
@@ -348,8 +357,17 @@ go_defensive
 # path add up fast, and sac4mana never gets a window here)
 recover_mana if checkmana < SACRIFICE_AT
 
-# still too dry for even the cheapest disable (703 = 3) -- hand back to bigshot
+def oom_backoff
+  if Time.now.to_f - ($ult_oom_note || 0) > OOM_NOTE_EVERY
+    echo "[ultima] out of mana (#{checkmana}) -- backing off #{OOM_BACKOFF}s per pass instead of spinning."
+    $ult_oom_note = Time.now.to_f
+  end
+  sleep OOM_BACKOFF
+end
+
+# still too dry for even the cheapest disable (703 = 3) -- back off, then hand back to bigshot
 if checkmana < SPELL_CORRUPT_MANA
+  oom_backoff
   exit
 end
 
@@ -390,5 +408,8 @@ unless target_dead?(foe)
 end
 
 hold_for_dot(MAELSTROM_WAIT, foe) if got_dot
+
+# Nothing landed because we couldn't afford the finish -> don't spin.
+oom_backoff if !got_dot && !target_dead?(foe) && checkmana < SPELL_MAELSTROM_MANA
 
 recover_mana if !target_dead?(foe) && checkmana < SACRIFICE_AT
