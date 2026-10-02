@@ -71,16 +71,13 @@
                                Fizzleworth-anim-cleanup.lic, with
                                Fizzleworth-prerest as a town fallback.
 
-  The animate isn't invincible -- it can be killed outright mid-fight (2026-
-  09-14: a pestilent vision's poison gas dropped it). That's a THIRD way the
-  buddy goes down, distinct from ";reanim die" and doesn't clear
-  $reanim_animate_live on its own. Fizzleworth-anim-cleanup.lic polls for
-  this (animate's GameObj id, tracked here as $reanim_animate_id, losing its
-  "animated" name prefix while $reanim_animate_live is still true) and races
-  to grab the weapon off the corpse before bigshot's own stock post-kill
-  eloot auto-discards it as "useless equipment" -- observed doing exactly
-  that ~9s after the death in the same log. See Fizzleworth-anim-cleanup.lic
-  for that side of it.
+  The buddy can also vanish with no ;reanim die: killed in combat (09.14), or
+  Animate Dead just EXPIRES -- exactly 10:00 after the cast (10.02, in town,
+  weapon and all). Both print "You sense a loss of the connection between you
+  and your animate." Fizzleworth-anim-cleanup.lic hooks that line
+  ($reanim_loss_at) and, if it's newer than $reanim_raised_at, picks the
+  weapon up and hands it to verlok. Do NOT infer "dead" from the animate's id
+  missing out of GameObj.npcs -- that lags every room change.
   Stop:   n/a (single pass, exits when done)
 =end
 
@@ -104,6 +101,11 @@ $reanim_animate_live = false unless defined?($reanim_animate_live)
 # deliberate ;reanim die) and grab the weapon off the corpse before bigshot's
 # own post-kill eloot auto-discards it. Cleared alongside $reanim_animate_live.
 $reanim_animate_id = nil unless defined?($reanim_animate_id)
+# When Animate Dead last landed / when the game last said "You sense a loss of
+# the connection between you and your animate." (set by a DownstreamHook in
+# Fizzleworth-anim-cleanup). The animate is "lost" if the latter is newer.
+$reanim_raised_at = 0 unless defined?($reanim_raised_at)
+$reanim_loss_at   = 0 unless defined?($reanim_loss_at)
 
 # The weapon the animate should wield.  Use the item's BASE noun -- the last
 # word of how it shows in inventory ("massive bone-hilted claidhmore" -> set
@@ -432,7 +434,8 @@ else
 		result = Spell[ANIMATE_SPELL].cast("##{find.id}")
 		debug("Cast #{ANIMATE_SPELL} on ##{find.id} -> #{result}")
 		$reanim_animate_live = true      # a buddy exists -> ;reanim die should tear it down
-		$reanim_animate_id   = find.id   # same corpse id -- lets anim-cleanup watch for a combat death
+		$reanim_animate_id   = find.id   # same corpse id, for weapon recovery
+		$reanim_raised_at    = Time.now.to_f
 
 		waitrt?
 		waitcastrt?
