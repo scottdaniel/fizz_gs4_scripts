@@ -7,8 +7,8 @@ module BrayisPrerest
 
 Script.run("eherbs")
 Script.run("eloot", "sell")
-Script.run("undead_bounty", "kill greater ghoul")
+#Script.run("undead_bounty", "kill greater ghoul")
 Script.run("buyitems")
-Script.run("timequit")
+#Script.run("timequit")
 
 end #End of module

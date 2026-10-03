@@ -4,7 +4,7 @@ module PickoPrerest
 
 Script.run("eherbs")
 Script.run("eloot", "sell")
-Script.run("undead_bounty", "kill zombie")
+Script.run("undead_bounty", "kill Skeletal ice troll")
 Script.run("buyitems")
 
 # Sweep every wand out of the default stow container into the active bigshot
