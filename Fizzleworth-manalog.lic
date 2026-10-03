@@ -1,0 +1,26 @@
+# Fizzleworth-manalog.lic
+# Debug aid: every INTERVAL seconds, write the mana the scripts actually see
+# into the game log, so a "why did it rest at 56 mana?" question can be answered
+# from the log instead of guessed at (10.03: bigshot rested "out of mana" and
+# nothing in the log said what the mana was).
+#
+# Default is a one-line echo (checkmana / maxmana / percent, the same percent
+# bigshot compares against `oom`) -- costs no game command and no roundtime.
+# Flip USE_GAME_CMD to also send the real `mana` command each tick (12 lines of
+# output, shows pulse/node regen) -- noisy, so off by default.
+#
+# Started from Fizzleworth-prep.lic. Stop with ;kill Fizzleworth-manalog.
+
+INTERVAL     = 10    unless defined?(INTERVAL)
+USE_GAME_CMD = false unless defined?(USE_GAME_CMD)
+
+echo "[manalog] logging mana every #{INTERVAL}s."
+loop do
+  Script.current.kill if checkdead
+  mx  = (maxmana rescue 0).to_i
+  cur = (checkmana rescue 0).to_i
+  pct = (Char.percent_mana rescue (mx.positive? ? cur * 100 / mx : 0))
+  echo "[manalog] mana #{cur}/#{mx} (#{pct}%)"
+  fput "mana" if USE_GAME_CMD
+  sleep INTERVAL
+end

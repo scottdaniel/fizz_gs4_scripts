@@ -65,6 +65,9 @@ if res !~ /An ethereal necrotic film covers the/
 # base / wing hunts.
 Script.start("Fizzleworth-anim-cleanup") unless Script.running?("Fizzleworth-anim-cleanup")
 
+# Debug: log mana every 10s so rest decisions can be checked against the log.
+Script.start("Fizzleworth-manalog") unless Script.running?("Fizzleworth-manalog")
+
 # Fizzleworth-attack-ultima reanims / grinds once per hunt -- re-arm both.
 # Also clear reanim's "buddy exists" flag: any animate from last hunt is long
 # gone by now (730 duration, plus the whole rest/travel/shop cycle in between).
