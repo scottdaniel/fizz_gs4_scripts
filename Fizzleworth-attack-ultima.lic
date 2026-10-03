@@ -25,12 +25,13 @@
 #                                target ($ult_silenced_id).
 #   * anything unrecognised    -> Web (118), same as -base.
 #
-# ONE-SHOT ANIMATE BUDDY: the first Ivasian inciter of a hunt, if we don't
-# already have an animate up, is handed to `;reanim` (Pain 711 to death, then
+# ONE-SHOT ANIMATE BUDDY: the first creature matching ANIMATE_TARGET_RE of a
+# hunt (an athletic dark-eyed incubus; was the Ivasian inciter until
+# 2026-10-03), if we don't already have an animate up, is handed to `;reanim` (Pain 711 to death, then
 # Animate Dead 730 the corpse into a buddy that tanks/attacks for us). Just
 # once per hunt -- $ult_reanim_done latches it, and reanim.lic clears that
 # latch from its `;reanim die` end-of-hunt teardown (Fizzleworth-prep clears
-# it too as a backstop). Every inciter after the first just gets the normal
+# it too as a backstop). Every target after the first just gets the normal
 # 703 -> 710 -> 706 treatment. This is the mana-conservative middle ground
 # between -base (no buddy) and -cat (re-reanims whenever the buddy dies).
 #
@@ -113,6 +114,12 @@ VERERI_RE  = /magna vereri/i    unless defined?(VERERI_RE)
 INCITER_RE = /Ivasian inciter/i unless defined?(INCITER_RE)
 INCUBUS_RE = /incubus/i         unless defined?(INCUBUS_RE)
 VISION_RE  = /pestilent vision/i unless defined?(VISION_RE)
+
+# Which creature becomes the one-shot animate buddy. Switched from the Ivasian
+# inciter (/Ivasian inciter/i) to the incubus 2026-10-03. NOTE: only inciters
+# have ever been animated in the logs (80x "suitable for animation"); an
+# incubus is untested.
+ANIMATE_TARGET_RE = /athletic dark-eyed incubus/i unless defined?(ANIMATE_TARGET_RE)
 
 REANIM_SCRIPT = "reanim" unless defined?(REANIM_SCRIPT)
 ANIMATE_SPELL = 730      unless defined?(ANIMATE_SPELL)
@@ -197,8 +204,8 @@ def vereri?(foe)
   foe && foe.name.to_s =~ VERERI_RE
 end
 
-def inciter?(foe)
-  foe && foe.name.to_s =~ INCITER_RE
+def animate_target?(foe)
+  foe && foe.name.to_s =~ ANIMATE_TARGET_RE
 end
 
 # inciter / incubus / vision -- the three that cast and so get 703
@@ -371,9 +378,9 @@ if checkmana < SPELL_CORRUPT_MANA
   exit
 end
 
-# First inciter of the hunt with no buddy up -> reanim it into one and we're
-# done for this pass (reanim kills it and raises the animate).
-if inciter?(foe) && !$ult_reanim_done && !have_animate?
+# First ANIMATE_TARGET_RE creature of the hunt with no buddy up -> reanim it
+# into one and we're done for this pass (reanim kills it and raises the animate).
+if animate_target?(foe) && !$ult_reanim_done && !have_animate?
   Script.run(REANIM_SCRIPT, "##{foe.id}")
   $ult_reanim_done = true
   exit
