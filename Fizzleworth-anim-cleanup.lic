@@ -240,6 +240,17 @@ def resting?
   REST_STATES.include?($bigshot_status)
 end
 
+# A living hostile in the room = DON'T drop the weapon here. 10.03: bigshot
+# rested for mana with a rooted Ivasian inciter still alive; `tell anim to drop
+# claidhmore` hit the floor and that inciter snatched it up the SAME second
+# ("A supple Ivasian inciter drops his leather whip and snatches up a massive
+# bone-hilted claidhmore!") -- no pickup could have beaten that.
+def hostile_here?
+  GameObj.targets.any? { |t| t && t.status.to_s !~ /dead|gone/ && t.name.to_s !~ IGNORE_NPCS }
+rescue StandardError
+  false
+end
+
 # Freeze the movers, do the end-of-hunt jobs, unfreeze only what we froze.
 def teardown
   mine = MOVERS.select { |s| Script.running?(s) && !Script.paused?(s) }
@@ -248,7 +259,19 @@ def teardown
   sleep 0.1 until mine.all? { |s| !Script.running?(s) || Script.paused?(s) } || Time.now > give
 
   harvest_room if essence < HARVEST_BELOW
-  Script.run(REANIM_SCRIPT, "die") if animate_up?
+  if animate_up?
+    if hostile_here?
+      # Keep the weapon on the animate and bring it along; Fizzleworth-prerest's
+      # `;reanim die` finishes the job at the resting room, where nothing's
+      # hostile. It MUST be on follow, not attack, or it stays behind fighting.
+      echo "Fizzleworth-anim-cleanup: hostile still here -- not dropping the weapon; teardown deferred to the resting room."
+      fput "tell anim stop"
+      sleep 0.3
+      fput "tell anim follow"
+    else
+      Script.run(REANIM_SCRIPT, "die")
+    end
+  end
 ensure
   mine.to_a.each { |s| Script.unpause(s) if Script.paused?(s) }
 end
