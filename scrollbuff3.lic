@@ -561,9 +561,19 @@ plan.group_by { |(_sn, c)| c[:id] }.each do |id, entries|
 
   unless reserve
     fput "get ##{id}"
+    # The game's reply can land AFTER fput returns (lag / the previous cast's
+    # roundtime), so poll for the item instead of checking once. 10.03: the
+    # forest green paper arrived a moment after the single check, so we skipped
+    # the put-back and left it in hand (and prep then ensorcelled the paper).
+    14.times { break if hand_holding(id); sleep 0.3 }
     unless hand_holding(id)
       echo "scrollbuff3: couldn't retrieve #{c[:name]}; skipping #{entries.map { |e| e[0] }.join(' ')}."
       entries.each { |sn, _| cast_fail << sn }
+      # ...but if it's still in flight, don't strand it in hand
+      sleep 1.5
+      if (late = hand_holding(id))
+        fput "put #{late} in ##{(c[:vibrant] ? vibrantscrollsack : scrollsack).id}"
+      end
       next
     end
   end
