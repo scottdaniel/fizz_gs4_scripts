@@ -250,6 +250,40 @@ rescue StandardError
   false
 end
 
+# Icemule Trace is protected: the animate can't follow Fizzleworth INTO town.
+# Tested 2026-10-04 -- the farthest it can follow is Lich room 3055, the town
+# edge. So the weapon hand-off can't happen at the resting room (that's why the
+# prerest ;reanim die kept logging "animate hasn't caught up" and the
+# claidhmore got lost). If the field teardown had to defer (hostile in the
+# room), do the hand-off HERE, on the way home: needs bigshot's
+# return_waypoint_ids to include 3055 so it walks there first, and then this
+# freezes bigshot/go2 the moment we arrive.
+BOUNDARY_ROOM = 3055 unless defined?(BOUNDARY_ROOM)
+
+def at_boundary?
+  Room.current.id.to_i == BOUNDARY_ROOM
+rescue StandardError
+  false
+end
+
+def boundary_handoff
+  mine = []
+  freeze = lambda do
+    MOVERS.each do |s|
+      next unless Script.running?(s) && !Script.paused?(s)
+      Script.pause(s)
+      mine << s
+    end
+  end
+  freeze.call
+  sleep 0.3
+  freeze.call            # bigshot can launch the NEXT go2 a beat after the first
+  echo "Fizzleworth-anim-cleanup: at the town edge (room #{BOUNDARY_ROOM}) -- handing the weapon off here."
+  Script.run(REANIM_SCRIPT, "die")
+ensure
+  mine.to_a.each { |s| Script.unpause(s) if Script.paused?(s) }
+end
+
 # Freeze the movers, do the end-of-hunt jobs, unfreeze only what we froze.
 def teardown
   mine = MOVERS.select { |s| Script.running?(s) && !Script.paused?(s) }
@@ -260,10 +294,10 @@ def teardown
   harvest_room if essence < HARVEST_BELOW
   if animate_up?
     if hostile_here?
-      # Keep the weapon on the animate and bring it along; Fizzleworth-prerest's
-      # `;reanim die` finishes the job at the resting room, where nothing's
-      # hostile. It MUST be on follow, not attack, or it stays behind fighting.
-      echo "Fizzleworth-anim-cleanup: hostile still here -- not dropping the weapon; teardown deferred to the resting room."
+      # Keep the weapon on the animate and bring it along; the hand-off happens
+      # at the town edge (BOUNDARY_ROOM, see boundary_handoff). It MUST be on
+      # follow, not attack, or it stays behind fighting.
+      echo "Fizzleworth-anim-cleanup: hostile still here -- not dropping the weapon; hand-off deferred to the town edge (room #{BOUNDARY_ROOM})."
       fput "tell anim stop"
       sleep 0.3
       fput "tell anim follow"
@@ -279,10 +313,20 @@ def run
   echo "Fizzleworth-anim-cleanup: watching for end of hunt."
   install_loss_hook
   done = false
+  boundary_done = false
   loop do
     Script.current.kill if checkdead
 
     rescue_weapon_after_loss if animate_lost?
+
+    if at_boundary?
+      if resting? && $reanim_animate_live && !boundary_done
+        boundary_done = true
+        boundary_handoff
+      end
+    else
+      boundary_done = false
+    end
 
     if !resting?
       done = false                    # $bigshot_status back to :hunting / :ready
