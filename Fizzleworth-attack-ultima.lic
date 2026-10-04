@@ -24,7 +24,7 @@
 #                                target ($ult_silenced_id).
 #   * anything unrecognised    -> Web (118), same as -base.
 #
-# ONE-SHOT ANIMATE BUDDY: the first creature matching ANIMATE_TARGET_RE of a
+# ONE-SHOT ANIMATE BUDDY: the first creature matching animate_target? of a
 # hunt (a magna vereri since 2026-10-03; was an incubus for one hunt, and the
 # Ivasian inciter before that), if we don't already have an animate up, is handed to `;reanim` (Pain 711 to death, then
 # Animate Dead 730 the corpse into a buddy that tanks/attacks for us). Just
@@ -379,7 +379,7 @@ if checkmana < SPELL_CORRUPT_MANA
   exit
 end
 
-# First ANIMATE_TARGET_RE creature of the hunt with no buddy up -> reanim it
+# First animate_target? creature of the hunt with no buddy up -> reanim it
 # into one and we're done for this pass (reanim kills it and raises the animate).
 if animate_target?(foe) && !$ult_reanim_done && !have_animate?
   Script.run(REANIM_SCRIPT, "##{foe.id}")
