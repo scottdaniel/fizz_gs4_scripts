@@ -26,8 +26,8 @@
 #   * anything unrecognised    -> Web (118), same as -base.
 #
 # ONE-SHOT ANIMATE BUDDY: the first creature matching ANIMATE_TARGET_RE of a
-# hunt (an athletic dark-eyed incubus; was the Ivasian inciter until
-# 2026-10-03), if we don't already have an animate up, is handed to `;reanim` (Pain 711 to death, then
+# hunt (a magna vereri since 2026-10-03; was an incubus for one hunt, and the
+# Ivasian inciter before that), if we don't already have an animate up, is handed to `;reanim` (Pain 711 to death, then
 # Animate Dead 730 the corpse into a buddy that tanks/attacks for us). Just
 # once per hunt -- $ult_reanim_done latches it, and reanim.lic clears that
 # latch from its `;reanim die` end-of-hunt teardown (Fizzleworth-prep clears
@@ -115,11 +115,12 @@ INCITER_RE = /Ivasian inciter/i unless defined?(INCITER_RE)
 INCUBUS_RE = /incubus/i         unless defined?(INCUBUS_RE)
 VISION_RE  = /pestilent vision/i unless defined?(VISION_RE)
 
-# Which creature becomes the one-shot animate buddy. Switched from the Ivasian
-# inciter (/Ivasian inciter/i) to the incubus 2026-10-03. NOTE: only inciters
-# have ever been animated in the logs (80x "suitable for animation"); an
-# incubus is untested.
-ANIMATE_TARGET_RE = /athletic dark-eyed incubus/i unless defined?(ANIMATE_TARGET_RE)
+# Which creature becomes the one-shot animate buddy. History (2026-10-03):
+# Ivasian inciter -> athletic dark-eyed incubus (worked) -> magna vereri (the
+# strongest; appraised "suitable for animation" in the 10.03 log). Note a
+# vereri takes more Pain 711 casts to kill than the others did, so the reanim
+# step costs more mana.
+ANIMATE_TARGET_RE = /magna vereri/i unless defined?(ANIMATE_TARGET_RE)
 
 # Research probe (2026-10-03): which other creatures can Animate Dead raise?
 # Whenever one of these is dead in the room, appraise its corpse once and
@@ -127,7 +128,7 @@ ANIMATE_TARGET_RE = /athletic dark-eyed incubus/i unless defined?(ANIMATE_TARGET
 # appraise reanim.lic uses -- "You think X is suitable for animation").
 # Answers stick after the first real "animation" reply; up to
 # ANIMATE_PROBE_TRIES attempts each when the corpse/response isn't usable.
-ANIMATE_PROBE_RE    = /pestilent vision|magna vereri/i unless defined?(ANIMATE_PROBE_RE)
+ANIMATE_PROBE_RE    = /pestilent vision/i unless defined?(ANIMATE_PROBE_RE)   # vereri answered: suitable
 ANIMATE_PROBE_TRIES = 3 unless defined?(ANIMATE_PROBE_TRIES)
 
 REANIM_SCRIPT = "reanim" unless defined?(REANIM_SCRIPT)
