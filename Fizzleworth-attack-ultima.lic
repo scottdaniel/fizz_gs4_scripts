@@ -195,20 +195,19 @@ def vereri?(foe)
   foe && foe.name.to_s =~ VERERI_RE
 end
 
-# Which creature becomes the one-shot animate buddy. History (2026-10-03):
-# Ivasian inciter -> athletic dark-eyed incubus (worked) -> magna vereri (the
-# strongest; appraised "suitable for animation" in the 10.03 log). A vereri
-# takes more Pain 711 casts to kill than the others did, so the reanim step
-# costs more mana.
+# Which creature becomes the one-shot animate buddy. Measured 2026-10-02..04
+# (swings with the claidhmore that landed):
+#   Ivasian inciter  ~50-59% (20/34, 7/14) + its own kicks / thorns / chants
+#   athletic incubus ~0-9%   (3 of 32)  -- sings, but the weapon never connects
+#   magna vereri     ~0-2%   (0-1 of 44) -- ONLY ever swings, and misses
+# The vereri is "strongest" but it's useless offensively, so: inciter.
 #
 # This is a METHOD, not a `FOO = ... unless defined?(FOO)` constant on purpose:
 # Lich keeps constants alive across script runs, so a guarded constant keeps
-# its OLD value until the whole Lich session restarts. That's exactly what
-# happened on 10.03 -- the switch to vereri was committed at 20:19, but the
-# 20:35 hunt still animated an incubus because ANIMATE_TARGET_RE had been
-# defined (as the incubus) earlier in the same session.
+# its OLD value until the whole Lich session restarts (10.03: the vereri
+# switch didn't apply to the next hunt for exactly that reason).
 def animate_target?(foe)
-  foe && foe.name.to_s =~ /magna vereri/i
+  foe && foe.name.to_s =~ /Ivasian inciter/i
 end
 
 # inciter / incubus / vision -- the three that cast and so get 703
