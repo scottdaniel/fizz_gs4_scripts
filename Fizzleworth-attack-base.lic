@@ -1,25 +1,11 @@
 # Fizzleworth-attack-base.lic
 # Bigshot custom attack routine for Fizzleworth (Sorcerer) -- sorcerer offense
-# ONLY, no Energy Wings at all. Drop it into a bigshot hunting-commands list
-# as a single command:
+# only. Drop it into a bigshot hunting-commands list as a single command:
 #
 #   script Fizzleworth-attack-base
 #
-# This is the "wings off" half of an A/B pair with Fizzleworth-attack-wing.lic
-# (identical sorcerer rotation, plus the full wing kit and
-# Fizzleworth-wingguard.lic running alongside it). Swap which one is in the
-# hunting-commands line between hunting blocks to compare kills / damage
-# dealt / damage taken / deaths with and without the wing kit -- both scripts
-# tag every line with their own name in the log ([custom/Fizzleworth-attack-base]
-# vs [custom/Fizzleworth-attack-wing]), so a combined log is still easy to
-# split back apart afterward. Keep the two files' offense logic in sync by
-# hand if you change one -- there's no shared library here.
-#
-# Makes sure Fizzleworth-wingguard.lic is NOT running (every pass -- so it gets
-# shut off within one pass even if it was left running from a wing-kit hunt),
-# so plugging this script into a profile is the only setup needed on this side
-# of the comparison. Fizzleworth-attack-wing.lic is responsible for starting it
-# back up when THAT script is what's active instead.
+# The baseline Web -> Energy Maelstrom -> Tenebrous Tether rotation that
+# Fizzleworth-attack-ultima is built on.
 #
 # bigshot pauses itself, runs this once against the target it already has
 # locked, then resumes to loot / wander / retarget -- so this does exactly ONE
@@ -94,9 +80,6 @@ MAELSTROM_WAIT = 10 unless defined?(MAELSTROM_WAIT)
 # Living-target count past which bigshot is about to flee (mirrors the profile's
 # flee_count) -- don't sit still holding for the DoT once the room's this full.
 FLEE_HINT = 7 unless defined?(FLEE_HINT)
-
-# The reactive wing companion has no place in the no-wings arm of the A/B test.
-WINGGUARD_SCRIPT_NAME = "Fizzleworth-wingguard" unless defined?(WINGGUARD_SCRIPT_NAME)
 
 # --- patterns ------------------------------------------------------------
 
@@ -232,11 +215,6 @@ def recover_mana
 end
 
 # --- main ----------------------------------------------------------
-
-# Opposite of Fizzleworth-attack-wing.lic: this is the no-wings arm of the A/B
-# test, so make sure the reactive wing companion isn't quietly still running
-# from a previous wing-kit hunting block.
-Script.kill(WINGGUARD_SCRIPT_NAME) if Script.running?(WINGGUARD_SCRIPT_NAME)
 
 $fizz_target      = nil unless defined?($fizz_target)
 $fizz_webbed_id   = nil unless defined?($fizz_webbed_id)

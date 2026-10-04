@@ -6,8 +6,7 @@
 #
 #   script Fizzleworth-attack-ultima
 #
-# Like -base / -cat it uses NO Energy Wings and kills Fizzleworth-wingguard
-# every pass, so plugging it into a profile is the only setup needed.
+# Plugging it into a profile is the only setup needed.
 #
 # --- what's different from -base -----------------------------------------
 #
@@ -57,7 +56,7 @@
 #
 # Everything casts from stance DEFENSIVE and never leaves it -- per
 # https://gswiki.play.net/SMR stance is not a factor for spell SMRv2, and the
-# 703/710/706 wards don't care either (kept identical to -base/-wing/-cat for
+# 703/710/706 wards don't care either (kept identical to -base/-cat for
 # the comparison). OVEREXERTION: every cast gated on live checkmana vs the
 # spell's real cost (Web 118 targeted = 5, Corrupt 703 = 3, Maelstrom 710 =
 # 10, Tether 706 = 6). Wound-block ("can't think clearly enough") ->
@@ -124,8 +123,6 @@ ANIMATE_TARGET_RE = /magna vereri/i unless defined?(ANIMATE_TARGET_RE)
 
 REANIM_SCRIPT = "reanim" unless defined?(REANIM_SCRIPT)
 ANIMATE_SPELL = 730      unless defined?(ANIMATE_SPELL)
-
-WINGGUARD_SCRIPT_NAME = "Fizzleworth-wingguard" unless defined?(WINGGUARD_SCRIPT_NAME)
 
 # --- patterns ------------------------------------------------------------
 
@@ -332,8 +329,6 @@ def recover_mana
 end
 
 # --- main ----------------------------------------------------------
-
-Script.kill(WINGGUARD_SCRIPT_NAME) if Script.running?(WINGGUARD_SCRIPT_NAME)
 
 $ult_target      = nil   unless defined?($ult_target)
 $ult_webbed_id   = nil   unless defined?($ult_webbed_id)

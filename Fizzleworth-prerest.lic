@@ -2,12 +2,6 @@
 
 module FizzleworthPrerest
 
-# Fizzleworth-wingguard.lic's lifecycle is NOT managed here -- it's owned by
-# whichever Fizzleworth attack script is plugged into bigshot's hunting-commands
-# (Fizzleworth-attack-wing.lic starts it, Fizzleworth-attack-base.lic kills it,
-# each on its own next pass), so an A/B test between the two doesn't need this
-# rest script to also guess which side is currently running.
-
 # Always-on: clears stationary sticky-web hazards during travel before we walk
 # into one (bigshot / go2 only wait webs out). Variant-independent. Restarted
 # here in case it ever dies mid-run.
@@ -20,7 +14,7 @@ Script.start("Fizzleworth-anim-cleanup") unless Script.running?("Fizzleworth-ani
 
 # Town-side fallback for the above, for the rare case the monitor missed the
 # window: strip the spare weapon back onto verlok, "tell anim die", ;eloot.
-# No-op when no animate is up (base / wing hunts, or already cleaned up).
+# No-op when no animate is up (base hunts, or already cleaned up).
 Script.run("reanim", "die")
 
 Script.run("eherbs")

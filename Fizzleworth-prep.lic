@@ -62,7 +62,7 @@ if res !~ /An ethereal necrotic film covers the/
 # Dismisses the Fizzleworth-attack-cat / -ultima ;reanim animate in the field
 # the moment bigshot decides to rest, before the walk home. Started here so
 # it's up for the very first hunt (prerest also (re)starts it); no-op on
-# base / wing hunts.
+# base hunts.
 Script.start("Fizzleworth-anim-cleanup") unless Script.running?("Fizzleworth-anim-cleanup")
 
 # Debug: log mana every 10s so rest decisions can be checked against the log.

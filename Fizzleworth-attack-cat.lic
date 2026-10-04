@@ -5,9 +5,8 @@
 #
 #   script Fizzleworth-attack-cat
 #
-# Like Fizzleworth-attack-base it uses NO Energy Wings, and it kills
-# Fizzleworth-wingguard every pass (same as base) so plugging this into a
-# profile is the only setup needed. Completely different rotation from base:
+# Plugging this into a profile is the only setup needed. Completely different
+# rotation from base:
 #
 #   1. Grasp of the Grave (709) -- ONLY when >= SWARM_709 (2) living targets
 #      in the room. Area maneuver, knocks all non-flying creatures prone /
@@ -33,7 +32,7 @@
 #         killed with a single cast", refunds 1-14 mana on a hit. 19 mana.
 #         Recast every pass until down.
 #
-# No Web / Maelstrom / Tether, no wand, no wings.
+# No Web / Maelstrom / Tether, no wand.
 #
 # STANCE: casts from defensive, set once per pass, same as Fizzleworth-attack-
 # base -- kept identical for the A/B/C comparison even though 703/719 are
@@ -78,8 +77,6 @@ ANIMATE_SPELL  = 730 unless defined?(ANIMATE_SPELL)
 PAIN_MAX_TRIES = 5 unless defined?(PAIN_MAX_TRIES)
 
 GO_STANCE = "defensive" unless defined?(GO_STANCE)
-
-WINGGUARD_SCRIPT_NAME = "Fizzleworth-wingguard" unless defined?(WINGGUARD_SCRIPT_NAME)
 
 # --- patterns ------------------------------------------------------------
 
@@ -241,9 +238,6 @@ def recover_mana
 end
 
 # --- main ----------------------------------------------------------
-
-# no wings in this variant -- make sure the reactive companion isn't running
-Script.kill(WINGGUARD_SCRIPT_NAME) if Script.running?(WINGGUARD_SCRIPT_NAME)
 
 $cat_target      = nil unless defined?($cat_target)
 $cat_silenced_id = nil unless defined?($cat_silenced_id)

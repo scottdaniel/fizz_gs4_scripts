@@ -141,8 +141,7 @@ end
 # real end-of-hunt teardown never ran and the animate followed us home.)
 # A DownstreamHook on the game's own line is the only reliable signal.
 COMBAT_SCRIPTS = %w[Fizzleworth-attack-ultima Fizzleworth-attack-cat
-                     Fizzleworth-attack-base Fizzleworth-attack-wing
-                     Fizzleworth-wingguard] unless defined?(COMBAT_SCRIPTS)
+                     Fizzleworth-attack-base] unless defined?(COMBAT_SCRIPTS)
 LOSS_RE   = /You sense a loss of the connection between you and your animate/i unless defined?(LOSS_RE)
 HOOK_NAME = "fizz-anim-loss" unless defined?(HOOK_NAME)
 
