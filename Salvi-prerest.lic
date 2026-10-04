@@ -64,8 +64,20 @@ end
 Script.run("ewaggle")
 Script.run("timequit")
 
+# playsongs only when you're actually at the keyboard. Same afk_now UserVar that
+# gates deadexit (unset counts as ON, i.e. AFK -> no music):
+#   ;vars set afk_now=false   # at the keyboard: music plays during rest
+#   ;vars set afk_now=true    # walking away: no music (and deadexit stays armed)
+def self.afk_now?
+  value = UserVars.afk_now
+  return true if value.nil?
+  return value if value == true || value == false
+
+  value.to_s !~ /\A\s*(?:0|false|off|no)\s*\z/i
+end
+
 # Music while safe/resting -- Salvi-prep.lic kills this again before combat
 # resumes, which also stows the instrument (see playsongs.lic's before_dying).
-Script.start("playsongs") unless Script.running?("playsongs")
+Script.start("playsongs") unless afk_now? || Script.running?("playsongs")
 
 end #End of module
