@@ -1,6 +1,6 @@
 # Fizzleworth-manalog.lic
-# Debug aid: every INTERVAL seconds, write the mana the scripts actually see
-# into the game log, so a "why did it rest at 56 mana?" question can be answered
+# Debug aid: every INTERVAL seconds, write the mana (and health) the scripts
+# actually see into the game log, so a "why did it rest at 56 mana?" question can be answered
 # from the log instead of guessed at (10.03: bigshot rested "out of mana" and
 # nothing in the log said what the mana was).
 #
@@ -12,15 +12,22 @@
 # Started from Fizzleworth-prep.lic. Stop with ;kill Fizzleworth-manalog.
 
 INTERVAL     = 10    unless defined?(INTERVAL)
+# Health is logged on the same line; while it's below DANGER_PCT sample faster so
+# a near-miss (10.05: stunned + 20s roundtime in a crowd) shows up in the log.
+DANGER_PCT      = 60 unless defined?(DANGER_PCT)
+DANGER_INTERVAL = 2  unless defined?(DANGER_INTERVAL)
 USE_GAME_CMD = false unless defined?(USE_GAME_CMD)
 
-echo "[manalog] logging mana every #{INTERVAL}s."
+echo "[manalog] logging mana + health every #{INTERVAL}s (every #{DANGER_INTERVAL}s while health < #{DANGER_PCT}%)."
 loop do
   Script.current.kill if checkdead
   mx  = (maxmana rescue 0).to_i
   cur = (checkmana rescue 0).to_i
   pct = (Char.percent_mana rescue (mx.positive? ? cur * 100 / mx : 0))
-  echo "[manalog] mana #{cur}/#{mx} (#{pct}%)"
+  hmx  = (maxhealth rescue 0).to_i
+  hcur = (checkhealth rescue 0).to_i
+  hpct = (Char.percent_health rescue (hmx.positive? ? hcur * 100 / hmx : 100))
+  echo "[manalog] mana #{cur}/#{mx} (#{pct}%) | health #{hcur}/#{hmx} (#{hpct}%)"
   fput "mana" if USE_GAME_CMD
-  sleep INTERVAL
+  sleep(hpct < DANGER_PCT ? DANGER_INTERVAL : INTERVAL)
 end
