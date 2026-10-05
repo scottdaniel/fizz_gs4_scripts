@@ -186,13 +186,16 @@ def recover_weapon(id, noun)
     sleep 0.3
   end
   if weapon_on_ground(noun)
-    r = dothistimeout("get #{noun}", 4, /You (?:pick up|get)|You already have|can't pick that up|What were you/i).to_s
-    got = r =~ /You (?:pick up|get)|already have/i
+    r = dothistimeout("get #{noun}", 4, /You (?:pick up|get|remove|take)|You already have|can't pick that up|What were you/i).to_s
+    got = r =~ /You (?:pick up|get|remove|take)|already have/i
   end
   if !got && id
     r = dothistimeout("get #{noun} from ##{id}", 4,
-          /You (?:get|pick up)|can't pick that up|could not find|not carrying|doesn't have|must be closer|dead and cannot/i).to_s
-    got = r =~ /You (?:get|pick up)/i
+          /You (?:get|pick up|remove|take)|can't pick that up|could not find|not carrying|doesn't have|must be closer|dead and cannot/i).to_s
+    # 10.04: off a corpse the game says "You REMOVE a massive bone-hilted
+    # claidhmore from on a supple Ivasian inciter." -- a success we used to
+    # miss (matched only get/pick up), so the weapon was left in hand.
+    got = r =~ /You (?:get|pick up|remove|take)/i
   end
   return false unless got
   sleep 0.3

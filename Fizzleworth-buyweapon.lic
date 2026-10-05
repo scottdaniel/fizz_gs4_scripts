@@ -46,6 +46,17 @@ module FizzBuyWeapon
       echo "[buyweapon] verlok already has a #{NOUN} -- nothing to do."
       return
     end
+    # Before spending ~1200: is it already on us (stowed in the cloak, or in a
+    # hand)? 10.04: a recovered claidhmore sat in the cloak while this bought a
+    # replacement. `get` also pulls it out of worn containers.
+    g = dothistimeout("get #{NOUN}", 4,
+          /You (?:retrieve|get|remove|pick up|take)|You already have|could not find|What were you referring|can't find/i).to_s
+    if g =~ /You (?:retrieve|get|remove|pick up|take)|already have/i
+      dothistimeout("give #{NOUN} to verlok", 4,
+        /grudgingly accepts|hand(?:s)? .* to (?:a|an|the)|refuses|isn't interested/i)
+      echo "[buyweapon] found the #{NOUN} on me -- gave it to verlok instead of buying."
+      return
+    end
     echo "[buyweapon] verlok has no #{NOUN} -- buying one at Wineberry's."
 
     start = (Room.current.id rescue nil)
