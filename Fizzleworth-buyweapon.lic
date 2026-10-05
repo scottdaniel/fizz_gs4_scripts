@@ -41,6 +41,40 @@ module FizzBuyWeapon
     txt =~ /is holding\b[^.\n]*\b#{Regexp.escape(NOUN)}/i
   end
 
+  # Symbol of Blessing (Voln step 2+): blesses a weapon HELD IN THE RIGHT HAND so
+  # it can hurt undead; permanent but each swing uses up one of its
+  # (level + 2*rank) blesses; costs favor. gswiki Symbol_of_Blessing. Done to a
+  # freshly bought claidhmore before it goes to verlok, so the animate swings a
+  # blessed weapon. Turn it off with `;vars set reanim_bless=false`.
+  BLESS_OK   = /wave of power flows outward from you|white light wraps around/i
+  BLESS_FAIL = /already (?:blessed|has a bless)|not blessable|cannot be blessed|can't be blessed|must be (?:holding|wielding)|right hand|do not have enough favor|don't have enough favor|not a member|You are not|could not find|What were you referring/i
+
+  def bless_enabled?
+    v = UserVars.reanim_bless
+    return true if v.nil?
+    return v if v == true || v == false
+    v.to_s !~ /\A\s*(?:0|false|off|no)\s*\z/i
+  end
+
+  def bless_weapon
+    return unless bless_enabled?
+    cmd = "symbol of blessing my #{NOUN}"
+    r = dothistimeout(cmd, 5, Regexp.union(BLESS_OK, BLESS_FAIL)).to_s
+    if r !~ BLESS_OK && r =~ /right hand/i
+      # it has to be in the RIGHT hand -- swap and retry
+      fput "swap"
+      sleep 0.5
+      r = dothistimeout(cmd, 5, Regexp.union(BLESS_OK, BLESS_FAIL)).to_s
+      fput "swap"
+    end
+    waitrt?
+    if r =~ BLESS_OK
+      echo "[buyweapon] blessed the #{NOUN} (Symbol of Blessing)."
+    else
+      echo "[buyweapon] couldn't bless the #{NOUN}: #{r.strip[0, 120].empty? ? 'no response' : r.strip[0, 120]}"
+    end
+  end
+
   def run
     if verlok_has_weapon?
       echo "[buyweapon] verlok already has a #{NOUN} -- nothing to do."
@@ -79,6 +113,7 @@ module FizzBuyWeapon
     end
 
     if r =~ /Sold for|hands you (?:a|an|the)/i
+      bless_weapon
       dothistimeout("give #{NOUN} to verlok", 4,
         /grudgingly accepts|hand(?:s)? .* to (?:a|an|the)|refuses|isn't interested/i)
       echo "[buyweapon] bought a #{NOUN} and gave it to verlok."
