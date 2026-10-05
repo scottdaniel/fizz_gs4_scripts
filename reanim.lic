@@ -157,8 +157,12 @@ def animate_held_nouns
 	lines = raw.map { |l| l.to_s.gsub(/<[^>]+>/, "") }
 	return [] if lines.any? { |l| l =~ /empty[- ]handed|hands? (?:are|is) empty|nothing in (?:its|his|her|their)/i }
 
-	line = lines.find { |l| l =~ /\b(?:has|have)\s+(?:a|an|some|two|three|four|several|a pair of)\b/i &&
-	                        l !~ /good shape|appears to be|wound|scar|bruis|blood|injur|gash|slice/i }
+	# LOOK prints a HEALTH line before the items, and it ALSO starts "He has ..."
+	# ("He has a fractured and bleeding left arm." -- 10.05: that got parsed as
+	# items and we sent `tell anim to drop arm`). Skip any "has" line that
+	# mentions injuries / body parts, and take the LAST remaining one (the items).
+	body = /\b(?:arms?|legs?|heads?|eyes?|chest|back|necks?|hands?|foot|feet|abdomen|torso|lacerations?|concussion|cuts?|bruises?|bruised|swollen|fractured|bleeding|broken|wounds?|wounded|scars?|scarred|injur\w*|skin|ribs?|shoulders?|knees?|ankles?|wrists?|elbows?|jaw|face|ears?|missing|severed|crushed|mangled|gash\w*|slices?|blood\w*|good shape|appears to be)\b/i
+	line = lines.select { |l| l =~ /\b(?:has|have)\s+(?:a|an|some|two|three|four|several|a pair of)\b/i && l !~ body }.last
 	return nil unless line
 
 	m = line.match(/\b(?:has|have)\s+(.+?)\.?\s*$/i)
