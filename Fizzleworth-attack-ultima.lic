@@ -180,8 +180,24 @@ def hold_for_dot(seconds, foe)
 end
 
 # Sends `cmd` and collects every line through the roundtime/resolution message.
+# Throw away anything still sitting in our line buffer (a previous cast's tail),
+# so the next command's wait-patterns can't match STALE lines.
+def drain_lines
+  nil while get?
+end
+
+# Sends `cmd` and collects every line through the cast's own terminal line
+# (its "Cast Roundtime" / refusal). Reads ALL the way to that line -- it used to
+# stop early on "blood red haze" / "Warding failed" / "is rooted in place",
+# which left the "Cast Roundtime" line unread, and the NEXT cast_collect then
+# took that stale line as its own finish and returned instantly (10.05: crowd
+# control's 703 -> the main 703 returned early -> `prep 710` matched the 703's
+# "Your spell is ready" -> `cast` said "You don't have a spell prepared!").
+CAST_DONE = /Cast Roundtime \d+ Sec|Roundtime: \d+ sec|can't think clearly enough to prepare|don't have a spell prepared|^Wait \d+ sec|You can't cast|You have no/i unless defined?(CAST_DONE)
+
 def cast_collect(cmd, timeout = 6)
   lines = []
+  drain_lines
   put cmd
   deadline = Time.now.to_f + timeout
   loop do
@@ -190,7 +206,7 @@ def cast_collect(cmd, timeout = 6)
       sleep 0.1
     else
       lines << line
-      break if line =~ /Roundtime: \d+ sec|Cast Roundtime \d+ Sec|can't think clearly enough to prepare|Warded off|Warding failed|is rooted in place|blood red haze/i
+      break if line =~ CAST_DONE
     end
     break if Time.now.to_f >= deadline
   end
@@ -280,6 +296,7 @@ def land_maelstrom(foe)
   fput "release" if checkprep != "None"
   waitcastrt?
   waitrt?
+  drain_lines
   text = dothistimeout("prep 710", 6, /Your spell is ready|can't think clearly enough to prepare/i).to_s
   if text =~ CANT_CAST_WOUNDED
     Script.run("eherbs", "--spellcast")
@@ -288,9 +305,12 @@ def land_maelstrom(foe)
   return false unless text =~ /Your spell is ready/i
   return false if target_dead?(foe)
   return false if checkmana < SPELL_MAELSTROM_MANA
-  fput "cast ##{foe.id}"
+  text = cast_collect("cast ##{foe.id}")
   waitcastrt?
   waitrt?
+  # `cast` with nothing prepared ("You don't have a spell prepared!") or a
+  # refused cast is NOT a landed Maelstrom -- don't go on to tether as if it was.
+  return false if text =~ /don't have a spell prepared|^Wait \d+ sec|can't think clearly/i
   true
 end
 
@@ -395,6 +415,7 @@ def cast_at(num, id)
   fput "release" if checkprep != "None"
   waitcastrt?
   waitrt?
+  drain_lines
   t = dothistimeout("prep #{num}", 6, /Your spell is ready|can't think clearly enough to prepare/i).to_s
   if t =~ CANT_CAST_WOUNDED
     Script.run("eherbs", "--spellcast")
