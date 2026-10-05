@@ -83,7 +83,6 @@ Script.start("Fizzleworth-lifeguard") unless Script.running?("Fizzleworth-lifegu
 # gone by now (730 duration, plus the whole rest/travel/shop cycle in between).
 $ult_reanim_done    = false
 $ult_essence_run    = false
-$ult_skips          = 0
 $reanim_animate_live = false
 
 # Make sure the minor demon is set to follow -- ;reanim has verlok drop the
