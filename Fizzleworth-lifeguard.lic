@@ -1,0 +1,138 @@
+# Fizzleworth-lifeguard.lic
+# Always-on safety net for unattended hunting. Watches health and, while hostiles
+# are around, escalates:
+#
+#   1. health <= RESTORE pct (default 50)  -> Symbol of Restoration (Voln rank 17,
+#      "returns up to half of a member's health point loss"). Retried every
+#      RESTORE_GAP seconds while it stays low; the game makes the cast wait out
+#      any roundtime, so this keeps trying while you're stunned / in RT.
+#   2. health <= RETURN pct (default 25)   -> Symbol of Return (rank 25, immediate
+#      teleport out). Return is INTERRUPTED if you move ("The power from your
+#      symbol dissipates"), so bigshot, go2 and the attack scripts are paused
+#      first, and bigshot is told to rest afterward.
+#
+# Written after 10.05: stunned for 6 rounds, then 20s + 10s roundtime in a crowd
+# of incubi/inciters; the animate (and luck) kept Fizzleworth alive. There is NO
+# "Symbol of Escape" ("Unknown symbol.").
+#
+# Both symbols cost Voln favor, so they only fire when it's genuinely bad.
+# Knobs are UserVars (read live, so changes apply without restarting Lich):
+#   ;vars set lifeguard=off              turn the whole thing off (default on)
+#   ;vars set lifeguard_restore_pct=50
+#   ;vars set lifeguard_return_pct=25
+#
+# Started from Fizzleworth-prep.lic. Stop with ;kill Fizzleworth-lifeguard.
+
+module Lifeguard
+  module_function
+
+  POLL         = 0.5
+  RESTORE_GAP  = 6     # secs between Restoration attempts while health stays low
+  RETURN_GAP   = 30    # secs between Return attempts
+  RETURN_WAIT  = 12    # secs to wait for the teleport to take (room id changes)
+  PAUSE_SCRIPTS = %w[bigshot go2 Fizzleworth-attack-ultima Fizzleworth-attack-cat
+                     Fizzleworth-attack-base sac4mana wander fizzsac] unless defined?(PAUSE_SCRIPTS)
+
+  VOLN = (defined?(Lich::Gemstone::Societies::OrderOfVoln) ? Lich::Gemstone::Societies::OrderOfVoln : nil) unless defined?(VOLN)
+
+  def on?
+    v = UserVars.lifeguard
+    return true if v.nil?
+    return v if v == true || v == false
+    v.to_s !~ /\A\s*(?:0|false|off|no)\s*\z/i
+  end
+
+  def pct(name, default)
+    v = UserVars.send(name)
+    v.to_s =~ /\A\s*\d+\s*\z/ ? v.to_i : default
+  end
+
+  def hp_pct
+    Char.percent_health.to_i
+  rescue StandardError
+    100
+  end
+
+  # Only act when something's actually hostile in the room.
+  def hostiles?
+    GameObj.targets.any? { |t| t && t.status.to_s !~ /dead|gone/ && t.name.to_s !~ /verlok|animated/i }
+  rescue StandardError
+    false
+  end
+
+  def symbol_ok?(short)
+    return false if VOLN.nil?
+    VOLN.available?(short)
+  rescue StandardError
+    true   # can't tell -- let the game answer
+  end
+
+  def restore
+    return unless symbol_ok?("restoration")
+    echo "[lifeguard] health #{hp_pct}% -- Symbol of Restoration."
+    dothistimeout("symbol of restoration", 6,
+      /restor|heal|surge|wave|power|favor|Unknown symbol|wait \d+|already|cannot|can't/i)
+    waitrt?
+  end
+
+  def freeze
+    mine = PAUSE_SCRIPTS.select { |s| Script.running?(s) && !Script.paused?(s) }
+    mine.each { |s| Script.pause(s) }
+    sleep 0.3
+    mine
+  end
+
+  def thaw(mine)
+    mine.each { |s| Script.unpause(s) if Script.paused?(s) }
+  end
+
+  # Teleport out. Frozen so nothing walks us out of the cast.
+  def emergency_return
+    return unless symbol_ok?("return")
+    echo "[lifeguard] !! health #{hp_pct}% -- Symbol of Return (freezing bigshot/attack so it isn't interrupted)."
+    $bigshot_should_rest = true
+    $rest_reason = "lifeguard (low health)"
+    mine = freeze
+    start = (Room.current.id rescue nil)
+    begin
+      3.times do
+        fput "symbol of return"
+        deadline = Time.now + RETURN_WAIT
+        until Time.now > deadline
+          return echo("[lifeguard] teleported out (now room #{Room.current.id}).") if (Room.current.id rescue nil) != start
+          return if checkdead
+          sleep 0.3
+        end
+        break if hp_pct > 40       # recovered enough; stop spending favor
+      end
+      echo "[lifeguard] Return didn't take."
+    ensure
+      thaw(mine)
+    end
+  end
+
+  def run
+    echo "[lifeguard] watching health (restore <= #{pct(:lifeguard_restore_pct, 50)}%, return <= #{pct(:lifeguard_return_pct, 25)}%)."
+    last_restore = 0.0
+    last_return  = 0.0
+    loop do
+      Script.current.kill if checkdead
+      if on? && hostiles?
+        hp = hp_pct
+        now = Time.now.to_f
+        if hp <= pct(:lifeguard_return_pct, 25) && now - last_return > RETURN_GAP
+          last_return = now
+          emergency_return
+        elsif hp <= pct(:lifeguard_restore_pct, 50) && now - last_restore > RESTORE_GAP
+          last_restore = now
+          restore
+        end
+      end
+      sleep POLL
+    end
+  rescue StandardError => e
+    echo "[lifeguard] error: #{e.class} #{e.message}"
+  end
+end
+
+Lifeguard.run

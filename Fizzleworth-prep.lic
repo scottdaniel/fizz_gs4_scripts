@@ -79,6 +79,10 @@ Script.start("Fizzleworth-anim-cleanup") unless Script.running?("Fizzleworth-ani
 # Debug: log mana every 10s so rest decisions can be checked against the log.
 Script.start("Fizzleworth-manalog") unless Script.running?("Fizzleworth-manalog")
 
+# Safety net: Symbol of Restoration at low health, Symbol of Return when it's
+# critical (see Fizzleworth-lifeguard.lic; ;vars set lifeguard=off to disable).
+Script.start("Fizzleworth-lifeguard") unless Script.running?("Fizzleworth-lifeguard")
+
 # Fizzleworth-attack-ultima reanims / grinds once per hunt -- re-arm both.
 # Also clear reanim's "buddy exists" flag: any animate from last hunt is long
 # gone by now (730 duration, plus the whole rest/travel/shop cycle in between).
