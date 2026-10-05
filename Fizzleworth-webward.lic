@@ -33,6 +33,14 @@
 #      -- one dead regex broke the whole fallback chain, not just its own
 #      step. Simplest fix: cut the step, go straight to 417.
 #
+# IN COMBAT TOO (2026-10-04): it used to skip any room with a live hostile, but
+# that's exactly when bigshot FLEES -- and flees through the web. Died at 22:19
+# in Den of Rot room 28828: 3 incubi + a vision there, bigshot fled `west`,
+# "you get too close to the rippling, sticky web!", entangled and stunned,
+# unable to act while it all hit. So it now clears a web even with hostiles
+# present (pausing the attack script / go2 / bigshot for the few seconds it
+# takes), provided mana >= 17+5 and health >= 40%.
+#
 # If it fails MAX_ATTEMPTS times it gives up and lets go2 wait the web out
 # the slow way -- no worse than before webward existed.
 #
@@ -49,7 +57,14 @@ CLEAR_TIMEOUT    = 4 unless defined?(CLEAR_TIMEOUT)
 MAX_ATTEMPTS     = 3 unless defined?(MAX_ATTEMPTS)
 # go2 is the one that actually walks onto the web; bigshot is usually just
 # parked waiting on go2, but pause it too so nothing moves mid-dispel.
-PAUSE_WHILE_CLEARING = %w[go2 bigshot] unless defined?(PAUSE_WHILE_CLEARING)
+# In combat the attack script is mid-rotation too -- pause it so its casts don't
+# collide with ours ("You already have a spell readied!").
+PAUSE_WHILE_CLEARING = %w[go2 bigshot Fizzleworth-attack-ultima Fizzleworth-attack-cat
+                          Fizzleworth-attack-base] unless defined?(PAUSE_WHILE_CLEARING)
+# In combat, only spend the cast if we can afford it with a little to spare and
+# aren't already hurting.
+COMBAT_MANA_RESERVE = 5  unless defined?(COMBAT_MANA_RESERVE)
+COMBAT_MIN_HEALTH   = 40 unless defined?(COMBAT_MIN_HEALTH)
 
 WEB_GONE = /web (?:dissolves|dissipates|unravels|falls apart|shrivels|withers|shudders|melts|is destroyed|vanishes)|dispel the|You dispel|strands (?:part|unravel|dissolve)/i unless defined?(WEB_GONE)
 
@@ -59,6 +74,12 @@ end
 
 def in_combat?
   GameObj.targets.any? { |t| t && t.status.to_s !~ /dead|gone/ }
+end
+
+# Clear the web even with hostiles around? Only when we can pay for it.
+def combat_clear_ok?
+  checkmana >= ELEM_DISPEL_MANA + COMBAT_MANA_RESERVE &&
+    (Char.percent_health.to_i rescue 100) >= COMBAT_MIN_HEALTH
 end
 
 # Pause the movement scripts for the duration of the block; only unpause the
@@ -73,6 +94,9 @@ end
 
 def try_elem_dispel
   return false if checkmana < ELEM_DISPEL_MANA
+  fput "release" if checkprep != "None"      # a half-prepped attack spell blocks `prep`
+  waitcastrt?
+  waitrt?
   pr = dothistimeout("prep #{ELEM_DISPEL}", 4, /Your spell is ready|can't think clearly enough to prepare/i)
   return false unless pr =~ /Your spell is ready/i
   dothistimeout("channel web", CLEAR_TIMEOUT, Regexp.union(WEB_GONE, /Cast Roundtime|Roundtime: \d+/i))
@@ -101,7 +125,7 @@ def run
   handled_id = nil
   while (line = get)
     Script.current.kill if checkdead
-    next if in_combat?
+    next if in_combat? && !combat_clear_ok?
     next if checkwebbed
     web = web_in_room
     if web.nil?
