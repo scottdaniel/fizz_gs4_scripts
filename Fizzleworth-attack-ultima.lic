@@ -407,6 +407,21 @@ def groundable?(t)
   t.name.to_s !~ /pestilent vision/i
 end
 
+# Only raise the animate from a LONE target: ;reanim blocks this script ~20s, and
+# anything else in the room gets free actions meanwhile (10.05: a second
+# inciter's knockdown/stun during exactly that window). `;vars set
+# ult_reanim_alone=off` allows reanim with company again.
+def reanim_alone_only?
+  v = UserVars.ult_reanim_alone
+  return true if v.nil?
+  return v if v == true || v == false
+  v.to_s !~ /\A\s*(?:0|false|off|no)\s*\z/i
+end
+
+def others_with(foe)
+  hostiles.reject { |t| foe && t.id.to_i == foe.id.to_i }
+end
+
 def cc_ok?(cost, reserve = nil)
   checkmana >= cost + (reserve || cc_int(:ult_cc_reserve, 16))
 end
@@ -495,6 +510,7 @@ $ult_reanim_done = false unless defined?($ult_reanim_done)
 $ult_essence_run = false unless defined?($ult_essence_run)   # one fizzsac grind per hunt
 $ult_cc          = {}    unless defined?($ult_cc)               # crowd-control bookkeeping per creature id
 $ult_grasp_at    = 0.0   unless defined?($ult_grasp_at)
+$ult_alone_note  = 0.0   unless defined?($ult_alone_note)
 
 foe = GameObj.targets.find { |t| t.id.to_i == XMLData.current_target_id.to_i } if XMLData.current_target_id
 foe ||= GameObj.targets.find { |t| t.status.to_s !~ /dead|gone/ && t.name !~ /animated/ }
@@ -535,7 +551,15 @@ end
 
 # First animate_target? creature of the hunt with no buddy up -> reanim it
 # into one and we're done for this pass (reanim kills it and raises the animate).
-if animate_target?(foe) && !$ult_reanim_done && !have_animate?
+if animate_target?(foe) && !$ult_reanim_done && !have_animate? &&
+   reanim_alone_only? && !others_with(foe).empty?
+  # Not alone: don't reanim now (it'd leave the room unattended for ~20s). Fight
+  # it normally; $ult_reanim_done stays false, so the next LONE inciter gets it.
+  if Time.now.to_f - $ult_alone_note.to_f > 30
+    echo "[ultima] inciter has company (#{others_with(foe).size} other hostile(s)) -- not reanimating; waiting for a lone one."
+    $ult_alone_note = Time.now.to_f
+  end
+elsif animate_target?(foe) && !$ult_reanim_done && !have_animate?
   # ;reanim blocks this script for ~20s (Pain x3, Animate Dead, arming), and no
   # crowd control happens meanwhile -- 10.05 18:04: a second inciter's spell
   # knocked us down (stun 6 rounds, 20s roundtime) during exactly that window.
