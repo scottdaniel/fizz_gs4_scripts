@@ -407,8 +407,8 @@ def groundable?(t)
   t.name.to_s !~ /pestilent vision/i
 end
 
-def cc_ok?(cost)
-  checkmana >= cost + cc_int(:ult_cc_reserve, 16)
+def cc_ok?(cost, reserve = nil)
+  checkmana >= cost + (reserve || cc_int(:ult_cc_reserve, 16))
 end
 
 # prep + cast `num` at a specific creature id (so the bigshot target isn't touched)
@@ -447,7 +447,7 @@ SPELL_GRASP_MANA = (Spell[709].mana_cost.to_i.positive? ? Spell[709].mana_cost.t
 
 # One crowd-control action per call (cheap to call often). `foe` is the target
 # the main flow is already handling -- skipped here.
-def crowd_control(foe)
+def crowd_control(foe, reserve = nil)
   return false unless cc_on?
   all = hostiles
   return false if all.empty?
@@ -457,7 +457,7 @@ def crowd_control(foe)
 
   # 1) a crowd -> Grasp, but only if it can still floor 2+ standing creatures
   if all.size >= cc_int(:ult_grasp_at, 3) && now - $ult_grasp_at.to_f > GRASP_GAP &&
-     cc_ok?(SPELL_GRASP_MANA) &&
+     cc_ok?(SPELL_GRASP_MANA, reserve) &&
      all.count { |t| groundable?(t) && !floored?(t) } >= 2
     cast_grasp
     return true
@@ -470,13 +470,13 @@ def crowd_control(foe)
     rec = ($ult_cc[t.id.to_i] ||= {})
     if caster?(t)
       next if rec[:silenced_at] && now - rec[:silenced_at] < CC_SILENCE_GAP
-      next unless cc_ok?(SPELL_CORRUPT_MANA)
+      next unless cc_ok?(SPELL_CORRUPT_MANA, reserve)
       cast_at(703, t.id)
       rec[:silenced_at] = now
       return true
     else
       next if rec[:webbed]
-      next unless cc_ok?(SPELL_WEB_MANA)
+      next unless cc_ok?(SPELL_WEB_MANA, reserve)
       cast_at(118, t.id)
       rec[:webbed] = true
       return true
@@ -536,6 +536,12 @@ end
 # First animate_target? creature of the hunt with no buddy up -> reanim it
 # into one and we're done for this pass (reanim kills it and raises the animate).
 if animate_target?(foe) && !$ult_reanim_done && !have_animate?
+  # ;reanim blocks this script for ~20s (Pain x3, Animate Dead, arming), and no
+  # crowd control happens meanwhile -- 10.05 18:04: a second inciter's spell
+  # knocked us down (stun 6 rounds, 20s roundtime) during exactly that window.
+  # So cover the room FIRST, keeping ~70 mana back so the animate itself stays
+  # affordable.
+  5.times { break unless crowd_control(foe, 70) }
   Script.run(REANIM_SCRIPT, "##{foe.id}")
   $ult_reanim_done = true
   exit
