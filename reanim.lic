@@ -89,7 +89,7 @@ PAIN_SPELL          = 711
 ANIMATE_SPELL       = 730
 MAX_PAIN_ATTEMPTS   = 15
 WEAPON_PICKUP_TRIES = 4
-ANIMATE_CATCHUP     = 20   # ;reanim die: REAL seconds to wait for the animate to follow in
+ANIMATE_CATCHUP     = 10   # ;reanim die: REAL seconds to wait for the animate to follow in
 
 # Set true when Animate Dead lands, false once ;reanim die has torn the buddy
 # down. `Spell[730].active?` stays true for the spell's whole duration even
