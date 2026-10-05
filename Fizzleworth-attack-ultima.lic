@@ -400,10 +400,11 @@ def floored?(t)
   t.status.to_s =~ /lying|prone|sitting|kneeling/i
 end
 
-# Can Grasp drag it down? The log shows inciters and incubi get dragged down;
-# floating vereri / visions are not in the 709 messages.
+# Can Grasp drag it down? 10.05 log: inciters, incubi AND magna vereri get
+# dragged down (one vereri "avoids their clutches"); pestilent visions (noncorporeal
+# fliers) never appear in the 709 messages.
 def groundable?(t)
-  t.name.to_s !~ /vereri|pestilent vision/i
+  t.name.to_s !~ /pestilent vision/i
 end
 
 def cc_ok?(cost)
