@@ -24,6 +24,14 @@
 #                                target ($ult_silenced_id).
 #   * anything unrecognised    -> Web (118), same as -base.
 #
+# CROWD CONTROL (2026-10-05): the disable above isn't just for the active target.
+# Each pass -- and during the DoT hold -- every OTHER hostile in the room gets
+# its own disable (703 on casters, 118 on the rest), including anything that
+# wanders in mid-fight; with 3+ hostiles (and 2+ groundable ones still
+# standing) Grasp of the Grave (709) keeps them on the floor. Mana-gated with a
+# reserve for the 710/706 finish. See "crowd control" below; toggle with
+# `;vars set ult_cc=off`.
+#
 # ONE-SHOT ANIMATE BUDDY: the first creature matching animate_target? of a
 # hunt (a magna vereri since 2026-10-03; was an incubus for one hunt, and the
 # Ivasian inciter before that), if we don't already have an animate up, is handed to `;reanim` (Pain 711 to death, then
@@ -165,6 +173,8 @@ def hold_for_dot(seconds, foe)
     if !harvested && Time.now.to_f > deadline - seconds * 0.5
       harvested = try_essence_harvest(foe)
     end
+    # idle time between DoT ticks: cover anything that just walked in
+    crowd_control(foe) unless target_dead?(foe)
     sleep 0.25
   end
 end
@@ -332,6 +342,127 @@ def recover_mana
   false
 end
 
+# --- crowd control (2026-10-05) --------------------------------------------
+#
+# Survivability: don't just disable the ACTIVE target -- disable every hostile
+# in the room (703 on the casters, 118 on the rest), including ones that wander
+# in mid-fight, and with a crowd drop Grasp of the Grave (709) to keep the
+# groundable ones on the floor. Runs at the top of each pass and inside the
+# DoT hold (that's idle time anyway). Everything is mana-gated with a reserve
+# so the 710/706 finish stays affordable -- this burns mana, so it throttles
+# itself when you're low. Knobs are UserVars, read live:
+#   ;vars set ult_cc=off              turn crowd control off (default on)
+#   ;vars set ult_grasp_at=3          hostiles needed before 709 (default 3)
+#   ;vars set ult_cc_reserve=16       mana kept back for the finish (default 16)
+#
+# Per-creature bookkeeping: $ult_cc[id] = { silenced_at:, webbed: }.
+
+def cc_on?
+  v = UserVars.ult_cc
+  return true if v.nil?
+  return v if v == true || v == false
+  v.to_s !~ /\A\s*(?:0|false|off|no)\s*\z/i
+end
+
+def cc_int(name, default)
+  v = UserVars.send(name)
+  v.to_s =~ /\A\s*\d+\s*\z/ ? v.to_i : default
+end
+
+CC_SILENCE_GAP = 18 unless defined?(CC_SILENCE_GAP)   # secs before re-silencing the same caster (haze lasts ~15s)
+GRASP_GAP      = 6 unless defined?(GRASP_GAP)    # min secs between Grasp casts
+
+def hostiles
+  GameObj.targets.select { |t| t && t.status.to_s !~ /dead|gone/ && t.name.to_s !~ /animated|verlok/i }
+end
+
+def floored?(t)
+  t.status.to_s =~ /lying|prone|sitting|kneeling/i
+end
+
+# Can Grasp drag it down? The log shows inciters and incubi get dragged down;
+# floating vereri / visions are not in the 709 messages.
+def groundable?(t)
+  t.name.to_s !~ /vereri|pestilent vision/i
+end
+
+def cc_ok?(cost)
+  checkmana >= cost + cc_int(:ult_cc_reserve, 16)
+end
+
+# prep + cast `num` at a specific creature id (so the bigshot target isn't touched)
+def cast_at(num, id)
+  fput "release" if checkprep != "None"
+  waitcastrt?
+  waitrt?
+  t = dothistimeout("prep #{num}", 6, /Your spell is ready|can't think clearly enough to prepare/i).to_s
+  if t =~ CANT_CAST_WOUNDED
+    Script.run("eherbs", "--spellcast")
+    return nil
+  end
+  return nil unless t =~ /Your spell is ready/i
+  text = cast_collect("cast ##{id}")
+  waitcastrt?
+  waitrt?
+  text
+end
+
+def cast_grasp
+  waitcastrt?
+  waitrt?
+  fput "release" if checkprep != "None"
+  text = cast_collect("incant 709")
+  if text =~ CANT_CAST_WOUNDED
+    Script.run("eherbs", "--spellcast")
+    return
+  end
+  $ult_grasp_at = Time.now.to_f
+  waitcastrt?
+  waitrt?
+end
+
+SPELL_GRASP_MANA = (Spell[709].mana_cost.to_i.positive? ? Spell[709].mana_cost.to_i : 9) unless defined?(SPELL_GRASP_MANA)
+
+# One crowd-control action per call (cheap to call often). `foe` is the target
+# the main flow is already handling -- skipped here.
+def crowd_control(foe)
+  return false unless cc_on?
+  all = hostiles
+  return false if all.empty?
+  now = Time.now.to_f
+  $ult_cc ||= {}
+  $ult_cc.delete_if { |id, _| all.none? { |t| t.id.to_i == id } }   # forget the dead / gone
+
+  # 1) a crowd -> Grasp, but only if it can still floor 2+ standing creatures
+  if all.size >= cc_int(:ult_grasp_at, 3) && now - $ult_grasp_at.to_f > GRASP_GAP &&
+     cc_ok?(SPELL_GRASP_MANA) &&
+     all.count { |t| groundable?(t) && !floored?(t) } >= 2
+    cast_grasp
+    return true
+  end
+
+  # 2) disable whoever else is here and still unhandled: casters first (703),
+  #    then anything else (118). Web only once per creature; 703 repeats.
+  others = all.reject { |t| foe && t.id.to_i == foe.id.to_i }
+  others.sort_by { |t| caster?(t) ? 0 : 1 }.each do |t|
+    rec = ($ult_cc[t.id.to_i] ||= {})
+    if caster?(t)
+      next if rec[:silenced_at] && now - rec[:silenced_at] < CC_SILENCE_GAP
+      next unless cc_ok?(SPELL_CORRUPT_MANA)
+      cast_at(703, t.id)
+      rec[:silenced_at] = now
+      return true
+    else
+      next if rec[:webbed]
+      next unless cc_ok?(SPELL_WEB_MANA)
+      cast_at(118, t.id)
+      rec[:webbed] = true
+      return true
+    end
+  end
+  false
+end
+
 # --- main ----------------------------------------------------------
 
 $ult_target      = nil   unless defined?($ult_target)
@@ -340,6 +471,8 @@ $ult_silenced_id = nil   unless defined?($ult_silenced_id)
 $ult_tethered_id = nil   unless defined?($ult_tethered_id)
 $ult_reanim_done = false unless defined?($ult_reanim_done)
 $ult_essence_run = false unless defined?($ult_essence_run)   # one fizzsac grind per hunt
+$ult_cc          = {}    unless defined?($ult_cc)               # crowd-control bookkeeping per creature id
+$ult_grasp_at    = 0.0   unless defined?($ult_grasp_at)
 
 foe = GameObj.targets.find { |t| t.id.to_i == XMLData.current_target_id.to_i } if XMLData.current_target_id
 foe ||= GameObj.targets.find { |t| t.status.to_s !~ /dead|gone/ && t.name !~ /animated/ }
@@ -397,6 +530,10 @@ if !$ult_essence_run && have_animate? &&
   Script.run("fizzsac")
   exit
 end
+
+# Crowd control first: disable everyone else in the room, Grasp a crowd.
+crowd_control(foe)
+exit if target_dead?(foe)
 
 # Creature-specific disable.
 if vereri?(foe)
