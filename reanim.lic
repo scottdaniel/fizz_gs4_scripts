@@ -89,7 +89,7 @@ PAIN_SPELL          = 711
 ANIMATE_SPELL       = 730
 MAX_PAIN_ATTEMPTS   = 15
 WEAPON_PICKUP_TRIES = 4
-ANIMATE_CATCHUP     = 10   # ;reanim die: secs to wait for the animate to follow in
+ANIMATE_CATCHUP     = 20   # ;reanim die: REAL seconds to wait for the animate to follow in
 
 # Set true when Animate Dead lands, false once ;reanim die has torn the buddy
 # down. `Spell[730].active?` stays true for the spell's whole duration even
@@ -304,14 +304,17 @@ def dismiss_animate(noun)
 		return
 	end
 
-	fput "tell anim stop"     # halt it wherever it is (mid-travel it lags on follow)
-	sleep 0.3
-	fput "tell anim follow"   # ... then bring it to us
+	# Just `follow` -- NOT stop-then-follow. It's normally already following, and
+	# `stop` halts it mid-approach (10.05: it was already on follow, and we
+	# stopped it right as it was catching up).
+	fput "tell anim follow"
 
-	waited = 0.0
-	until animate_here_stable? || waited >= ANIMATE_CATCHUP
-		sleep 0.6
-		waited += 1.0          # animate_here_stable? already ate ~0.4s
+	# Real-time deadline. This used to count `waited += 1.0` per ~0.6s loop, so
+	# ANIMATE_CATCHUP = 10 was really ~6 seconds -- the 10.05 hand-off gave up
+	# at 6s with the animate still on its way.
+	deadline = Time.now + ANIMATE_CATCHUP
+	until animate_here_stable? || Time.now >= deadline
+		sleep 0.4
 	end
 
 	unless animate_here_stable?
