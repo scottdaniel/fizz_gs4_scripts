@@ -234,7 +234,19 @@ def arm_animate(noun)
 		# GameObj.loot can lag the drop line by a beat -- give it a moment
 		15.times { break if weapon_on_ground(noun); sleep 0.2 }
 		unless weapon_on_ground(noun)
-			echo "[reanim] no #{noun} on the ground for the animate (verlok didn't drop one) -- animate left unarmed."
+			# No minor demon (or it isn't carrying one) -- 10.04: the demon timed
+			# out and FIVE hunts ran with an unarmed animate. Drop our own copy
+			# from the pack instead.
+			echo "[reanim] verlok didn't drop a #{noun} -- dropping my own."
+			g = dothistimeout("get #{noun}", 4,
+				/You (?:retrieve|get|remove|pick up|take)|You already have|could not find|What were you referring/i).to_s
+			if g =~ /You (?:retrieve|get|remove|pick up|take)|already have/i
+				fput "drop #{noun}"
+				15.times { break if weapon_on_ground(noun); sleep 0.2 }
+			end
+		end
+		unless weapon_on_ground(noun)
+			echo "[reanim] no #{noun} on the ground for the animate (and none in my pack) -- animate left unarmed."
 			return
 		end
 	end
@@ -331,7 +343,10 @@ def dismiss_animate(noun)
 		if weapon_on_ground(noun)
 			dothistimeout("get #{noun}", 3, /You (?:pick up|get)|already have|What were you/i)
 			sleep 0.3
-			dothistimeout("give #{noun} to verlok", 3, /grudgingly accepts|hand(?:s)? .* to (?:a|an|the)|refuses|isn't interested/i)
+			g = dothistimeout("give #{noun} to verlok", 3,
+				/grudgingly accepts|hand(?:s)? .* to (?:a|an|the)|refuses|isn't interested|To whom|could not find/i).to_s
+			# no minor demon to take it -> don't leave it in hand, stow it
+			fput "stow #{noun}" unless g =~ /grudgingly accepts|hand(?:s)? .* to (?:a|an|the)/i
 			sleep 0.3
 		end
 	end

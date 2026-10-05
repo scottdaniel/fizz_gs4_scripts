@@ -87,6 +87,19 @@ module FizzBuyWeapon
     end
   end
 
+  # Give the weapon to verlok and say whether it actually took it. No minor
+  # demon -> "To whom?" and the weapon stays in hand, so stow it instead of
+  # carrying it into the hunt (10.04: the demon had timed out, but we logged
+  # "gave it to verlok" anyway and five hunts ran with an unarmed animate).
+  def give_to_verlok
+    g = dothistimeout("give #{NOUN} to verlok", 4,
+          /grudgingly accepts|hand(?:s)? .* to (?:a|an|the)|refuses|isn't interested|To whom|could not find/i).to_s
+    return true if g =~ /grudgingly accepts|hand(?:s)? .* to (?:a|an|the)/i
+    fput "stow #{NOUN}"
+    echo "[buyweapon] !! verlok didn't take the #{NOUN} (no minor demon? #{g.strip[0, 60]}) -- stowed it; reanim will drop it itself. Start ;mdemon_refresh / summon a demon."
+    false
+  end
+
   def run
     if verlok_has_weapon?
       echo "[buyweapon] verlok already has a #{NOUN} -- nothing to do."
@@ -98,9 +111,8 @@ module FizzBuyWeapon
     g = dothistimeout("get #{NOUN}", 4,
           /You (?:retrieve|get|remove|pick up|take)|You already have|could not find|What were you referring|can't find/i).to_s
     if g =~ /You (?:retrieve|get|remove|pick up|take)|already have/i
-      dothistimeout("give #{NOUN} to verlok", 4,
-        /grudgingly accepts|hand(?:s)? .* to (?:a|an|the)|refuses|isn't interested/i)
-      echo "[buyweapon] found the #{NOUN} on me -- gave it to verlok instead of buying."
+      ok = give_to_verlok
+      echo "[buyweapon] found the #{NOUN} on me -- #{ok ? 'gave it to verlok' : 'kept it (no verlok)'} instead of buying."
       return
     end
     echo "[buyweapon] verlok has no #{NOUN} -- buying one at Wineberry's."
@@ -126,9 +138,8 @@ module FizzBuyWeapon
 
     if r =~ /Sold for|hands you (?:a|an|the)/i
       bless_weapon
-      dothistimeout("give #{NOUN} to verlok", 4,
-        /grudgingly accepts|hand(?:s)? .* to (?:a|an|the)|refuses|isn't interested/i)
-      echo "[buyweapon] bought a #{NOUN} and gave it to verlok."
+      ok = give_to_verlok
+      echo "[buyweapon] bought a #{NOUN}#{ok ? ' and gave it to verlok' : ' (kept -- no verlok)'}."
     else
       echo "[buyweapon] !! couldn't buy a #{NOUN} (order ##{ORDER_NUM}): #{r.strip[0, 120]}"
     end
