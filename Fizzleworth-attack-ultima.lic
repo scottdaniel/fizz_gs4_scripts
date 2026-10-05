@@ -460,6 +460,42 @@ end
 
 SPELL_GRASP_MANA = (Spell[709].mana_cost.to_i.positive? ? Spell[709].mana_cost.to_i : 9) unless defined?(SPELL_GRASP_MANA)
 
+# --- hunt-start: look for a lone inciter (2026-10-05) ----------------------
+#
+# Until the animate is up, a lone NON-inciter (a vision / incubus / vereri on
+# its own) is skipped: step into a neighbouring room instead of fighting it, and
+# let bigshot's wander pick up from there. Bounded (ult_reanim_skips, default 8
+# rooms per hunt) and only when it's genuinely safe -- nobody else hostile here,
+# not stunned/webbed, health >= 60%. A crowd is NOT skipped (walking away from
+# several attackers is worse than fighting) -- it's fought normally. Uses the
+# same exits bigshot would, minus hunting_boundaries. Opt out with
+# `;vars set ult_reanim_hunt=off`.
+def reanim_hunt_on?
+  v = UserVars.ult_reanim_hunt
+  return true if v.nil?
+  return v if v == true || v == false
+  v.to_s !~ /\A\s*(?:0|false|off|no)\s*\z/i
+end
+
+def skip_room
+  return false unless reanim_hunt_on? && reanim_alone_only?
+  return false if $ult_skips.to_i >= cc_int(:ult_reanim_skips, 8)
+  return false if checkwebbed || checkstunned || (Char.percent_health.to_i rescue 100) < 60
+  bounds = (UserVars.op["hunting_boundaries"].to_s.split(/[,\s]+/).reject(&:empty?) rescue [])
+  room   = Room.current
+  opts   = room.wayto.keys.map(&:to_s) - bounds.map(&:to_s)
+  opts.delete_if { |id| room.timeto[id].is_a?(StringProc) && room.timeto[id].call.nil? } rescue nil
+  return false if opts.empty?
+  dest = opts.sample
+  $ult_skips = $ult_skips.to_i + 1
+  echo "[ultima] lone #{$ult_target_name || 'target'} and no animate yet -- skipping this room to find a lone inciter (#{$ult_skips}/#{cc_int(:ult_reanim_skips, 8)})."
+  Script.run("go2", "#{dest} --disable-confirm", { quiet: true })
+  true
+rescue StandardError => e
+  echo "[ultima] skip_room error: #{e.class} #{e.message}"
+  false
+end
+
 # One crowd-control action per call (cheap to call often). `foe` is the target
 # the main flow is already handling -- skipped here.
 def crowd_control(foe, reserve = nil)
@@ -511,6 +547,7 @@ $ult_essence_run = false unless defined?($ult_essence_run)   # one fizzsac grind
 $ult_cc          = {}    unless defined?($ult_cc)               # crowd-control bookkeeping per creature id
 $ult_grasp_at    = 0.0   unless defined?($ult_grasp_at)
 $ult_alone_note  = 0.0   unless defined?($ult_alone_note)
+$ult_skips       = 0     unless defined?($ult_skips)    # rooms skipped this hunt looking for a lone inciter
 
 foe = GameObj.targets.find { |t| t.id.to_i == XMLData.current_target_id.to_i } if XMLData.current_target_id
 foe ||= GameObj.targets.find { |t| t.status.to_s !~ /dead|gone/ && t.name !~ /animated/ }
@@ -569,6 +606,11 @@ elsif animate_target?(foe) && !$ult_reanim_done && !have_animate?
   Script.run(REANIM_SCRIPT, "##{foe.id}")
   $ult_reanim_done = true
   exit
+elsif !$ult_reanim_done && !have_animate? && !animate_target?(foe) &&
+      others_with(foe).empty?
+  # Hunt start: no animate yet and this is a lone non-inciter -- move on.
+  $ult_target_name = foe.name.to_s.sub(/\A(?:an?|the) /i, '')
+  exit if skip_room
 end
 
 # Once per hunt: buddy is up and mana's healthy but the essence pool is low
