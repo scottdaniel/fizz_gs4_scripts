@@ -56,18 +56,30 @@ module FizzBuyWeapon
     v.to_s !~ /\A\s*(?:0|false|off|no)\s*\z/i
   end
 
+  def holds_weapon?(hand)
+    o = GameObj.send(hand)
+    !!(o && !o.id.nil? && o.name.to_s.downcase.include?(NOUN.downcase))
+  end
+
+  # `symbol of blessing` takes no target: it blesses whatever is in the right
+  # hand. A bought weapon often lands in the LEFT hand, so swap it over first
+  # (and swap back afterwards so the readied weapon ends up where it was).
   def bless_weapon
     return unless bless_enabled?
-    cmd = "symbol of blessing my #{NOUN}"
-    r = dothistimeout(cmd, 5, Regexp.union(BLESS_OK, BLESS_FAIL)).to_s
-    if r !~ BLESS_OK && r =~ /right hand/i
-      # it has to be in the RIGHT hand -- swap and retry
+    swapped = false
+    if !holds_weapon?(:right_hand) && holds_weapon?(:left_hand)
       fput "swap"
-      sleep 0.5
-      r = dothistimeout(cmd, 5, Regexp.union(BLESS_OK, BLESS_FAIL)).to_s
-      fput "swap"
+      sleep 0.6
+      swapped = true
     end
+    unless holds_weapon?(:right_hand)
+      echo "[buyweapon] can't bless: the #{NOUN} isn't in my right hand."
+      fput "swap" if swapped
+      return
+    end
+    r = dothistimeout("symbol of blessing", 5, Regexp.union(BLESS_OK, BLESS_FAIL)).to_s
     waitrt?
+    fput "swap" if swapped
     if r =~ BLESS_OK
       echo "[buyweapon] blessed the #{NOUN} (Symbol of Blessing)."
     else
