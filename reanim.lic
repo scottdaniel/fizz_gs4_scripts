@@ -283,6 +283,15 @@ rescue StandardError
 	false
 end
 
+# Leave the animate FOLLOWING no matter what state it was in. `follow` toggles.
+def ensure_follow
+	r = dothistimeout("tell anim follow", 3,
+		/to follow you|cease following|could not find|no animate/i).to_s
+	if r =~ /cease following/i
+		dothistimeout("tell anim follow", 3, /to follow you|cease following/i)
+	end
+end
+
 def animate_here_stable?
 	animate_here? && (sleep(0.4) || true) && animate_here?
 end
@@ -304,10 +313,11 @@ def dismiss_animate(noun)
 		return
 	end
 
-	# Just `follow` -- NOT stop-then-follow. It's normally already following, and
-	# `stop` halts it mid-approach (10.05: it was already on follow, and we
-	# stopped it right as it was catching up).
-	fput "tell anim follow"
+	# `tell anim follow` is a TOGGLE: if it's already following, the same command
+	# says "You order ... to cease following you". So send it, read the reply,
+	# and send it again if that switched following OFF. (No `stop` first -- that
+	# halts it mid-approach.)
+	ensure_follow
 
 	# Real-time deadline. This used to count `waited += 1.0` per ~0.6s loop, so
 	# ANIMATE_CATCHUP = 10 was really ~6 seconds -- the 10.05 hand-off gave up

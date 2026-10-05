@@ -225,6 +225,16 @@ def rescue_weapon_after_loss
   end
 end
 
+# `tell anim follow` TOGGLES (already following -> "cease following you").
+# Send it, read the reply, and re-send if it switched following off.
+def ensure_follow
+  r = dothistimeout("tell anim follow", 3,
+        /to follow you|cease following|could not find|no animate/i).to_s
+  if r =~ /cease following/i
+    dothistimeout("tell anim follow", 3, /to follow you|cease following/i)
+  end
+end
+
 # --- lifecycle ----------------------------------------------------------
 
 # $reanim_animate_live is reanim.lic's source of truth (set when Animate Dead
@@ -301,7 +311,7 @@ def teardown
       # at the town edge (BOUNDARY_ROOM, see boundary_handoff). It MUST be on
       # follow, not attack, or it stays behind fighting.
       echo "Fizzleworth-anim-cleanup: hostile still here -- not dropping the weapon; hand-off deferred to the town edge (room #{BOUNDARY_ROOM})."
-      fput "tell anim follow"        # (no `stop` first -- it's already following)
+      ensure_follow                  # `follow` is a toggle -- see ensure_follow
     else
       Script.run(REANIM_SCRIPT, "die")
     end
