@@ -41,14 +41,8 @@ unless GameObj.loot.find { |i| i.name =~ /#{Char.name} disk/ }
   pause 3
 end
 
-# check if runestaff is ensorcelled, if not, prep and evoke
-res = dothistimeout "l at my #{GameObj.right_hand}", 2, Regexp.union(
-      /An ethereal necrotic film covers the/
-    )
-if res !~ /An ethereal necrotic film covers the/
-    fput "prep 735"
-    fput "evoke #{GameObj.right_hand}"
-    end
+# (The runestaff is permanently ensorcelled now -- the old per-hunt `prep 735` /
+# `evoke` check was removed 2026-10-05.)
 
 # Log mind saturation ("Field Exp: N/1220") right before the hunt for the
 # wings-compare analysis (see Fizzleworth-prep.lic).

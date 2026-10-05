@@ -50,7 +50,8 @@ UserVars.scroll_buff_spells ||= "202 211 215 219 303 307 310 313 314 319 503 507
 Script.run("scrollbuff3", UserVars.scroll_buff_spells)
 # Safety net: if scrollbuff3 ever leaves a scroll in hand (a late "get" reply
 # raced its check -- 10.03), put it back in the scroll sack BEFORE readying the
-# weapon, or the ensorcell below lands on the paper instead of the runestaff.
+# weapon (10.03: the old per-hunt ensorcell landed on the paper instead of the
+# runestaff).
 sleep 1
 %i[right_hand left_hand].each do |hand|
   item = GameObj.send(hand)
@@ -61,14 +62,8 @@ sleep 1
 end
 fput "ready weapon"
 
-# check if runestaff is ensorcelled, if not, prep and evoke
-res = dothistimeout "l at my #{GameObj.right_hand}", 2, Regexp.union(
-      /An ethereal necrotic film covers the/
-    )
-if res !~ /An ethereal necrotic film covers the/
-    fput "prep 735"
-    fput "evoke #{GameObj.right_hand}"
-    end
+# (The runestaff is permanently ensorcelled now -- the old per-hunt `prep 735` /
+# `evoke` check was removed 2026-10-05.)
 
 # Dismisses the Fizzleworth-attack-cat / -ultima ;reanim animate in the field
 # the moment bigshot decides to rest, before the walk home. Started here so
