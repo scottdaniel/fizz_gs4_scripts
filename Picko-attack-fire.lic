@@ -26,19 +26,38 @@
 #
 #   otherwise:           cast Symbol of Mana if it's known and off cooldown
 #                        (cooldown-only check -- never spends deeds); THEN, if
-#                        that's not available either, wave a FIRE-DAMAGE wand
-#                        at the target -- never a random one, since this
-#                        script is fire-themed. Per
-#                        https://gswiki.play.net/Wand, the fire-damage wand
-#                        nouns are golden (Minor Fire), drake and grooved
-#                        ebony (Fire Spirit family), and electrum (Fire
-#                        Spirit) -- "slender crimson rod" also does Major Fire
-#                        but it's a rod, not a wand, so \bwand\b already
-#                        excludes it without special-casing. Auto-draws a
-#                        fresh one from the fresh-wand container, retires a
-#                        spent one to the dead-wand container; if there are no
-#                        fire wands left it flags bigshot to rest (even if
-#                        the sack has other, non-fire wands in it).
+#                        that's not available either, wave a wand at the
+#                        target, in two tiers -- never a random one:
+#                          1. FIRE wands first, since this script is fire-
+#                             themed. Per https://gswiki.play.net/Wand: golden
+#                             (Minor Fire), drake and grooved ebony (Fire
+#                             Spirit family), and electrum (Fire Spirit) --
+#                             "slender crimson rod" also does Major Fire but
+#                             it's a rod, not a wand, so \bwand\b already
+#                             excludes it without special-casing.
+#                          2. Once no fire wand is left, an explicit FALLBACK
+#                             allow-list of other damage wands: acid (crystal,
+#                             smooth crystalline), lightning (iron, silver,
+#                             slender mithril), earth (bronze, faceted topaz)
+#                             and steam (green coral). NEVER water or ice/cold:
+#                             the wiki lists aquamarine and iridescent opal
+#                             (Minor Water), metal, slender azure and slender
+#                             blue (Minor/Major Cold) as those -- they're not
+#                             on the list, and since the fallback is an
+#                             allow-list (not "everything but those"), any
+#                             wand the wiki doesn't cover (copper, black
+#                             walnut, ...) is skipped too instead of gambled
+#                             on. Necromantic wands (bloodwood, bone, yew,
+#                             thanot, black stone, ...) are left off as well:
+#                             these hunts are undead. Every wand drawn is
+#                             checked by name against the tier's pattern and
+#                             put straight back if it's not the one we meant
+#                             (GET matches on the last adjective + noun, so
+#                             "crystal wand" can also catch a "wavy grey
+#                             crystal wand").
+#                        Auto-draws from the fresh-wand container, retires a
+#                        spent wand to the dead-wand container; if neither
+#                        tier has anything it flags bigshot to rest.
 #
 # OVEREXERTION: casting a spell without its full mana cost in hand doesn't fail
 # cleanly -- the cast goes through and hurts you ("You have overextended
@@ -66,16 +85,33 @@ SPELL_908_MANA = (Spell[908].mana_cost.to_i.positive? ? Spell[908].mana_cost.to_
 # a hair over what mana_cost reports, and casting short overextends you.
 MANA_FLOOR = SPELL_908_MANA + 1 unless defined?(MANA_FLOOR)
 
-# Fire-damage wand types per https://gswiki.play.net/Wand -- deliberately NOT
-# read from the bigshot profile's "wand" field (unlike Picko-attack.lic):
-# this script is fire-themed, so it only ever reaches for these regardless of
-# what the profile configures. FIRE_WAND_PATTERN confirms one is actually in
-# the fresh container; FIRE_WAND_GET_NOUNS is what's handed to GET, tried in
-# order until one succeeds -- a single adjective closest to "wand" in each
-# case, since GS chokes on double adjectives ("grooved ebony wand" only
-# parses as "ebony wand", never "grooved wand" or the full name).
-FIRE_WAND_PATTERN    = /\b(?:golden|drake|electrum|grooved ebony)\s+wand\b/i unless defined?(FIRE_WAND_PATTERN)
-FIRE_WAND_GET_NOUNS  = ["golden wand", "drake wand", "electrum wand", "ebony wand"].freeze unless defined?(FIRE_WAND_GET_NOUNS)
+# Wand types per https://gswiki.play.net/Wand -- deliberately NOT read from the
+# bigshot profile's "wand" field (unlike Picko-attack.lic): this script picks
+# its own, in two tiers (see the header). *_PATTERN confirms one is actually in
+# the fresh container AND vets whichever wand GET really handed back;
+# *_GET_NOUNS is what's handed to GET, tried in order until one succeeds -- a
+# single adjective closest to "wand" in each case, since GS chokes on double
+# adjectives ("grooved ebony wand" only parses as "ebony wand", never "grooved
+# wand" or the full name).
+#
+# The patterns are anchored on the article ("a"/"an") so a multi-adjective
+# wand that merely ENDS the same way ("a wavy grey crystal wand", a utility
+# wand) can't pass for the plain one ("a crystal wand", Major Acid).
+FIRE_WAND_PATTERN   = /\b(?:an?|the)\s+(?:golden|drake|electrum|grooved ebony)\s+wand\b/i unless defined?(FIRE_WAND_PATTERN)
+FIRE_WAND_GET_NOUNS = ["golden wand", "drake wand", "electrum wand", "ebony wand"].freeze unless defined?(FIRE_WAND_GET_NOUNS)
+
+# Fallback allow-list once there are no fire wands left: damage wands that are
+# neither water nor ice/cold (see the header). Strongest first; steam (green
+# coral) last because it's the borderline one. Add a type here only after
+# checking its spell on the wiki -- an unlisted wand is never waved.
+FALLBACK_WAND_PATTERN   = /\b(?:an?|the)\s+(?:crystal|slender mithril|bronze|faceted topaz|silver|iron|smooth crystalline|green coral)\s+wand\b/i unless defined?(FALLBACK_WAND_PATTERN)
+FALLBACK_WAND_GET_NOUNS = ["crystal wand", "mithril wand", "bronze wand", "topaz wand", "silver wand", "iron wand", "crystalline wand", "coral wand"].freeze unless defined?(FALLBACK_WAND_GET_NOUNS)
+
+# Tiers in the order they're tried: [label, pattern, GET nouns].
+WAND_TIERS = [
+  ["fire",     FIRE_WAND_PATTERN,     FIRE_WAND_GET_NOUNS].freeze,
+  ["fallback", FALLBACK_WAND_PATTERN, FALLBACK_WAND_GET_NOUNS].freeze,
+].freeze unless defined?(WAND_TIERS)
 
 # Fresh/Dead wand containers still come from bigshot's own loaded settings
 # (UserVars.op) -- those are just storage locations, not wand types, so no
@@ -145,15 +181,14 @@ def attack_908(foe)
   fput "stance defensive"
 end
 
-# True if the fresh container holds a fire-damage wand (FIRE_WAND_PATTERN),
-# read from a full multi-line LOOK IN. Containers that categorize their
-# contents print
+# Contents of the fresh container, read from a full multi-line LOOK IN.
+# Containers that categorize their contents print
 #   In the mail large sack:
 #   Wands [20]: a slender blue wand, a golden wand (2), a drake wand (3), ...
 #   Total items: 20
 # -- while a plain container prints one "In the <c> you see ..." line; a single
 # dothistimeout would only ever see the first line, so collect the whole block.
-def fresh_fire_wand_present?
+def fresh_wand_text
   fput "open my #{FRESH_WAND_CONTAINER}"
   lines = []
   put "look in my #{FRESH_WAND_CONTAINER}"
@@ -167,40 +202,59 @@ def fresh_fire_wand_present?
     lines << line
     break if line =~ /^Total items:|^In .+ you see |There (?:is|are) nothing|is closed|can't look/i
   end
-  lines.join(' ') =~ FIRE_WAND_PATTERN ? true : false
+  lines.join(' ')
 end
 
-# Tell bigshot to rest -- out of mana and out of fire wands, nothing left to do.
+# Tell bigshot to rest -- out of mana and out of usable wands, nothing left to do.
 def rest_out_of_wands
-  echo "out of mana and no fire wands left in #{FRESH_WAND_CONTAINER} -- resting."
+  echo "out of mana and no usable wands (fire or fallback) left in #{FRESH_WAND_CONTAINER} -- resting."
   $bigshot_should_rest = true
-  $rest_reason = "Out of mana, no fire wands"
+  $rest_reason = "Out of mana, no usable wands"
 end
 
-# One wand wave at foe. If neither hand holds a fire wand, confirms the fresh
-# container has one (full multi-line LOOK IN, not a blind GET) and draws it,
-# trying each FIRE_WAND_GET_NOUNS entry in turn until one succeeds (cheaper
-# than parsing exactly which fire type is present); a spent wand (no
+# Draws one wand from the fresh container: the first tier (fire, then fallback)
+# whose pattern shows up in the container, trying that tier's GET nouns in
+# order. Each wand GET hands back is vetted by the name in the game's own
+# "You remove a <name> from ..." line against the same tier pattern -- GET
+# matches on the last adjective + noun, so it can grab a look-alike -- and a
+# wrong one goes straight back in the container before trying the next noun.
+# @return [Boolean] true if a wanted wand is now in hand.
+def draw_wand
+  text = fresh_wand_text
+  WAND_TIERS.each do |label, pattern, nouns|
+    next unless text =~ pattern
+    nouns.each do |noun|
+      r = dothistimeout("get #{noun} from my #{FRESH_WAND_CONTAINER}", 3,
+                        /You (?:remove|slip|slide|get|pull)|Get what\?|What were you referring to|I could not find/i).to_s
+      next unless r =~ /You (?:remove|slip|slide|get|pull)/i
+      drawn = r[/You (?:remove|slip|slide|get|pull) ((?:an?|the|some) .+?) (?:from|out of)\b/i, 1].to_s
+      if drawn =~ pattern
+        echo "drew #{drawn} (#{label} wand)" if label != "fire"
+        return true
+      end
+      echo "'#{noun}' pulled #{drawn.empty? ? 'something unexpected' : drawn} -- putting it back."
+      fput "put my wand in my #{FRESH_WAND_CONTAINER}"
+    end
+  end
+  false
+end
+
+# True if a wand we're willing to wave (either tier) is already in hand.
+def wand_in_hand?
+  [GameObj.right_hand, GameObj.left_hand].compact.any? do |o|
+    n = "a #{o.name}"
+    WAND_TIERS.any? { |_, pattern, _| n =~ pattern }
+  end
+end
+
+# One wand wave at foe. If neither hand holds a wanted wand, draws one (fire
+# first, then the water/ice-free fallback list); a spent wand (no
 # roll/roundtime on the wave) is retired to the dead container. Nothing to
 # wave, nothing to draw -> flag bigshot to rest.
 def wave_wand(foe)
-  in_hand = [GameObj.right_hand, GameObj.left_hand].compact.find { |o| o.name.to_s =~ FIRE_WAND_PATTERN }
-
-  unless in_hand
-    unless fresh_fire_wand_present?
-      rest_out_of_wands
-      return
-    end
-
-    got = FIRE_WAND_GET_NOUNS.any? do |noun|
-      r = dothistimeout("get #{noun} from my #{FRESH_WAND_CONTAINER}", 3,
-                        /You (?:remove|slip|slide|get|pull)|Get what\?|What were you referring to|I could not find/i)
-      r =~ /You (?:remove|slip|slide|get|pull)/i
-    end
-    unless got
-      rest_out_of_wands
-      return
-    end
+  unless wand_in_hand? || draw_wand
+    rest_out_of_wands
+    return
   end
 
   fput "stance offensive" if stance != "offensive"
