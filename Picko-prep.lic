@@ -41,4 +41,9 @@ Script.run("scrollbuff3", UserVars.scroll_buff_spells)
 
 fput "ready weapon"
 
+# Benchmark reading right as the hunt starts -- last on purpose, so it's as close
+# to the first kill as possible (absorption keeps ticking during the buffs above).
+# Compare Experience / Field Exp against the next reading to get a real rate.
+fput "exp"
+
 end #End of module
