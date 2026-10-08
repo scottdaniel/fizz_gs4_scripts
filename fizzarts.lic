@@ -7437,6 +7437,9 @@ module BlackArts
         return
       end
 
+      # Util.travel's STORE can leave a weapon in hand (e.g. a scepter that won't fit the staff sling)
+      Inventory.free_hands(both: true)
+
       loop do
         destroy = nil
 
@@ -7447,7 +7450,8 @@ module BlackArts
         fput illusion
         Util.wait_rt
 
-        case GameObj.right_hand.name
+        held = [GameObj.right_hand, GameObj.left_hand].find { |hand| hand.name =~ /black essence rose|vortex|tempest|void/ }
+        case held&.name
         when /black essence rose/
           destroy = 'eat my rose'
         when /vortex/
