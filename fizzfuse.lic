@@ -4,7 +4,7 @@
         game: gemstone
         tags: scroll infusion, infuse, unlock, runestone, scroll
     requires: Lich > 5.4.0
-     version: 1.2
+     version: 1.3
         note: Written with assistance from Claude (Anthropic).
 
 
@@ -27,6 +27,13 @@ Infuse!
 
         ;vars set vibrantscrollsack=<container name>
         # for finished vibrant-ink scrolls
+
+    Optionally, turn off the safety pause. By default (infuse_safe=true), if an
+    infusion is a struggle ("You strain to harness the mana...") the script stops
+    and waits 10 seconds for you to NOD before it keeps going, and gives up if you
+    don't. With infuse_safe=false it skips that check and keeps trying.
+
+        ;vars set infuse_safe=false
 
 	Other assumptions:
 		- You have at least 20,000 silvers in your local bank (withdrawn as a flat
@@ -101,6 +108,9 @@ Infuse!
           and draw silently failed. Hands are now cleared up front, and the
           free-a-hand retry skips the brush. Whatever was in your hands is
           remembered, stowed with "stow all", and picked back up afterward.
+        - Added the infuse_safe setting (default true). When a struggling infusion asks
+          you to nod, true keeps the old pause-and-confirm; false skips it and keeps
+          trying (;vars set infuse_safe=false).
 
 =end
 
@@ -357,6 +367,12 @@ def wait_for_mana(infusescroll, threshold = 20)
 	end
 end
 
+# Whether to pause for a "nod" when an infusion is a struggle. On by default;
+# turn off with ;vars set infuse_safe=false to just keep trying.
+def infuse_safe?
+	UserVars.infuse_safe.to_s !~ /\A(?:false|no|off|0)\z/i
+end
+
 # Fully infuse all unlocked spells on the scroll in your right hand
 def infuse
 	find_rune("ag'loenar")
@@ -381,9 +397,11 @@ def infuse
 		elsif infuse_line.include? 'cracks slightly and then shatters'
 			find_rune("ag'loenar")
 		elsif infuse_line.include? 'You strain to harness'
-			echo "You appear to be struggling with infusing this scroll, if you want to continue nod within the next 10 seconds"
-			continue = matchtimeout 10, "You nod"
-			break if !continue
+			if infuse_safe?
+				echo "You appear to be struggling with infusing this scroll, if you want to continue nod within the next 10 seconds"
+				continue = matchtimeout 10, "You nod"
+				break if !continue
+			end
 		end
 	end
 end
@@ -480,6 +498,7 @@ elsif script.vars[1] == 'help'
 	respond "    infusesack:        #{UserVars.infusesack || '(not set)'}"
 	respond "    scrollsack:        #{UserVars.scrollsack || '(not set)'}"
 	respond "    vibrantscrollsack: #{UserVars.vibrantscrollsack || '(not set)'}"
+	respond "    infuse_safe:       #{infuse_safe?} (;vars set infuse_safe=false to never pause for a nod)"
 	respond ""
 	respond "You need at least 20,000 silvers in your local bank - whenever a rune needs"
 	respond "to be made (;infuse rune, or automatically during unlock/infuse), it withdraws"
