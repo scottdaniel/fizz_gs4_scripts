@@ -5,6 +5,10 @@
       - "Skip Audience Illusions" option: trades away the "practice your latest
         Illusion in front of an audience" task instead of performing it in town.
       - settings live in fizzarts.yaml (seeded from blackarts.yaml on first run).
+      - do_illusions frees both hands first and checks either hand for the illusion.
+      - demon illusions: exits if the summoned minor demon's type needs a higher
+        Illusions rank than you have (Igaesha 48, Imp/Shien 53, Verlok 54, ...),
+        and stops after 3 failed ILLUSION DEMON attempts in a row instead of looping.
 
     Alchemy script rewrite based on the original Tillman Alchemy script of DOOM!!!!!!1!!!11.
     Currently relies on the following scripts for full utilization:
@@ -5123,7 +5127,7 @@ module BlackArts
                   :note, :note_names, :sea_water_flask, :sea_water_vial, :bundled_herb, :ingredient_count, :correct_herb_count, :put_regex, :get_regex, :herb_doses,
                   :last_alchemy_buy, :alchemy_grind_history, :recipes, :consignment_list, :current_admin, :skin, :skin_number, :creature, :guild_skill, :locations, :ranks,
                   :need_empty_flask, :start_room, :start_town, :current_room, :no_forage, :mortar_check, :cauldron, :note_withdrawal, :note_refresh, :visited_towns,
-                  :west_guilds, :east_guilds, :all_guilds, :cities, :boundaries, :gld_skills, :shadow_container, :shadow_item, :demon_id
+                  :west_guilds, :east_guilds, :all_guilds, :cities, :boundaries, :gld_skills, :shadow_container, :shadow_item, :demon_id, :demon_noun
 
     def initialize(settings)
       @settings = settings
@@ -5145,6 +5149,7 @@ module BlackArts
       @shadow_container = nil
       @shadow_item = nil
       @demon_id = nil
+      @demon_noun = nil
       @settings[:no_magic] ||= []
       @settings[:guild_pause] = @settings[:guild_pause].to_i.positive? ? @settings[:guild_pause].to_i : 60
 
@@ -7601,16 +7606,50 @@ module BlackArts
       end
 
       BlackArts.data.demon_id = nil
+      BlackArts.data.demon_noun = nil
       lines = Lich::Util.quiet_command_xml("tell md to follow", /You have no minor demon at this time|You command your|is already following you/)
 
-      if lines.any?(/(?:Your|You command your) <pushBold\/><a exist="(\d+)" noun="[\w,'-]+">[\w\-' ]+<\/a><popBold\/>/)
+      if lines.any?(/(?:Your|You command your) <pushBold\/><a exist="(\d+)" noun="([\w,'-]+)">[\w\-' ]+<\/a><popBold\/>/)
         BlackArts.data.demon_id = Regexp.last_match(1)
+        BlackArts.data.demon_noun = Regexp.last_match(2)
       end
+    end
+
+    # Demon nouns look like verlok'cina / grik'pwal / shien'tyr; the part before the apostrophe is the type
+    def self.check_demon_rank
+      return if BlackArts.data.demon_noun.nil?
+
+      # Illusions rank at which each minor demon type can be illusioned (gswiki Illusions page)
+      demon_ranks = {
+        'igaesha'  => 48,
+        'imp'      => 53,
+        'shien'    => 53,
+        'verlok'   => 54,
+        'grantris' => 55,
+        'aishan'   => 58,
+        'arashan'  => 60,
+        'abyran'   => 63,
+        'grik'     => 63,
+      }
+
+      type = BlackArts.data.demon_noun.split("'").first.downcase
+      needed = demon_ranks[type]
+      return if needed.nil?
+
+      rank = Guild.gld['illusions'][:rank].to_i
+      return if rank >= needed
+
+      allowed = demon_ranks.select { |_type, min_rank| rank >= min_rank }.keys
+      Util.msg("yellow", " Your minor demon (#{BlackArts.data.demon_noun}) is a #{type.capitalize}, which can't be illusioned until Illusions rank #{needed}. You are rank #{rank}.")
+      Util.msg("yellow", allowed.empty? ? " You can't illusion any demon type yet." : " Summon one you can illusion (#{allowed.map(&:capitalize).join(', ')}) and restart the script.")
+      exit
     end
 
     def self.do_demons(place: nil)
       Illusions.demon_allowed? unless place.nil?
       Illusions.determine_demon
+      Illusions.check_demon_rank
+      failures = 0
 
       loop do
         unless Effects::Spells.active?("Minor Summoning")
@@ -7632,12 +7671,19 @@ module BlackArts
         Util.wait_rt
 
         if lines.any?(/Piece by piece, the creature's form changes until|is already illusioned/)
+          failures = 0
           Util.wait_rt
           sleep 0.5 until checkmana > 5
           fput "illusion demon ##{BlackArts.data.demon_id} dispel"
           Util.wait_rt
 
           sleep 35 if place == 'audience' && (Guild.gld['illusions'][:reps].to_i.positive? || lines.any?(/is already illusioned/))
+        else
+          failures += 1
+          if failures >= 3
+            Util.msg("yellow", " ILLUSION DEMON failed 3 times in a row on your #{BlackArts.data.demon_noun || 'minor demon'}. Check the game window for why. Exiting...")
+            exit
+          end
         end
         break if Guild.gld['illusions'][:reps].to_i.zero?
       end
