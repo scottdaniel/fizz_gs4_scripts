@@ -9,6 +9,12 @@
       - demon illusions: exits if the summoned minor demon's type needs a higher
         Illusions rank than you have (Igaesha 48, Imp/Shien 53, Verlok 54, ...),
         and stops after 3 failed ILLUSION DEMON attempts in a row instead of looping.
+      - "Vouchers on Guild Night only" option: only redeems voucher packs while GLD
+        says it's a Guild Night (doubled training points). Redeemed vouchers are
+        spent automatically on every trade, so it TEARs one voucher off a pack and
+        redeems only that, leaving the rest of the pack for the next Guild Night.
+      - redeems a pack when GLD shows no voucher count at all (upstream needed
+        an explicit 0, which GLD doesn't print).
 
     Alchemy script rewrite based on the original Tillman Alchemy script of DOOM!!!!!!1!!!11.
     Currently relies on the following scripts for full utilization:
@@ -5300,6 +5306,7 @@ module BlackArts
         no_forage_rooms: { default: '' },
         only_required_creatures: { default: false },
         use_vouchers: { default: false },
+        vouchers_guild_night_only: { default: false },
         use_boost: { default: false },
         once_and_done: { default: false },
         no_alchemy: { default: false },
@@ -5536,7 +5543,7 @@ module BlackArts
       </packing></child><child><object class="GtkEntry" id="note_withdrawal"><property name="width-request">200</property><property name="visible">True</property><property name="can-focus">True</property><property name="tooltip-text" translatable="yes">Will withdrawl a note of specified amount</property><property name="margin-start">10</property><property name="margin-bottom">5</property><property name="placeholder-text" translatable="yes">Default amount is 50,000 silvers</property></object><packing><property name="left-attach">2</property><property name="top-attach">0</property><property name="width">2</property>
       </packing></child><child><object class="GtkEntry" id="note_refresh"><property name="visible">True</property><property name="can-focus">True</property><property name="tooltip-text" translatable="yes">Will withdraw a new note if it falls below this amount</property><property name="margin-start">10</property><property name="margin-bottom">5</property><property name="placeholder-text" translatable="yes">Default refresh is 5,000 silvers</property></object><packing><property name="left-attach">2</property><property name="top-attach">1</property><property name="width">2</property>
       </packing></child><child><placeholder/></child><child><placeholder/></child></object></child><child type="label"><object class="GtkLabel"><property name="visible">True</property><property name="can-focus">False</property><property name="label" translatable="yes">Banking</property></object></child></object><packing><property name="expand">False</property><property name="fill">True</property><property name="position">2</property></packing></child><child><object class="GtkFrame"><property name="visible">True</property><property name="can-focus">False</property><property name="border-width">10</property><property name="label-xalign">0</property><child><!-- n-columns=4 n-rows=6 --><object class="GtkGrid"><property name="visible">True</property><property name="can-focus">False</property><property name="margin-top">5</property><property name="margin-bottom">5</property><property name="row-spacing">5</property><property name="column-spacing">5</property><property name="column-homogeneous">True</property><child><object class="GtkCheckButton" id="once_and_done"><property name="label" translatable="yes">Run one task and quit (?)</property><property name="visible">True</property><property name="can-focus">True</property><property name="receives-default">False</property><property name="tooltip-text" translatable="yes">When enabled this will quit after one bounty.</property><property name="halign">start</property><property name="margin-start">5</property><property name="draw-indicator">True</property>
-      </object><packing><property name="left-attach">0</property><property name="top-attach">2</property></packing></child><child><object class="GtkCheckButton" id="use_vouchers"><property name="label" translatable="yes">Use Vouchers</property><property name="visible">True</property><property name="can-focus">True</property><property name="receives-default">False</property><property name="halign">start</property><property name="margin-start">5</property><property name="draw-indicator">True</property></object><packing><property name="left-attach">0</property><property name="top-attach">0</property>
+      </object><packing><property name="left-attach">0</property><property name="top-attach">2</property></packing></child><child><object class="GtkCheckButton" id="vouchers_guild_night_only"><property name="label" translatable="yes">Vouchers on Guild Night only (?)</property><property name="visible">True</property><property name="can-focus">True</property><property name="receives-default">False</property><property name="tooltip-text" translatable="yes">Requires Use Vouchers. Only redeems voucher packs during a Guild Night, when training points are doubled. Once redeemed, vouchers are spent on every trade, so smaller packs waste fewer after Guild Night ends.</property><property name="halign">start</property><property name="margin-start">5</property><property name="draw-indicator">True</property></object><packing><property name="left-attach">1</property><property name="top-attach">5</property></packing></child><child><object class="GtkCheckButton" id="use_vouchers"><property name="label" translatable="yes">Use Vouchers</property><property name="visible">True</property><property name="can-focus">True</property><property name="receives-default">False</property><property name="halign">start</property><property name="margin-start">5</property><property name="draw-indicator">True</property></object><packing><property name="left-attach">0</property><property name="top-attach">0</property>
       </packing></child><child><object class="GtkCheckButton" id="no_alchemy"><property name="label" translatable="yes">No Alchemy (?)</property><property name="visible">True</property><property name="can-focus">True</property><property name="receives-default">False</property><property name="tooltip-text" translatable="yes">Only accept tasks that require no alchemy to complete.</property><property name="halign">start</property><property name="margin-start">5</property><property name="draw-indicator">True</property>
       </object><packing><property name="left-attach">0</property><property name="top-attach">3</property></packing></child><child><object class="GtkCheckButton" id="guild_travel"><property name="label" translatable="yes">Travel to other Guilds (?)</property><property name="visible">True</property><property name="can-focus">True</property><property name="receives-default">False</property><property name="tooltip-text" translatable="yes">If enabled the script will travel to other guilds to finish tasks. Will stay on the east or west side of the Dragon Spine.</property><property name="halign">start</property><property name="margin-start">5</property><property name="draw-indicator">True</property>
       </object><packing><property name="left-attach">2</property><property name="top-attach">0</property></packing></child><child><object class="GtkCheckButton" id="use_wracking"><property name="label" translatable="yes">Use Wracking</property><property name="visible">True</property><property name="can-focus">True</property><property name="receives-default">False</property><property name="halign">start</property><property name="margin-start">5</property><property name="draw-indicator">True</property></object><packing><property name="left-attach">1</property><property name="top-attach">0</property>
@@ -7188,14 +7195,11 @@ module BlackArts
         BlackArts.data.settings[:skill_types].reject! { |skill_to_check| skill_to_check == type } if guild_status[type][:rank] == 63
       end
 
-      if guild_status['guild'][:vouchers] == 0 && BlackArts.data.settings[:use_vouchers]
-        # Do we have voucher packs?
-        voucher_pack = BlackArts.data.sacks["default"].contents.find { |i| i.name == 'Elanthian Guilds voucher pack' }
-
-        if voucher_pack
-          Util.travel("#{Char.prof.downcase} alchemy administrator")
-          multifput "_drag ##{voucher_pack.id} right", "give ##{GameObj.npcs.find { |npc| npc.name =~ /training/i }.id}"
-        end
+      # GLD doesn't list vouchers when you have none, so nil counts as zero.
+      # Redeemed vouchers are spent automatically on every trade, so Guild Night only gates redeeming packs.
+      guild_night_ok = !BlackArts.data.settings[:vouchers_guild_night_only] || guild_status['guild'][:guild_night]
+      if guild_status['guild'][:vouchers].to_i.zero? && BlackArts.data.settings[:use_vouchers] && guild_night_ok
+        Guild.redeem_voucher
       end
 
       if skill.nil?
@@ -7211,6 +7215,41 @@ module BlackArts
       end
 
       Guild.activity(guild_status, skill)
+    end
+
+    # Gives the Training Administrator a loose voucher if there is one, otherwise a voucher pack.
+    # With "Vouchers on Guild Night only", one voucher is torn off the pack first, so the rest
+    # aren't redeemed and then spent on trades after Guild Night ends.
+    def self.redeem_voucher
+      default_sack = BlackArts.data.sacks["default"]
+      voucher = default_sack.contents.to_a.find { |i| i.name == 'Elanthian Guilds voucher' }
+      voucher_pack = default_sack.contents.to_a.find { |i| i.name == 'Elanthian Guilds voucher pack' }
+      return if voucher.nil? && voucher_pack.nil?
+
+      Util.travel("#{Char.prof.downcase} alchemy administrator")
+      Inventory.free_hands(both: true)
+
+      if voucher.nil? && BlackArts.data.settings[:vouchers_guild_night_only]
+        Inventory.drag(voucher_pack)
+        Util.get_res("tear ##{voucher_pack.id}", /You tear out|tear|What were you referring to/i)
+
+        20.times {
+          voucher = [GameObj.right_hand, GameObj.left_hand].find { |hand| hand.name == 'Elanthian Guilds voucher' }
+          break if voucher
+          sleep 0.1
+        }
+
+        if voucher
+          # A 1-voucher pack may not survive the tear, so only put it back if it's still in hand
+          Inventory.store_item(default_sack, voucher_pack) if [GameObj.right_hand, GameObj.left_hand].any? { |hand| hand.id == voucher_pack.id }
+        else
+          Util.msg("yellow", " Couldn't tear a voucher off your pack. Redeeming the whole pack.")
+        end
+      end
+
+      voucher ||= voucher_pack
+      fput "_drag ##{voucher.id} right" unless GameObj.right_hand.id == voucher.id
+      fput "give ##{GameObj.npcs.find { |npc| npc.name =~ /training/i }.id}"
     end
 
     def self.remove_task(skill)
