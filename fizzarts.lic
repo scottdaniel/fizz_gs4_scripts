@@ -7,8 +7,10 @@
       - settings live in fizzarts.yaml (seeded from blackarts.yaml on first run).
       - do_illusions frees both hands first and checks either hand for the illusion.
       - demon illusions: exits if the summoned minor demon's type needs a higher
-        Illusions rank than you have (Igaesha 48, Imp/Shien 53, Verlok 54, ...),
-        and stops after 3 failed ILLUSION DEMON attempts in a row instead of looping.
+        Illusions rank than you have (Igaesha 48, Imp/Shien 53, Verlok 54, ...).
+        The type comes from the demon's name: igaesha are "clouds of <color> fog/mist/...",
+        shien are darklings/shadowlings, the rest start with the type (verlok'cina).
+        Also stops after 3 failed ILLUSION DEMON attempts in a row instead of looping.
       - "Vouchers on Guild Night only" option: only redeems voucher packs while GLD
         says it's a Guild Night (doubled training points). Redeemed vouchers are
         spent automatically on every trade, so it TEARs one voucher off a pack and
@@ -5133,7 +5135,7 @@ module BlackArts
                   :note, :note_names, :sea_water_flask, :sea_water_vial, :bundled_herb, :ingredient_count, :correct_herb_count, :put_regex, :get_regex, :herb_doses,
                   :last_alchemy_buy, :alchemy_grind_history, :recipes, :consignment_list, :current_admin, :skin, :skin_number, :creature, :guild_skill, :locations, :ranks,
                   :need_empty_flask, :start_room, :start_town, :current_room, :no_forage, :mortar_check, :cauldron, :note_withdrawal, :note_refresh, :visited_towns,
-                  :west_guilds, :east_guilds, :all_guilds, :cities, :boundaries, :gld_skills, :shadow_container, :shadow_item, :demon_id, :demon_noun
+                  :west_guilds, :east_guilds, :all_guilds, :cities, :boundaries, :gld_skills, :shadow_container, :shadow_item, :demon_id, :demon_noun, :demon_name
 
     def initialize(settings)
       @settings = settings
@@ -5156,6 +5158,7 @@ module BlackArts
       @shadow_item = nil
       @demon_id = nil
       @demon_noun = nil
+      @demon_name = nil
       @settings[:no_magic] ||= []
       @settings[:guild_pause] = @settings[:guild_pause].to_i.positive? ? @settings[:guild_pause].to_i : 60
 
@@ -7646,15 +7649,16 @@ module BlackArts
 
       BlackArts.data.demon_id = nil
       BlackArts.data.demon_noun = nil
+      BlackArts.data.demon_name = nil
       lines = Lich::Util.quiet_command_xml("tell md to follow", /You have no minor demon at this time|You command your|is already following you/)
 
-      if lines.any?(/(?:Your|You command your) <pushBold\/><a exist="(\d+)" noun="([\w,'-]+)">[\w\-' ]+<\/a><popBold\/>/)
+      if lines.any?(/(?:Your|You command your) <pushBold\/><a exist="(\d+)" noun="([\w,'-]+)">([\w\-' ]+)<\/a><popBold\/>/)
         BlackArts.data.demon_id = Regexp.last_match(1)
         BlackArts.data.demon_noun = Regexp.last_match(2)
+        BlackArts.data.demon_name = Regexp.last_match(3)
       end
     end
 
-    # Demon nouns look like verlok'cina / grik'pwal / shien'tyr; the part before the apostrophe is the type
     def self.check_demon_rank
       return if BlackArts.data.demon_noun.nil?
 
@@ -7671,15 +7675,32 @@ module BlackArts
         'grik'     => 63,
       }
 
-      type = BlackArts.data.demon_noun.split("'").first.downcase
-      needed = demon_ranks[type]
-      return if needed.nil?
+      # How each type's noun looks (gswiki Minor demon messaging, Igaesha). Most start with the type
+      # (verlok'cina, grik'pwal, abyran'sa); shien are darklings or shadowlings, and an igaesha is
+      # "a cloud of <color> <haze|fog|...>"
+      demon_nouns = {
+        'igaesha'  => /\A(?:haze|rouk|brume|haar|murk|nyle|mist|smoke|vapor|fog)\z/,
+        'imp'      => /\Aimp\z/,
+        'shien'    => /\A(?:darkling|shadowling)/,
+        'verlok'   => /\Averlok/,
+        'grantris' => /\Agrantris/,
+        'aishan'   => /\Aaishan/,
+        'arashan'  => /\Aarashan/,
+        'abyran'   => /\Aabyran/,
+        'grik'     => /\Agrik/,
+      }
 
+      noun = BlackArts.data.demon_noun.downcase
+      name = BlackArts.data.demon_name.to_s.downcase
+      type = demon_nouns.find { |demon_type, pattern| noun =~ pattern && (demon_type != 'igaesha' || name.include?('cloud')) }&.first
+      return if type.nil?
+
+      needed = demon_ranks[type]
       rank = Guild.gld['illusions'][:rank].to_i
       return if rank >= needed
 
       allowed = demon_ranks.select { |_type, min_rank| rank >= min_rank }.keys
-      Util.msg("yellow", " Your minor demon (#{BlackArts.data.demon_noun}) is a #{type.capitalize}, which can't be illusioned until Illusions rank #{needed}. You are rank #{rank}.")
+      Util.msg("yellow", " Your minor demon (#{BlackArts.data.demon_name || noun}) is a #{type.capitalize}, which can't be illusioned until Illusions rank #{needed}. You are rank #{rank}.")
       Util.msg("yellow", allowed.empty? ? " You can't illusion any demon type yet." : " Summon one you can illusion (#{allowed.map(&:capitalize).join(', ')}) and restart the script.")
       exit
     end
