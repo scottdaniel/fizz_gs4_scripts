@@ -18,9 +18,10 @@
       always pulls a demon of the valence, but the archetype is random, so when
       you ask for an archetype it sends back the wrong ones (TELL MDEMON LEAVE)
       and tries again after the 5-minute post-summon cooldown. The game doesn't show
-      that cooldown anywhere, so summond counts it down; a cast that comes too soon
-      ("you feel weak from your recent forays into interplanar summoning") just
-      waits another 5 minutes and doesn't count as a try.
+      that cooldown anywhere (and it seems to count only time logged in), so summond
+      counts it down; a cast that comes too soon ("you feel weak from your recent
+      forays into interplanar summoning") is retried every minute and doesn't count
+      as a try.
     - Runestones are made with fizzfuse (;infuse rune <rune>), and only for runes
       you know (RUNE COMMON / RUNE UNCOMMON).
 
@@ -51,6 +52,11 @@ module Summond
   # gswiki: 5 minutes after a successful summon, 10 after a failed cast
   SUCCESS_COOLDOWN     = 5 * 60
   FAILURE_COOLDOWN     = 10 * 60
+  # A too-soon cast doesn't restart the cooldown (one 4 minutes after a summon was refused, a
+  # cast 97 seconds later worked), so retry every minute. The cooldown also seems to count only
+  # time logged in, so summond can't know how much is left from a summon before it started.
+  TOO_SOON_RETRY       = 60
+  MAX_TOO_SOON         = 7
 
   VALENCES = {
     "grik'tyr"  => %w[grik imp],
@@ -327,7 +333,7 @@ module Summond
     respond "  3. Goes to the nearest Sorcerer Guild summoning chamber (+25% odds), waits for mana, casts."
     respond "  4. Wrong archetype? Sends it back and re-rolls after the #{SUCCESS_COOLDOWN / 60}-minute cooldown."
     respond "     The game doesn't show that cooldown, so summond counts it down. A cast that's too soon"
-    respond "     waits another #{SUCCESS_COOLDOWN / 60} minutes; a failed cast waits #{FAILURE_COOLDOWN / 60}. A shattered runestone gets replaced."
+    respond "     is retried every minute; a failed cast waits #{FAILURE_COOLDOWN / 60}. A shattered runestone gets replaced."
     respond "  5. Tells the demon to FOLLOW and GUARD, and puts the runestone back."
     respond
     respond "Settings:"
@@ -434,16 +440,15 @@ module Summond
       name, shattered, lines = cast_at(@stone)
       @stone = nil if shattered
 
-      # Still on the post-summon cooldown: not a real attempt. Wait a full cooldown in case
-      # casting early restarts it.
+      # Still on the post-summon cooldown: not a real attempt
       if lines.any? { |line| line =~ TOO_SOON_REGEX }
         refusals += 1
-        if refusals >= 3
+        if refusals >= MAX_TOO_SOON
           msg "The game refused #{refusals} casts in a row as too soon after your last summon. Stopping."
           exit
         end
-        msg "Too soon after your last summon. Trying again in #{minutes(SUCCESS_COOLDOWN / 60)}."
-        next_cast = Time.now + SUCCESS_COOLDOWN
+        msg "Too soon after your last summon (the cooldown only counts down while you're logged in). Trying again in #{minutes(TOO_SOON_RETRY / 60)}."
+        next_cast = Time.now + TOO_SOON_RETRY
         next
       end
       refusals = 0
