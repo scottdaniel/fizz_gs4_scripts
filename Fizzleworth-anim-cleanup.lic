@@ -83,6 +83,26 @@ def try_sacrifice(id)
   r =~ SAC_OK
 end
 
+# Creatures far below our level give little shadow essence (inciters L66 / incubi
+# L68 at L74): only sacrifice things within `fizzsac_level_gap` levels of us
+# (default 5; 0 = no limit; same setting fizzsac.lic uses). Levels come from
+# Lich's CreatureTemplate; names are retried with leading adjectives dropped
+# ("horrific magna vereri" -> "magna vereri"); unknown levels are allowed.
+def worth_essence?(t)
+  g = UserVars.fizzsac_level_gap
+  gap = g.to_s =~ /\A\s*\d+\s*\z/ ? g.to_i : 5
+  return true if gap <= 0
+  w = t.name.to_s.downcase.split
+  lvl = nil
+  (0...w.size).each do |i|
+    tpl = Lich::Gemstone::CreatureTemplate[w[i..].join(" ")]
+    (lvl = tpl.level; break) if tpl && tpl.level
+  end
+  lvl.nil? || lvl >= Char.level.to_i - gap
+rescue StandardError
+  true
+end
+
 # Sacrifice the creatures the hunt already softened. Pain (711) is ~100 a cast
 # and creatures have ~400-600 HP, so more than ONE nudge overshoots straight
 # past "frail" into dead (= no essence). So:
@@ -99,6 +119,7 @@ def harvest_room
     break if checkdead || (Char.percent_health.to_i rescue 100) < HARVEST_MIN_HEALTH
     next if t.nil? || t.status.to_s =~ /dead|gone/
     next if t.name.to_s =~ IGNORE_NPCS
+    next unless worth_essence?(t)
     id = "##{t.id}"
 
     state = readiness(id)
