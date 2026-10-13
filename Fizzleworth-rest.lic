@@ -4,6 +4,16 @@
 module FizzleworthRest
 
 fput "store weapon"
+
+# The new scepter (celestial silver moonstone) is too heavy for the ebon staff
+# sling -- it holds ONE object up to a weight, and the runestaff lives there --
+# so `store weapon` just says "Your scepter won't fit in the ebon staff sling."
+# and leaves it in hand. Then `ready 2weap` pulled the runestaff into the other
+# hand and Fizzleworth rested holding BOTH (10.12). Stow whatever's left in
+# hand (the scepter goes to the cloak pocket, where `ready weapon` finds it
+# again at prep) BEFORE readying the runestaff.
+fput "stow all" if checkright || checkleft
+
 fput "ready 2weap"
 
 end #End of module
