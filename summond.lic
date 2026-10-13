@@ -17,7 +17,10 @@
     - Otherwise it uses the plain valence runestone (e.g. lorae'tyr). That
       always pulls a demon of the valence, but the archetype is random, so when
       you ask for an archetype it sends back the wrong ones (TELL MDEMON LEAVE)
-      and tries again after the 5-minute post-summon cooldown.
+      and tries again after the 5-minute post-summon cooldown. The game doesn't show
+      that cooldown anywhere, so summond counts it down; a cast that comes too soon
+      ("you feel weak from your recent forays into interplanar summoning") just
+      waits another 5 minutes and doesn't count as a try.
     - Runestones are made with fizzfuse (;infuse rune <rune>), and only for runes
       you know (RUNE COMMON / RUNE UNCOMMON).
 
@@ -60,6 +63,8 @@ module Summond
 
   PULL_REGEX    = /you succeed in opening an interplanar rift from which you manage to pull (?:an? )?(.+?)\.\s*$/
   SHATTER_REGEX = /runestone shatters into a thousands? fragments/
+  # Casting before the post-summon cooldown is up (seen in-game 4 minutes after a summon)
+  TOO_SOON_REGEX = /you feel weak from your recent forays into interplanar summoning/
 
   # === helpers ===================================================================
   def self.msg(text)
@@ -68,6 +73,15 @@ module Summond
 
   def self.kit
     UserVars.infusesack
+  end
+
+  # "an igaesha", "an iron verlok'asha", "a grantris"
+  def self.a(phrase)
+    "#{phrase.to_s =~ /\A[aeiou]/i ? 'an' : 'a'} #{phrase}"
+  end
+
+  def self.minutes(count)
+    "#{count} minute#{count == 1 ? '' : 's'}"
   end
 
   # "Lorae'Tyr", "loraetyr", "lorae" -> "lorae'tyr". A bare prefix that's also an
@@ -242,11 +256,21 @@ module Summond
     Script.run('go2', "#{target} --disable-confirm") unless Room.current.id == target
   end
 
+  # The game doesn't list 725's cooldown anywhere (SPELL ACTIVE shows none), so count it down here
   def self.wait_until(time, reason)
+    minutes_left = lambda { ((time - Time.now) / 60.0).ceil }
     return if Time.now >= time
 
-    msg "Waiting #{((time - Time.now) / 60.0).ceil} minute(s) for the #{reason} cooldown."
-    sleep 1 while Time.now < time
+    shown = minutes_left.call
+    msg "Waiting #{minutes(shown)} for the #{reason} cooldown."
+    while Time.now < time
+      sleep 1
+      left = minutes_left.call
+      next unless left < shown && left.positive?
+
+      shown = left
+      msg "#{minutes(left)} until the next summon."
+    end
   end
 
   def self.wait_for_cooldown_effect
@@ -302,7 +326,8 @@ module Summond
     respond "     Missing runestones are made with fizzfuse (;infuse rune), only for runes you know."
     respond "  3. Goes to the nearest Sorcerer Guild summoning chamber (+25% odds), waits for mana, casts."
     respond "  4. Wrong archetype? Sends it back and re-rolls after the #{SUCCESS_COOLDOWN / 60}-minute cooldown."
-    respond "     A failed cast waits #{FAILURE_COOLDOWN / 60} minutes. A shattered runestone gets replaced."
+    respond "     The game doesn't show that cooldown, so summond counts it down. A cast that's too soon"
+    respond "     waits another #{SUCCESS_COOLDOWN / 60} minutes; a failed cast waits #{FAILURE_COOLDOWN / 60}. A shattered runestone gets replaced."
     respond "  5. Tells the demon to FOLLOW and GUARD, and puts the runestone back."
     respond
     respond "Settings:"
@@ -324,6 +349,13 @@ module Summond
 
   # === main ======================================================================
   def self.run(args)
+    # Module state survives between runs (Lich re-opens the same module), so reset it
+    @cleaned_up = false
+    @emptied_hands = false
+    @known_runes = nil
+    @set_aside = []
+    @stone = nil
+
     words = args.reject { |arg| arg.start_with?('--') }.map(&:downcase)
     here = args.include?('--here')
     tries = (args.find { |arg| arg =~ /^--tries=\d+$/ }&.split('=')&.last || DEFAULT_TRIES).to_i
@@ -358,72 +390,96 @@ module Summond
 
     demon = current_demon
     if demon && wanted?(demon, valence, archetype)
-      msg "You already have a #{demon}."
+      msg "You already have #{a(demon)}."
       exit
     elsif demon
-      msg "You already have a #{demon}. Type NOD within #{NOD_TIMEOUT_SECONDS} seconds to send it back and summon a #{wanted}."
+      msg "You already have #{a(demon)}. Type NOD within #{NOD_TIMEOUT_SECONDS} seconds to send it back and summon #{a(wanted)}."
       exit unless wait_for_nod(NOD_TIMEOUT_SECONDS)
       dismiss_demon
     end
 
-    @set_aside = []
-    stone = nil
+    # before_dying, not ensure: on ;kill the script's thread dies first and fput from its
+    # ensure fails ("waitfor: Unable to identify calling script"); before_dying runs after
+    before_dying { Summond.cleanup }
     empty_hands
+    @emptied_hands = true
 
-    begin
-      stone, targeted = get_runestone(valence, archetype)
-      if stone.nil?
-        msg "Couldn't get a #{valence} runestone. Stopping."
-        exit
-      end
-      msg "Using a #{targeted ? "#{valence}-#{archetype}" : valence} runestone#{archetype && !targeted ? " (random archetype, will re-roll until it's a #{archetype})" : ''}."
-
-      go_to_chamber unless here
-
-      next_cast = Time.now
-      tries.times do |attempt|
-        wait_until(next_cast, attempt.zero? ? 'summoning' : 're-summon')
-        wait_for_cooldown_effect
-
-        name, shattered, lines = cast_at(stone)
-        stone = nil if shattered
-
-        if name.nil?
-          msg "Cast #{attempt + 1} didn't summon anything. The game said:"
-          lines.each { |line| respond "    #{line}" }
-          next_cast = Time.now + FAILURE_COOLDOWN
-        elsif wanted?(name, valence, archetype)
-          msg "Summoned a #{name} on cast #{attempt + 1}."
-          fput "tell mdemon follow"
-          fput "tell mdemon guard"
-          return
-        elsif archetype_of(name).nil?
-          msg "Summoned a #{name}, which isn't an archetype I recognize. Keeping it so you can check what it is."
-          return
-        else
-          msg "Summoned a #{name}, not a #{wanted}. Sending it back."
-          dismiss_demon
-          next_cast = Time.now + SUCCESS_COOLDOWN
-        end
-
-        if stone.nil? && attempt + 1 < tries
-          msg "Your runestone shattered. Getting another."
-          fput "release" unless checkprep == "None"
-          stone, targeted = get_runestone(valence, archetype)
-          if stone.nil?
-            msg "Couldn't get another #{valence} runestone. Stopping."
-            exit
-          end
-          go_to_chamber unless here
-        end
-      end
-
-      msg "No #{wanted} after #{tries} casts. Stopping."
-    ensure
-      fput "put ##{stone.id} in my #{kit}" if stone && [GameObj.right_hand, GameObj.left_hand].any? { |hand| hand.id == stone.id }
-      @set_aside.each { |id| multifput "get ##{id}", "put ##{id} in my #{kit}" }
-      fill_hands
+    @stone, targeted = get_runestone(valence, archetype)
+    if @stone.nil?
+      msg "Couldn't get a #{valence} runestone. Stopping."
+      exit
     end
+    msg "Using a #{targeted ? "#{valence}-#{archetype}" : valence} runestone#{archetype && !targeted ? " (random archetype, will re-roll until it's #{a(archetype)})" : ''}."
+
+    go_to_chamber unless here
+
+    next_cast = Time.now
+    casts = 0
+    refusals = 0
+    while casts < tries
+      if @stone.nil?
+        msg "Your runestone shattered. Getting another."
+        fput "release" unless checkprep == "None"
+        @stone, targeted = get_runestone(valence, archetype)
+        if @stone.nil?
+          msg "Couldn't get another #{valence} runestone. Stopping."
+          exit
+        end
+        go_to_chamber unless here
+      end
+
+      wait_until(next_cast, casts.zero? ? 'summoning' : 're-summon')
+      wait_for_cooldown_effect
+
+      name, shattered, lines = cast_at(@stone)
+      @stone = nil if shattered
+
+      # Still on the post-summon cooldown: not a real attempt. Wait a full cooldown in case
+      # casting early restarts it.
+      if lines.any? { |line| line =~ TOO_SOON_REGEX }
+        refusals += 1
+        if refusals >= 3
+          msg "The game refused #{refusals} casts in a row as too soon after your last summon. Stopping."
+          exit
+        end
+        msg "Too soon after your last summon. Trying again in #{minutes(SUCCESS_COOLDOWN / 60)}."
+        next_cast = Time.now + SUCCESS_COOLDOWN
+        next
+      end
+      refusals = 0
+      casts += 1
+
+      if name.nil?
+        msg "Cast #{casts} didn't summon anything. The game said:"
+        lines.each { |line| respond "    #{line}" }
+        next_cast = Time.now + FAILURE_COOLDOWN
+      elsif wanted?(name, valence, archetype)
+        msg "Summoned #{a(name)} on cast #{casts}."
+        fput "tell mdemon follow"
+        fput "tell mdemon guard"
+        return
+      elsif archetype_of(name).nil?
+        msg "Summoned #{a(name)}, which isn't an archetype I recognize. Keeping it so you can check what it is."
+        return
+      else
+        msg "Summoned #{a(name)}, not #{a(wanted)}. Sending it back."
+        dismiss_demon
+        next_cast = Time.now + SUCCESS_COOLDOWN
+      end
+    end
+
+    msg "No #{wanted} after #{tries} casts. Stopping."
+  end
+
+  # Puts the runestone (and any set-aside ones) back in the kit and re-equips what was in hand
+  def self.cleanup
+    return if @cleaned_up
+
+    @cleaned_up = true
+    fput "release" unless checkprep == "None"
+    fput "put ##{@stone.id} in my #{kit}" if @stone && [GameObj.right_hand, GameObj.left_hand].any? { |hand| hand.id == @stone.id }
+    @set_aside.to_a.each { |id| multifput "get ##{id}", "put ##{id} in my #{kit}" }
+    fill_hands if @emptied_hands
   end
 end
 
