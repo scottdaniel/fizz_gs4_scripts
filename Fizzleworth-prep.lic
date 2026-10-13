@@ -2,6 +2,24 @@
 
 module FizzleworthPrep
 
+# Arrangement: scepter (weapon) lives in the sling, runestaff (secondary
+# weapon) is stowed in the cloak. If the two ever get SWAPPED (runestaff in the
+# sling), the sling is full and `store weapon` answers "Your scepter won't fit in
+# the ebon staff sling." -- and since STORE WEAPON puts whatever weapon is in hand
+# into the sling, the swap perpetuates itself (10.12: ended a hunt holding both).
+# So store the runestaff FIRST (`store 2weap` -> cloak), and if the sling still
+# answers "won't fit", pull the runestaff out, send it home, then store the
+# scepter.
+def self.store_weapon_selfheal
+  fput "store 2weap"       # runestaff in hand -> its own home (cloak), NOT the sling
+  r = dothistimeout("store weapon", 3, /You put|You slip|won't fit|have no|nothing|You are not/i).to_s
+  if r =~ /won't fit/i
+    fput "ready 2weap"     # runestaff out of the sling, wherever it is
+    fput "store 2weap"     # ...to its own home (the cloak)
+    fput "store weapon"    # the sling is free now -> scepter goes in
+  end
+end
+
 # Stop playing before gearing up for combat -- kills the instrument along
 # with the script (playsongs.lic's before_dying stows it). Kill is async,
 # so wait for it to actually finish before "clear hands" below sends its
@@ -15,7 +33,7 @@ end
 # the in-game STORE config (STORE SET WEAPON SHEATH); "stow all" mops up anything
 # left in the off-hand. Replaces the old hardcoded "put ... in my cloak" that
 # ignored the sheath and let stray items fall through to the backpack.
-fput "store weapon"
+store_weapon_selfheal
 fput "stow all"
 
 # rub stuff, but only if the spell isn't already active -- and only pause

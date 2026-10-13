@@ -3,17 +3,25 @@
 
 module FizzleworthRest
 
-fput "store weapon"
+# Arrangement: scepter (weapon) lives in the sling, runestaff (secondary
+# weapon) is stowed in the cloak. If the two ever get SWAPPED (runestaff in the
+# sling), the sling is full and `store weapon` answers "Your scepter won't fit in
+# the ebon staff sling." -- and since STORE WEAPON puts whatever weapon is in hand
+# into the sling, the swap perpetuates itself (10.12: ended a hunt holding both).
+# So store the runestaff FIRST (`store 2weap` -> cloak), and if the sling still
+# answers "won't fit", pull the runestaff out, send it home, then store the
+# scepter.
+def self.store_weapon_selfheal
+  fput "store 2weap"       # runestaff in hand -> its own home (cloak), NOT the sling
+  r = dothistimeout("store weapon", 3, /You put|You slip|won't fit|have no|nothing|You are not/i).to_s
+  if r =~ /won't fit/i
+    fput "ready 2weap"     # runestaff out of the sling, wherever it is
+    fput "store 2weap"     # ...to its own home (the cloak)
+    fput "store weapon"    # the sling is free now -> scepter goes in
+  end
+end
 
-# The new scepter (celestial silver moonstone) is too heavy for the ebon staff
-# sling -- it holds ONE object up to a weight, and the runestaff lives there --
-# so `store weapon` just says "Your scepter won't fit in the ebon staff sling."
-# and leaves it in hand. Then `ready 2weap` pulled the runestaff into the other
-# hand and Fizzleworth rested holding BOTH (10.12). Stow whatever's left in
-# hand (the scepter goes to the cloak pocket, where `ready weapon` finds it
-# again at prep) BEFORE readying the runestaff.
-fput "stow all" if checkright || checkleft
-
+store_weapon_selfheal
 fput "ready 2weap"
 
 end #End of module
