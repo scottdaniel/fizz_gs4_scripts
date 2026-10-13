@@ -114,9 +114,42 @@ def incant(spell_id, id)
   spell.force_incant
 end
 
-# living, non-ignored creatures in the room
+# Creatures far below our level yield little shadow essence (10.13: inciters L66
+# and incubi L68 at L74), so only sacrifice things within LEVEL_GAP levels of us.
+# `;vars set fizzsac_level_gap=5` (0 = no limit). A creature whose level we can't
+# look up is allowed (don't block on missing data).
+def level_gap
+  v = UserVars.fizzsac_level_gap
+  v.to_s =~ /\A\s*\d+\s*\z/ ? v.to_i : 5
+end
+
+# Lich's bestiary templates are keyed by plain creature name ("magna vereri");
+# GameObj names carry extra adjectives ("horrific magna vereri"), so retry with
+# leading words dropped.
+def creature_level(name)
+  words = name.to_s.downcase.split
+  (0...words.size).each do |i|
+    t = Lich::Gemstone::CreatureTemplate[words[i..].join(" ")]
+    return t.level if t && t.level
+  end
+  nil
+rescue StandardError
+  nil
+end
+
+def worth_sacrificing?(t)
+  gap = level_gap
+  return true if gap <= 0
+  lvl = creature_level(t.name)
+  return true if lvl.nil?
+  lvl >= Char.level.to_i - gap
+rescue StandardError
+  true
+end
+
+# living, non-ignored creatures in the room that are worth the essence
 def sac_targets
-  GameObj.targets.to_a.select { |t| t && t.status.to_s !~ /dead|gone/ && t.name.to_s !~ IGNORE_NPCS }
+  GameObj.targets.to_a.select { |t| t && t.status.to_s !~ /dead|gone/ && t.name.to_s !~ IGNORE_NPCS && worth_sacrificing?(t) }
 rescue StandardError
   []
 end
