@@ -449,6 +449,39 @@ end
 
 SPELL_GRASP_MANA = (Spell[709].mana_cost.to_i.positive? ? Spell[709].mana_cost.to_i : 9) unless defined?(SPELL_GRASP_MANA)
 
+# --- low-level targets (2026-10-13) -----------------------------------------
+# At level 74, inciters (L66) and incubi (L68) give little exp and keep us from
+# a fried mind. Once the animate has been raised (or tried -- $ult_reanim_done),
+# DON'T fight them: step into a neighbouring room (not a hunting boundary) and
+# let bigshot's wander find visions / vereri instead. Skipped when stunned,
+# webbed or under 50% health (then it just fights). Opt out with
+# `;vars set ult_avoid_low=off`.
+def avoid_low_on?
+  v = UserVars.ult_avoid_low
+  return true if v.nil?
+  return v if v == true || v == false
+  v.to_s !~ /\A\s*(?:0|false|off|no)\s*\z/i
+end
+
+def low_level?(foe)
+  foe && foe.name.to_s =~ /Ivasian inciter|dark-eyed incubus/i
+end
+
+def leave_room(foe)
+  return false if checkwebbed || checkstunned || (Char.percent_health.to_i rescue 100) < 50
+  bounds = (UserVars.op["hunting_boundaries"].to_s.split(/[,\s]+/).reject(&:empty?) rescue [])
+  room   = Room.current
+  opts   = room.wayto.keys.map(&:to_s) - bounds.map(&:to_s)
+  opts.delete_if { |id| room.timeto[id].is_a?(StringProc) && room.timeto[id].call.nil? } rescue nil
+  return false if opts.empty?
+  echo "[ultima] #{foe.name.to_s.sub(/\A(?:an?|the) /i, '')} is low-level -- leaving the room."
+  Script.run("go2", "#{opts.sample} --disable-confirm", { quiet: true })
+  true
+rescue StandardError => e
+  echo "[ultima] leave_room error: #{e.class} #{e.message}"
+  false
+end
+
 # One crowd-control action per call (cheap to call often). `foe` is the target
 # the main flow is already handling -- skipped here.
 def crowd_control(foe, reserve = nil)
@@ -559,6 +592,9 @@ if !$ult_essence_run && have_animate? &&
   Script.run("fizzsac")
   exit
 end
+
+# After the animate: walk away from low-exp inciters / incubi.
+exit if $ult_reanim_done && avoid_low_on? && low_level?(foe) && leave_room(foe)
 
 # Crowd control first: disable everyone else in the room, Grasp a crowd.
 crowd_control(foe)
