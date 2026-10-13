@@ -4,24 +4,41 @@
 module FizzleworthRest
 
 # Arrangement: scepter (weapon) lives in the sling, runestaff (secondary
-# weapon) is stowed in the cloak. If the two ever get SWAPPED (runestaff in the
-# sling), the sling is full and `store weapon` answers "Your scepter won't fit in
-# the ebon staff sling." -- and since STORE WEAPON puts whatever weapon is in hand
-# into the sling, the swap perpetuates itself (10.12: ended a hunt holding both).
-# So store the runestaff FIRST (`store 2weap` -> cloak), and if the sling still
-# answers "won't fit", pull the runestaff out, send it home, then store the
-# scepter.
-def self.store_weapon_selfheal
-  fput "store 2weap"       # runestaff in hand -> its own home (cloak), NOT the sling
-  r = dothistimeout("store weapon", 3, /You put|You slip|won't fit|have no|nothing|You are not/i).to_s
+# weapon) is stowed in the cloak. IMPORTANT (10.12): `store weapon` and
+# `store 2weap` don't pick an item -- they store WHATEVER is in hand using that
+# category's container (weapon -> sling, 2weap -> cloak). So `store 2weap` with
+# the scepter in hand sent the scepter to the cloak, and `store weapon` with the
+# runestaff in hand sent the runestaff to the sling (which then blocks the
+# scepter: "won't fit"). Route each item by NAME instead: runestaff -> `stow
+# #id` (cloak, its home); scepter -> `store weapon` (sling).
+def self.hand_item(re)
+  %i[right_hand left_hand].map { |h| GameObj.send(h) }.find { |o| o && o.id && o.name.to_s =~ re }
+end
+
+def self.tidy_staffs
+  rs = hand_item(/runestaff/i)
+  if rs
+    fput "stow ##{rs.id}"
+    sleep 0.4
+  end
+  sc = hand_item(/scepter/i)
+  return unless sc
+  fput "swap" if GameObj.left_hand.id == sc.id     # `store weapon` takes the right hand
+  sleep 0.3
+  r = dothistimeout("store weapon", 3, /You put|won't fit|have no|nothing|You are not/i).to_s
   if r =~ /won't fit/i
-    fput "ready 2weap"     # runestaff out of the sling, wherever it is
-    fput "store 2weap"     # ...to its own home (the cloak)
-    fput "store weapon"    # the sling is free now -> scepter goes in
+    # the runestaff is sitting in the sling: pull it out, send it to the cloak,
+    # then the scepter fits
+    fput "ready 2weap"
+    sleep 0.5
+    rs = hand_item(/runestaff/i)
+    fput "stow ##{rs.id}" if rs
+    sleep 0.4
+    fput "store weapon"
   end
 end
 
-store_weapon_selfheal
+tidy_staffs
 fput "ready 2weap"
 
 end #End of module
