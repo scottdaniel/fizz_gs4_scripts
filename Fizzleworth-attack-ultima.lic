@@ -488,14 +488,28 @@ def low_level?(foe)
   foe && foe.name.to_s =~ /Ivasian inciter|dark-eyed incubus/i
 end
 
+# Thrash cap (10.13 log: 19 bursts of 3+ leaves within 10s, e.g. bigshot flipping
+# between rooms 28817 and 28819 once a second): once we've left 2 rooms in the
+# last 10 seconds, the next low-level target gets fought instead.
+def leaving_too_often?
+  now = Time.now.to_f
+  ($ult_leaves ||= []).select! { |t| now - t <= 10 }
+  $ult_leaves.size >= 2
+end
+
 def leave_room(foe)
   return false if checkwebbed || checkstunned || (Char.percent_health.to_i rescue 100) < 50
+  if leaving_too_often?
+    echo "[ultima] already left 2 rooms in 10s -- fighting #{foe.name.to_s.sub(/\A(?:an?|the) /i, '')} instead of hopping again."
+    return false
+  end
   bounds = (UserVars.op["hunting_boundaries"].to_s.split(/[,\s]+/).reject(&:empty?) rescue [])
   room   = Room.current
   opts   = room.wayto.keys.map(&:to_s) - bounds.map(&:to_s)
   opts.delete_if { |id| room.timeto[id].is_a?(StringProc) && room.timeto[id].call.nil? } rescue nil
   return false if opts.empty?
   echo "[ultima] #{foe.name.to_s.sub(/\A(?:an?|the) /i, '')} is low-level -- leaving the room."
+  ($ult_leaves ||= []) << Time.now.to_f
   Script.run("go2", "#{opts.sample} --disable-confirm", { quiet: true })
   true
 rescue StandardError => e
