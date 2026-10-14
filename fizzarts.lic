@@ -7224,8 +7224,11 @@ module BlackArts
     # With "Vouchers on Guild Night only", one voucher is torn off the pack first, so the rest
     # aren't redeemed and then spent on trades after Guild Night ends.
     def self.redeem_voucher
+      # A torn-off voucher's noun is "voucher" (the pack's is "pack"); its name in hand isn't the
+      # full "Elanthian Guilds voucher", so matching the name exactly missed it
+      single_voucher = lambda { |obj| obj.noun == 'voucher' || obj.name.to_s =~ /Guilds voucher\z/i }
       default_sack = BlackArts.data.sacks["default"]
-      voucher = default_sack.contents.to_a.find { |i| i.name == 'Elanthian Guilds voucher' }
+      voucher = default_sack.contents.to_a.find { |i| single_voucher.call(i) }
       voucher_pack = default_sack.contents.to_a.find { |i| i.name == 'Elanthian Guilds voucher pack' }
       return if voucher.nil? && voucher_pack.nil?
 
@@ -7237,7 +7240,7 @@ module BlackArts
         Util.get_res("tear ##{voucher_pack.id}", /You tear out|tear|What were you referring to/i)
 
         20.times {
-          voucher = [GameObj.right_hand, GameObj.left_hand].find { |hand| hand.name == 'Elanthian Guilds voucher' }
+          voucher = [GameObj.right_hand, GameObj.left_hand].find { |hand| hand.id != voucher_pack.id && single_voucher.call(hand) }
           break if voucher
           sleep 0.1
         }
