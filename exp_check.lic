@@ -1,0 +1,314 @@
+=begin
+  exp_check.lic
+  Watches your Gift of Lumnis and Fash'lo'nae's Tutelage and posts to a Discord
+  webhook when:
+    1) Lumnis starts
+    2) a Lumnis tier ends and the next one begins (3x -> 2x)
+    3) the last Lumnis tier ends (and Fash'lo'nae's Tutelage starts)
+    4) Fash'lo'nae's Tutelage ends
+    5) the session ends (disconnect or logout)
+  Every message starts with the character's name, so one webhook can serve all
+  of your characters.
+
+  Usage:
+    ;exp_check          run the watcher (run it on each character you want
+                        watched, e.g. ;autostart add exp_check)
+    ;exp_check setup    GTK window: webhook URL, which events to send, test button
+
+  The webhook URL is shared by all characters and saved in
+  <lich data dir>/exp_check.yaml (not in the scripts repo).
+
+  How it works: every 30 seconds it quietly sends `lumnis info` (the Lumnis tier)
+  and `exp` (Fash'lo'nae is active exactly when exp prints "You feel a heightened
+  understanding of events around you"). A change has to be seen on two checks in
+  a row before it is announced, and nothing is announced for what was already
+  true when the script started.
+
+  The session-ended message can't come from Lich (it dies with the connection,
+  and often the network is down too), so exp_check starts a tiny separate
+  process that watches Lich's pid, and posts once Lich is gone -- retrying for
+  about 10 minutes, with the time the session ended in the text. exp_check
+  touches a heartbeat file every check; if that goes stale while Lich is still
+  running, exp_check was stopped on purpose and the watcher quietly exits.
+  A normal logout (timequit) also counts as the session ending.
+=end
+
+require 'json'
+require 'net/http'
+require 'tmpdir'
+require 'uri'
+require 'yaml'
+
+module ExpCheck
+  SETTINGS_FILE = File.join(DATA_DIR, 'exp_check.yaml')
+  POLL          = 30   # seconds between checks
+  MULT          = { 'doubled' => 2, 'tripled' => 3, 'quadrupled' => 4, 'quintupled' => 5 }
+
+  EVENTS = {   # settings key => checkbox label
+    'lumnis_start' => 'Lumnis starts',
+    'tier_end'     => 'A Lumnis tier ends and the next begins (3x -> 2x)',
+    'lumnis_end'   => "Lumnis ends (and Fash'lo'nae starts)",
+    'fash_end'     => "Fash'lo'nae ends",
+    'disconnect'   => 'The session ends (disconnect or logout)'
+  }
+
+  # ---- settings ----
+
+  def self.settings
+    raw = (YAML.safe_load(File.read(SETTINGS_FILE)) rescue nil)
+    raw = {} unless raw.is_a?(Hash)
+    { 'webhook_url' => '' }.merge(EVENTS.keys.to_h { |k| [k, true] }).merge(raw)
+  end
+
+  def self.save(cfg)
+    File.write(SETTINGS_FILE, YAML.dump(cfg))
+    File.chmod(0o600, SETTINGS_FILE)   # it holds the webhook URL
+  end
+
+  # ---- Discord ----
+
+  # => [true, "HTTP 204"] or [false, "reason"]
+  def self.post(url, text)
+    uri = URI(url)
+    return [false, 'not an https:// URL'] unless uri.is_a?(URI::HTTPS)
+    res = Net::HTTP.start(uri.host, uri.port, use_ssl: true, open_timeout: 5, read_timeout: 5) do |http|
+      http.post(uri.request_uri, { content: text }.to_json, 'Content-Type' => 'application/json')
+    end
+    [res.is_a?(Net::HTTPSuccess), "HTTP #{res.code}"]
+  rescue StandardError => e
+    [false, "#{e.class}: #{e.message}"]
+  end
+
+  def self.notify(event, text)
+    cfg = settings
+    url = cfg['webhook_url'].to_s.strip
+    return if url.empty? || cfg[event] == false
+    msg = "[#{Char.name}] #{text}"
+    3.times do |i|
+      ok, info = post(url, msg)
+      return echo("sent: #{msg}") if ok
+      echo "webhook failed (#{info})#{i < 2 ? ', retrying' : ''}"
+      sleep 5 if i < 2
+    end
+  end
+
+  # ---- reading the game ----
+
+  # {tier: 'tripled', points: '6,478'} while a Lumnis tier is running,
+  # {tier: nil, refresh: '2 days, ...'} when it isn't, nil if the reply wasn't understood.
+  def self.read_lumnis
+    lines = Lich::Util.quiet_command('lumnis info', /Gift of Lumnis/, /Temple of Lumnis/, true, 6, true)
+    text = lines.join(' ')
+    if text =~ /You have ([\d,]+) points of (\w+) experience remaining on your Gift of Lumnis/
+      { tier: $2.downcase, points: $1 }
+    elsif text =~ /Gift of Lumnis has expired|will restart as soon as|not selected a Gift of Lumnis/
+      { tier: nil, refresh: text[/refresh in ([^.]+)\./, 1] }
+    end
+  end
+
+  # true/false: is Fash'lo'nae's boost running? nil if `exp` didn't answer.
+  def self.read_fash
+    lines = Lich::Util.quiet_command_xml('exp', /Level:\s+\d+\s+Fame:/, /<prompt/, true, 6, true)
+    return nil if lines.empty?
+    lines.join(' ').include?('heightened understanding of events around you')
+  end
+
+  # A Lumnis tier name ('tripled'), or :fash, or :idle. A running Lumnis tier wins,
+  # so Fash'lo'nae only counts once Lumnis is out of the way.
+  def self.phase_of(info, fash)
+    info[:tier] || (fash ? :fash : :idle)
+  end
+
+  def self.tier?(phase)
+    phase.is_a?(String)
+  end
+
+  def self.label(phase)
+    case phase
+    when :fash then "Fash'lo'nae's Tutelage"
+    when :idle then 'no boost'
+    else "Lumnis #{MULT[phase] ? "#{MULT[phase]}x" : phase}"
+    end
+  end
+
+  def self.changed(prev, cur, info)
+    ended = "#{label(prev)} ended."
+    if tier?(cur) && !tier?(prev)
+      notify('lumnis_start', "#{label(cur)} started, #{info[:points]} points.")
+    elsif tier?(cur)
+      notify('tier_end', "#{ended} #{label(cur)} started, #{info[:points]} points.")
+    elsif tier?(prev)
+      notify('lumnis_end', cur == :fash ? "#{ended} #{label(cur)} started." : ended)
+    elsif cur == :fash
+      notify('lumnis_end', "#{label(cur)} started.")
+    else
+      notify('fash_end', "#{ended}#{info[:refresh] ? " Gift of Lumnis refreshes in #{info[:refresh]}." : ''}")
+    end
+  end
+
+  # ---- session-ended notice (separate process, see the header) ----
+
+  WATCHER = <<~'RUBY'
+    require 'net/http'; require 'uri'; require 'json'
+    pid, beat = ARGV[0].to_i, ARGV[1]
+    alive = ->(p) { Process.kill(0, p) && true rescue false }
+    while alive.(pid)
+      stale = (Time.now - File.mtime(beat)) rescue 9999
+      exit if stale > 120   # exp_check was stopped on purpose
+      sleep 5
+    end
+    text = "[#{ENV['EXP_CHECK_NAME']}] Session ended (disconnected or logged out) at #{Time.now.strftime('%-I:%M %p')}."
+    uri = URI(ENV['EXP_CHECK_URL'])
+    12.times do
+      begin
+        res = Net::HTTP.start(uri.host, uri.port, use_ssl: true, open_timeout: 5, read_timeout: 5) do |http|
+          http.post(uri.request_uri, { content: text }.to_json, 'Content-Type' => 'application/json')
+        end
+        exit if res.is_a?(Net::HTTPSuccess)
+      rescue StandardError
+      end
+      sleep 50   # the network may be what died
+    end
+  RUBY
+
+  def self.beat_file
+    File.join(Dir.tmpdir, "exp_check_#{Char.name}.beat")
+  end
+
+  def self.alive?(pid)
+    Process.kill(0, pid) && true
+  rescue StandardError
+    false
+  end
+
+  # Heartbeat, then keep the watcher running while the checkbox is on and a URL is set.
+  def self.guard_watcher(cfg)
+    File.write(beat_file, Time.now.to_i.to_s)
+    url  = cfg['webhook_url'].to_s.strip
+    want = cfg['disconnect'] != false && !url.empty?
+    if @watcher && (!want || @watcher_url != url || !alive?(@watcher))
+      (Process.kill('TERM', @watcher) rescue nil)
+      @watcher = nil
+    end
+    return unless want && @watcher.nil?
+    @watcher = Process.spawn({ 'EXP_CHECK_URL' => url, 'EXP_CHECK_NAME' => Char.name },
+                             RbConfig.ruby, '-e', WATCHER, Process.pid.to_s, beat_file,
+                             in: File::NULL, out: File::NULL, err: File::NULL, pgroup: true)
+    Process.detach(@watcher)
+    @watcher_url = url
+  end
+
+  # ---- main loop ----
+
+  def self.run
+    echo 'no webhook set yet -- run ;exp_check setup' if settings['webhook_url'].to_s.strip.empty?
+    info = fash = phase = pending = nil
+    loop do
+      guard_watcher(settings)
+      fresh = read_lumnis
+      info = fresh unless fresh.nil?
+      fresh = read_fash
+      fash = fresh unless fresh.nil?
+      unless info.nil? || fash.nil?
+        cur = phase_of(info, fash)
+        if phase.nil?
+          phase = cur
+          echo "watching; currently #{label(phase)}"
+        elsif cur == phase
+          pending = nil
+        elsif cur == pending
+          changed(phase, cur, info)
+          phase = cur
+          pending = nil
+        else
+          pending = cur
+        end
+      end
+      sleep POLL
+    end
+  end
+
+  # ---- setup window ----
+
+  def self.setup
+    unless defined?(Gtk) && Gtk::Version::MAJOR == 3
+      echo 'GTK3 is not available. Cannot open the setup window.'
+      return
+    end
+    cfg   = settings
+    done  = false
+    saved = false
+
+    Gtk.queue do
+      win = Gtk::Window.new(:toplevel)
+      win.set_title('exp_check setup')
+      win.set_border_width(12)
+      win.keep_above = true
+      vbox = Gtk::Box.new(:vertical, 8)
+      win.add(vbox)
+
+      lbl = Gtk::Label.new('Discord webhook URL (shared by all your characters):')
+      lbl.set_xalign(0.0)
+      vbox.pack_start(lbl, expand: false, fill: false, padding: 0)
+      url = Gtk::Entry.new
+      url.set_text(cfg['webhook_url'].to_s)
+      url.set_width_chars(64)
+      vbox.pack_start(url, expand: false, fill: true, padding: 0)
+      hint = Gtk::Label.new('Discord: channel settings > Integrations > Webhooks > New Webhook > Copy URL')
+      hint.set_xalign(0.0)
+      vbox.pack_start(hint, expand: false, fill: false, padding: 0)
+
+      boxes = EVENTS.map do |key, text|
+        cb = Gtk::CheckButton.new(text)
+        cb.active = cfg[key] != false
+        vbox.pack_start(cb, expand: false, fill: false, padding: 0)
+        [key, cb]
+      end
+
+      status = Gtk::Label.new('')
+      status.set_xalign(0.0)
+      test = Gtk::Button.new(label: 'Send test message')
+      test.signal_connect('clicked') do
+        link = url.text.strip
+        status.text = 'sending...'
+        Thread.new do
+          ok, info = post(link, "[#{Char.name}] exp_check test message")
+          GLib::Idle.add { status.text = ok ? "Sent (#{info})" : "Failed: #{info}"; false }
+        end
+      end
+      row = Gtk::Box.new(:horizontal, 8)
+      row.pack_start(test, expand: false, fill: false, padding: 0)
+      row.pack_start(status, expand: true, fill: true, padding: 0)
+      vbox.pack_start(row, expand: false, fill: false, padding: 4)
+
+      btns = Gtk::Box.new(:horizontal, 8)
+      vbox.pack_start(btns, expand: false, fill: false, padding: 4)
+      save = Gtk::Button.new(label: 'Save')
+      save.signal_connect('clicked') do
+        ExpCheck.save({ 'webhook_url' => url.text.strip }.merge(boxes.to_h { |k, cb| [k, cb.active?] }))
+        saved = true
+        win.destroy
+      end
+      cancel = Gtk::Button.new(label: 'Cancel')
+      cancel.signal_connect('clicked') { win.destroy }
+      btns.pack_end(save, expand: false, fill: false, padding: 0)
+      btns.pack_end(cancel, expand: false, fill: false, padding: 0)
+
+      win.signal_connect('destroy') { Gtk.queue { done = true } }
+      win.show_all
+    end
+
+    wait_while { !done }
+    echo saved ? "settings saved to #{SETTINGS_FILE}" : 'setup cancelled.'
+  end
+end
+
+# --- dispatch ---
+case variable[1].to_s.downcase
+when 'setup'
+  ExpCheck.setup
+when ''
+  ExpCheck.run
+else
+  echo 'usage: ;exp_check  (run the watcher)   |   ;exp_check setup'
+end
