@@ -318,6 +318,38 @@ ensure
   mine.to_a.each { |s| Script.unpause(s) if Script.paused?(s) }
 end
 
+# `tell anim explode` (gswiki Animate Dead): the animate blows up for AOE damage
+# to the foes around it and is lost. Used at the END of a hunt while hostiles are
+# still in the room -- instead of deferring the weapon hand-off to the town edge
+# the animate goes out with a bang. The wiki doesn't say what becomes of its
+# weapon, so the existing loss recovery (ground first, then the corpse by id) runs
+# right after, WITH the movers still frozen, and hands it to verlok. Falls back
+# to the old deferral if it can't be done. `;vars set reanim_explode=off` to skip.
+def explode_enabled?
+  v = UserVars.reanim_explode
+  return true if v.nil?
+  return v if v == true || v == false
+  v.to_s !~ /\A\s*(?:0|false|off|no)\s*\z/i
+end
+
+def animate_present?
+  GameObj.npcs.any? { |n| n && n.name.to_s =~ /\banimate/i }
+rescue StandardError
+  false
+end
+
+def explode_animate
+  return false unless explode_enabled? && $reanim_animate_live && animate_present?
+  echo "Fizzleworth-anim-cleanup: hostiles still here -- the animate goes out with a bang (tell anim explode)."
+  dothistimeout("tell anim explode", 4,
+    /explod|detonat|burst|blast|loss of the connection|could not find|can't|cannot|unable|not able/i)
+  deadline = Time.now + 6
+  sleep 0.2 until animate_lost? || Time.now > deadline
+  return false unless animate_lost?          # didn't take -- let the caller fall back
+  rescue_weapon_after_loss                   # weapon -> verlok before anything walks off
+  true
+end
+
 # Freeze the movers, do the end-of-hunt jobs, unfreeze only what we froze.
 def teardown
   mine = MOVERS.select { |s| Script.running?(s) && !Script.paused?(s) }
@@ -327,7 +359,9 @@ def teardown
 
   harvest_room if essence < HARVEST_BELOW
   if animate_up?
-    if hostile_here?
+    if hostile_here? && explode_animate
+      # exploded in place (weapon recovery already ran) -- nothing left to defer
+    elsif hostile_here?
       # Keep the weapon on the animate and bring it along; the hand-off happens
       # at the town edge (BOUNDARY_ROOM, see boundary_handoff). It MUST be on
       # follow, not attack, or it stays behind fighting.
