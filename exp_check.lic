@@ -23,6 +23,9 @@
   understanding of events around you"). When something changes it looks again
   10 seconds later and only announces if the second look agrees, and nothing is
   announced for what was already true when the script started.
+  Fash'lo'nae starting and ending are announced within seconds instead: the game
+  prints a line at each (see FASH_START / FASH_END), and seeing one makes
+  exp_check check right away and take the game at its word.
 
   The session-ended message can't come from Lich (it dies with the connection,
   and often the network is down too), so exp_check starts a tiny separate
@@ -43,6 +46,8 @@ module ExpCheck
   SETTINGS_FILE = File.join(DATA_DIR, 'exp_check.yaml')
   POLL          = 300  # seconds between checks of the game
   BEAT          = 30   # seconds between heartbeats for the session-ended watcher
+  FASH_START    = 'A sensation of heightened understanding crests over you'
+  FASH_END      = 'The feeling of heightened understanding departs'
   MULT          = { 'doubled' => 2, 'tripled' => 3, 'quadrupled' => 4, 'quintupled' => 5 }
 
   EVENTS = {   # settings key => checkbox label
@@ -201,35 +206,50 @@ module ExpCheck
 
   # ---- main loop ----
 
-  # [Lumnis info, Fash true/false], or nil if either read failed.
-  def self.snapshot
+  # [Lumnis info, Fash true/false], or nil if either read failed. Pass fash when the
+  # game has just said which it is, so exp isn't asked.
+  def self.snapshot(fash = nil)
     info = read_lumnis
-    fash = read_fash
+    fash = read_fash if fash.nil?
     [info, fash] unless info.nil? || fash.nil?
+  end
+
+  # A change seen by polling is looked at again 10s later; one the game announced is
+  # taken at its word.
+  def self.confirmed?(cur, announced)
+    return true if announced
+    sleep 10
+    again = snapshot
+    !again.nil? && phase_of(*again) == cur
   end
 
   def self.run
     echo 'no webhook set yet -- run ;exp_check setup' if settings['webhook_url'].to_s.strip.empty?
-    phase = nil
+    @events = Queue.new
+    DownstreamHook.add('exp_check', proc { |line|
+      @events << :fash_start if line.include?(FASH_START)
+      @events << :fash_end if line.include?(FASH_END)
+      line
+    }, persist: false)
+    phase = event = nil
+    last  = Time.at(0)
     loop do
-      if (snap = snapshot)
-        cur = phase_of(*snap)
-        if phase.nil?
-          phase = cur
-          echo "watching; currently #{label(phase)}"
-        elsif cur != phase
-          sleep 10   # look again before announcing
-          again = snapshot
-          if again && phase_of(*again) == cur
-            changed(phase, cur, again.first)
+      if event || Time.now - last >= POLL
+        last = Time.now
+        told = { fash_start: true, fash_end: false }[event]   # what the game itself just said, if anything
+        if (snap = snapshot(told))
+          cur = phase_of(*snap)
+          if phase.nil?
+            phase = cur
+            echo "watching; currently #{label(phase)}"
+          elsif cur != phase && confirmed?(cur, !told.nil?)
+            changed(phase, cur, snap.first)
             phase = cur
           end
         end
       end
-      (POLL / BEAT).times do
-        guard_watcher(settings)
-        sleep BEAT
-      end
+      guard_watcher(settings)
+      event = @events.pop(timeout: BEAT)   # wakes early when the game announces Fash
     end
   end
 
