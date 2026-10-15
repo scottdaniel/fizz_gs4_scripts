@@ -21,9 +21,11 @@
 #     earlier one), follows up immediately with a plain attack instead of
 #     waiting for the next bigshot pass.
 #
-#   otherwise (stamina too low to tackle): just a plain attack with his
-#     current weapon instead of sitting idle waiting for stamina to
-#     regenerate.
+#   otherwise (stamina too low to tackle, OR this creature type has already
+#     told us it can't be knocked down -- see NO_KNOCKDOWN_MSG): just a plain
+#     attack with his current weapon instead of sitting idle waiting for
+#     stamina to regenerate, or burning 7 stamina + 2s roundtime per pass on
+#     a tackle that can never land.
 #
 # Deliberately does NOT switch back to stance defensive itself -- bigshot
 # already puts Brayis into stance defensive on its own between fights (while
@@ -103,6 +105,19 @@
 # short-circuit on immediately). This adds no real net latency since
 # whatever isn't spent reading here just gets spent in the waitrt? call that
 # already follows every use of this method, waiting out the same roundtime.
+#
+# FEATURE 2026-10-13 (give up on un-knockdownable creatures): some creatures
+# can't be knocked down at all, and GS4 says so with "...refuses to go down!"
+# -- e.g. a cave worm gave "A cave worm lurches at the impact but refuses to
+# go down!  Regaining your balance, you take a quick step back." on every
+# single tackle in "Brayis-Prime 10.13.2026 - 1.txt", with endrolls from
+# +125 up to +206, so it's a flat immunity, not bad luck on the roll. The
+# script now remembers the creature's NAME (not its id, so the next cave worm
+# is skipped too) in $brayis_no_tackle the first time it sees that message,
+# and from then on goes straight to plain attacks for that creature type
+# instead of burning stamina and a roundtime on a tackle that can't land. A
+# global because bigshot re-invokes this script fresh every pass; it lasts
+# until Lich restarts -- to forget it sooner: ;e $brayis_no_tackle.clear
 
 # --- knobs -------------------------------------------------------------------
 
@@ -120,6 +135,16 @@ ALREADY_DOWN_MSG = /is lying down.*awkward proposition/i unless defined?(ALREADY
 #   "You knock a greater ghoul flat and jump to your feet.  Smooth!"
 #   "You hammer a fire salamander to the ground.  You jump to your feet."
 KNOCKED_DOWN_MSG = /\bknock\b.*\bflat\b|to the ground/i unless defined?(KNOCKED_DOWN_MSG)
+
+# GS4's way of saying this creature can't be knocked down at all, e.g.
+#   "A cave worm lurches at the impact but refuses to go down!  Regaining your
+#   balance, you take a quick step back."
+NO_KNOCKDOWN_MSG = /refuses to go down/i unless defined?(NO_KNOCKDOWN_MSG)
+
+# Downcased names of creature types that have shown NO_KNOCKDOWN_MSG -- see the
+# 2026-10-13 feature note above. Survives across the script being re-invoked
+# every pass.
+$brayis_no_tackle ||= {}
 
 # Confirms the knockdown independently of KNOCKED_DOWN_MSG's wording --
 # require the SMR roll to have actually cleared triple digits too, not just a
@@ -181,6 +206,20 @@ def extract_endroll(text)
   text =~ /o100 roll:.*?==\s*([+-]?\d+)/ ? Regexp.last_match(1).to_i : nil
 end
 
+# Has this creature's type already told us it can't be knocked down?
+def tackle_immune?(foe)
+  $brayis_no_tackle.key?(foe.name.to_s.downcase)
+end
+
+# Remember that this creature type can't be knocked down, so every later pass
+# (and every later creature of the same name) skips straight to attacking.
+def mark_tackle_immune(foe)
+  name = foe.name.to_s.downcase
+  return if $brayis_no_tackle.key?(name)
+  $brayis_no_tackle[name] = true
+  echo "#{name} can't be knocked down -- giving up on tackling it"
+end
+
 # Plain attack with whatever weapon is in hand. No stance management here --
 # the caller already ensured offensive stance for the pass. No-ops if the
 # target is already dead (tackle throws a real hit alongside the knockdown
@@ -198,6 +237,9 @@ end
 # Knockdown requires BOTH KNOCKED_DOWN_MSG text AND an endroll over
 # TACKLE_ENDROLL_FLOOR -- text alone isn't enough (see the "double tackling"
 # fix notes above the knobs section).
+#
+# NO_KNOCKDOWN_MSG means this creature type can never be tackled down: remember
+# it, and attack it right now like any other "tackle is pointless here" case.
 def tackle_then_maybe_finish(foe)
   text = action_and_collect("cman tackle")
 
@@ -205,8 +247,13 @@ def tackle_then_maybe_finish(foe)
     finish_attack(foe)
   else
     waitrt?
-    endroll = extract_endroll(text)
-    finish_attack(foe) if text =~ KNOCKED_DOWN_MSG && endroll && endroll > TACKLE_ENDROLL_FLOOR
+    if text =~ NO_KNOCKDOWN_MSG
+      mark_tackle_immune(foe)
+      finish_attack(foe)
+    else
+      endroll = extract_endroll(text)
+      finish_attack(foe) if text =~ KNOCKED_DOWN_MSG && endroll && endroll > TACKLE_ENDROLL_FLOOR
+    end
   end
 end
 
@@ -226,7 +273,7 @@ exit if target_dead?(foe)
 
 fput "stance offensive" if stance != "offensive"
 
-if checkstamina >= TACKLE_STAMINA_COST
+if checkstamina >= TACKLE_STAMINA_COST && !tackle_immune?(foe)
   tackle_then_maybe_finish(foe)
 else
   finish_attack(foe)
