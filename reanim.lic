@@ -300,6 +300,14 @@ def animate_here_stable?
 	animate_here? && (sleep(0.4) || true) && animate_here?
 end
 
+# Weapon in hand -> verlok; no minor demon to take it -> don't leave it in hand, stow it.
+def give_or_stow(noun)
+	g = dothistimeout("give #{noun} to verlok", 3,
+		/grudgingly accepts|hand(?:s)? .* to (?:a|an|the)|refuses|isn't interested|To whom|could not find/i).to_s
+	fput "stow #{noun}" unless g =~ /grudgingly accepts|hand(?:s)? .* to (?:a|an|the)/i
+	sleep 0.3
+end
+
 # End-of-hunt teardown. Gated on $reanim_animate_live so it runs exactly once
 # per hunt. The caller (Fizzleworth-anim-cleanup) freezes go2 / bigshot /
 # sac4mana -- but go2 can get ONE step in before the freeze lands, leaving
@@ -346,13 +354,14 @@ def dismiss_animate(noun)
 	end
 	sleep 0.5
 
+	aid = $reanim_animate_id   # the animate's corpse keeps this id
 	fput "tell anim die"
 	sleep 1.5
 	$reanim_animate_live = false
 	$reanim_animate_id   = nil
 	echo "[reanim] animate still present after 'tell anim die' -- check it." if animate_here?
 
-	# reclaim the spare it just dropped (or died holding) -> verlok -> our pack
+	# reclaim the spare it just dropped -> verlok -> our pack
 	if weapon_on_ground(noun)
 		dothistimeout("tell verlok to get #{noun}", 3,
 			/picks up|snatches|grasps|retriev|reaches down|takes hold of|obeys|obliges|could not find|can't|cannot|refuses/i)
@@ -360,11 +369,17 @@ def dismiss_animate(noun)
 		if weapon_on_ground(noun)
 			dothistimeout("get #{noun}", 3, /You (?:pick up|get)|already have|What were you/i)
 			sleep 0.3
-			g = dothistimeout("give #{noun} to verlok", 3,
-				/grudgingly accepts|hand(?:s)? .* to (?:a|an|the)|refuses|isn't interested|To whom|could not find/i).to_s
-			# no minor demon to take it -> don't leave it in hand, stow it
-			fput "stow #{noun}" unless g =~ /grudgingly accepts|hand(?:s)? .* to (?:a|an|the)/i
-			sleep 0.3
+			give_or_stow(noun)
+		end
+	elsif aid
+		# Not on the floor: the animate snatched it back up before it died (10.15 12:02),
+		# so it's on the corpse -- and the eloot below would "discard" it.
+		r = dothistimeout("get #{noun} from ##{aid}", 3,
+			/You (?:get|pick up|remove|take)|could not find|What were you|can't|cannot/i).to_s
+		if r =~ /You (?:get|pick up|remove|take)/i
+			give_or_stow(noun)
+		else
+			echo "[reanim] !! couldn't get the #{noun.upcase} off the corpse (##{aid})."
 		end
 	end
 
