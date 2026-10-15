@@ -23,6 +23,8 @@
       - when Guild Night ends with vouchers still redeemed, signs them back into a
         pack (GLD VOUCHER <count>) and puts it in the default container, so
         normal-night trades don't spend them.
+      - training only Illusions (plus Teach/Learn) needs just a default STOW container:
+        no herb or reagent container, cauldron, mortar, or sea-water vial and flask.
 
     Alchemy script rewrite based on the original Tillman Alchemy script of DOOM!!!!!!1!!!11.
     Currently relies on the following scripts for full utilization:
@@ -4767,8 +4769,15 @@ module BlackArts
       # Util.msg("info", "Util.set_needed_reagents: ingredient_list - #{ingredient_list}")
     end
 
+    # Training only Illusions (plus Teach/Learn) needs no alchemy gear: just the default stow container
+    def self.illusions_only?
+      skills = BlackArts.data.settings[:skill_types].to_a
+      skills.include?('illusions') && (skills - %w[illusions teach learn]).empty?
+    end
+
     def self.set_variables(check_equipment = true, just_basic = false)
       is_error = false
+      illusions_only = Util.illusions_only?
 
       # Sort the skills
       BlackArts.data.settings[:skill_types].sort!
@@ -4787,10 +4796,10 @@ module BlackArts
         BlackArts.data.current_admin = guild_town.find_nearest_by_tag("#{Char.prof.downcase} alchemy administrator")
       end
 
-      return if BlackArts.data.settings[:no_alchemy] && !BlackArts.data.settings[:buy_reagents]
+      return if BlackArts.data.settings[:no_alchemy] && !BlackArts.data.settings[:buy_reagents] && !illusions_only
       return if just_basic
 
-      # Find the Containers we need: default, reagent, herb
+      # Find the Containers we need: default, reagent, herb (just default when only training Illusions)
       container_match = /<a exist="([^"]+)" noun="[^"]+">[^(.]+\(([a-z]+)\)/
       loop {
         container_lines = Util.get_lines("stow list", /<output class="mono"\/>/)
@@ -4816,11 +4825,11 @@ module BlackArts
         end
       }
 
-      if !BlackArts.data.sacks["herb"]
+      if !BlackArts.data.sacks["herb"] && !illusions_only
         Util.msg('error', ' The herb container is not set. Please use STOW SET in-game.')
         is_error = true
       end
-      if !BlackArts.data.sacks["reagent"]
+      if !BlackArts.data.sacks["reagent"] && !illusions_only
         Util.msg('error', ' The reagent container is not set. Please use STOW SET in-game.')
         is_error = true
       end
@@ -4830,6 +4839,12 @@ module BlackArts
       end
       exit if is_error
 
+      # Illusions only: anything that would go in the herb or reagent container goes in the default one
+      if illusions_only
+        BlackArts.data.sacks["herb"] ||= BlackArts.data.sacks["default"]
+        BlackArts.data.sacks["reagent"] ||= BlackArts.data.sacks["default"]
+      end
+
       # Make sure we have the contents
       ['herb', 'reagent', 'default'].each { |sack|
         Inventory.open_single_container(sack)
@@ -4837,7 +4852,7 @@ module BlackArts
 
       return if BlackArts.data.settings[:no_alchemy]
 
-      if check_equipment
+      if check_equipment && !illusions_only
         # Do we have a cauldron?
         BlackArts.data.sacks["reagent"].contents.each { |item| BlackArts.data.sacks["cauldron"] = item if item.noun =~ /^(?:cauldron|boiler)$/ }
 
@@ -7063,6 +7078,7 @@ module BlackArts
     end
 
     def self.drop_cauldron
+      return if BlackArts.data.sacks["cauldron"].nil?
       return if GameObj.loot.find { |item| item.id == BlackArts.data.sacks["cauldron"].id } != nil || GameObj.room_desc.find { |item| item.id == BlackArts.data.sacks["cauldron"].id } != nil
       return if BlackArts.data.settings[:no_alchemy]
 
@@ -7082,6 +7098,7 @@ module BlackArts
     end
 
     def self.get_cauldron
+      return if BlackArts.data.sacks["cauldron"].nil?
       return if BlackArts.data.sacks["reagent"].contents.find { |item| item.id == BlackArts.data.sacks["cauldron"].id }
       return if BlackArts.data.settings[:no_alchemy]
 
