@@ -20,6 +20,9 @@
         redeems only that, leaving the rest of the pack for the next Guild Night.
       - redeems a pack when GLD shows no voucher count at all (upstream needed
         an explicit 0, which GLD doesn't print).
+      - when Guild Night ends with vouchers still redeemed, signs them back into a
+        pack (GLD VOUCHER <count>) and puts it in the default container, so
+        normal-night trades don't spend them.
 
     Alchemy script rewrite based on the original Tillman Alchemy script of DOOM!!!!!!1!!!11.
     Currently relies on the following scripts for full utilization:
@@ -7208,6 +7211,11 @@ module BlackArts
         Guild.redeem_voucher
       end
 
+      # Guild Night is over: sign leftover vouchers back into a pack before a trade can spend them
+      if BlackArts.data.settings[:vouchers_guild_night_only] && !guild_status['guild'][:guild_night] && guild_status['guild'][:vouchers].to_i.positive?
+        Guild.save_vouchers(guild_status['guild'][:vouchers].to_i)
+      end
+
       if skill.nil?
         skill = BlackArts.data.settings[:skill_types]
                          .reject { |type| ["learn", "teach"].include?(type) }
@@ -7259,6 +7267,24 @@ module BlackArts
       voucher ||= voucher_pack
       fput "_drag ##{voucher.id} right" unless GameObj.right_hand.id == voucher.id
       fput "give ##{GameObj.npcs.find { |npc| npc.name =~ /training/i }.id}"
+    end
+
+    # GLD VOUCHER {1-1000} signs redeemed vouchers into an "Elanthian Guilds voucher pack" in hand:
+    # "You sign 8 of your task trading vouchers over to an Elanthian Guilds voucher pack, leaving
+    # you with 0 vouchers remaining in your guild record."
+    def self.save_vouchers(count)
+      Inventory.free_hands(both: true)
+      result = Util.get_res("gld voucher #{[count, 1000].min}", /You sign|Usage:|don't have|can't/i)
+      return unless result =~ /You sign/
+
+      Util.msg("info", " Guild Night is over, so #{count} unused voucher#{count == 1 ? '' : 's'} went back into a pack for next time.")
+      pack = nil
+      20.times {
+        pack = [GameObj.right_hand, GameObj.left_hand].find { |hand| hand.noun == 'pack' && hand.name =~ /voucher/i }
+        break if pack
+        sleep 0.1
+      }
+      Inventory.store_item(BlackArts.data.sacks["default"], pack) if pack
     end
 
     def self.remove_task(skill)
