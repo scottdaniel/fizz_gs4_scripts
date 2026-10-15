@@ -7735,8 +7735,9 @@ module BlackArts
     end
 
     # How each type's noun looks (gswiki Minor demon messaging, Igaesha). Most start with the type
-    # (verlok'cina, grik'pwal, abyran'sa); shien are darklings or shadowlings, and an igaesha is
-    # "a cloud of <color> <haze|fog|...>". Returns nil for anything else.
+    # (verlok'cina, grik'pwal, abyran'sa); shien are darklings or shadowlings, and an igaesha's noun
+    # is haze, fog, smoke, ... (summoned as "a cloud of pale turquoise smoke", but TELL MDEMON
+    # calls it "your pale turquoise smoke"). Returns nil for anything else.
     def self.demon_type(noun, name)
       return nil if noun.nil?
 
@@ -7751,7 +7752,7 @@ module BlackArts
         'abyran'   => /\Aabyran/,
         'grik'     => /\Agrik/,
       }
-      demon_nouns.find { |demon_type, pattern| noun.downcase =~ pattern && (demon_type != 'igaesha' || name.to_s.downcase.include?('cloud')) }&.first
+      demon_nouns.find { |_demon_type, pattern| noun.downcase =~ pattern }&.first
     end
 
     # Before a demon illusion task: if there's no minor demon, or it's a type this rank can't

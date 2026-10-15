@@ -112,7 +112,8 @@ module Summond
 
   # How each archetype's name ends in game (gswiki Minor demon messaging, Igaesha). Most nouns
   # start with the archetype (verlok'cina, grik'pwal, abyran'sa); shien are darklings or
-  # shadowlings, and an igaesha is "a cloud of <color> <haze|fog|...>"
+  # shadowlings, and an igaesha's noun is haze, fog, smoke, ... It's summoned as "a cloud of pale
+  # turquoise smoke" but TELL MDEMON calls it "your pale turquoise smoke", so don't require "cloud"
   ARCHETYPE_NOUNS = {
     'grik'     => /\Agrik/,
     'imp'      => /\Aimp\z/,
@@ -128,7 +129,7 @@ module Summond
   def self.archetype_of(name)
     words = name.to_s.downcase.split
     noun = words.last.to_s
-    ARCHETYPE_NOUNS.find { |type, pattern| noun =~ pattern && (type != 'igaesha' || words.include?('cloud')) }&.first
+    ARCHETYPE_NOUNS.find { |_type, pattern| noun =~ pattern }&.first
   end
 
   def self.wanted?(name, valence, archetype)
