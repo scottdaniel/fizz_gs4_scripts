@@ -7770,9 +7770,12 @@ module BlackArts
       end
 
       wanted = allowed.max_by { |_type, min_rank| min_rank }.first
-      Util.msg("info", " Summoning #{wanted =~ /\A[aeiou]/ ? 'an' : 'a'} #{wanted} for demon illusions (;summond #{wanted} --yes).")
+      # A plain valence runestone pulls a random archetype (an igaesha is 1 in 4 lorae'tyr demons),
+      # and specific runes like lorae'tyr-igaesha only come from raffles, so allow plenty of re-rolls
+      summon_args = "#{wanted} --yes --tries=20"
+      Util.msg("info", " Summoning #{wanted =~ /\A[aeiou]/ ? 'an' : 'a'} #{wanted} for demon illusions (;summond #{summon_args}).")
       Inventory.free_hands(both: true)
-      Script.run('summond', "#{wanted} --yes")
+      Script.run('summond', summon_args)
 
       Illusions.read_demon
       type = Illusions.demon_type(BlackArts.data.demon_noun, BlackArts.data.demon_name)
