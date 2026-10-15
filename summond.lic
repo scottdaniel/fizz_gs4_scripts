@@ -4,13 +4,13 @@
         game: gemstone
         tags: sorcerer, demon, minor summoning, 725, runestone
     requires: Lich > 5.14.2
-     version: 0.1
+     version: 0.2
         note: Written with assistance from Claude (Anthropic).
 
   Summons a Minor Summoning (725) demon of the valence or archetype you ask for.
 
   It goes to the nearest Sorcerer Guild summoning chamber (+25% to summon), casts
-  at the best runestone in your infusesack, and checks what came through the rift:
+  at the best runestone in your runestonesack, and checks what came through the rift:
 
     - A specific runestone (e.g. lorae'tyr-igaesha) targets that archetype. If
       you know that rune (RUNE UNCOMMON) but have no stone, it makes one.
@@ -22,8 +22,10 @@
       counts it down; a cast that comes too soon ("you feel weak from your recent
       forays into interplanar summoning") is retried every minute and doesn't count
       as a try.
-    - Runestones are made with fizzfuse (;infuse rune <rune>), and only for runes
-      you know (RUNE COMMON / RUNE UNCOMMON).
+    - Missing runestones are made on the spot, only for runes you know (RUNE COMMON /
+      RUNE UNCOMMON): bank (only if you carry less than 15,000 silvers), the nearest
+      alchemist for a runestone (plus ink, a cup to rinse a dried brush, or a rune
+      brush if you have none), draw the rune, then deposit what's left.
 
   Valences and archetypes (gswiki Minor Summoning (725)):
     grik'tyr   - grik, imp
@@ -40,9 +42,11 @@
   Options (after the demon):
     --here       cast where you are instead of travelling to a summoning chamber
     --tries=N    give up after N casts (default 10)
+    --yes        replace your current demon without asking (for other scripts, e.g. fizzarts)
 
-  Needs fizzfuse's infusesack (where your runestones live):
-    ;vars set infusesack=<container name>
+  Where your runestones and rune tools (brush, ink, cup) live:
+    ;vars set runestonesack=<container name>
+  (falls back to infusesack, so fizzfuse users don't need to set anything)
 =end
 
 module Summond
@@ -57,6 +61,8 @@ module Summond
   # time logged in, so summond can't know how much is left from a summon before it started.
   TOO_SOON_RETRY       = 60
   MAX_TOO_SOON         = 7
+  # Runestones were 8,100-10,000 silvers; this also covers ink or a cup if needed
+  RUNESTONE_SILVER     = 15_000
 
   VALENCES = {
     "grik'tyr"  => %w[grik imp],
@@ -77,8 +83,8 @@ module Summond
     respond "[summond] #{text}"
   end
 
-  def self.kit
-    UserVars.infusesack
+  def self.sack
+    [UserVars.runestonesack, UserVars.infusesack].find { |name| name && !name.strip.empty? }
   end
 
   # "an igaesha", "an iron verlok'asha", "a grantris"
@@ -185,28 +191,13 @@ module Summond
     }
   end
 
-  # Takes a runestone with exactly this rune out of the kit and returns its GameObj, or nil.
-  # Rummage may also match longer runes (lorae'tyr-verlok for lorae'tyr), so those get set aside
-  # in @set_aside and go back in the kit at the end.
+  # Takes a runestone with this rune out of the sack and returns it in hand, or nil. Rummage
+  # matches the rune exactly: asking for lorae'tyr with only a lorae'tyr-verlok stone finds nothing.
   def self.take_runestone(rune)
-    5.times do
-      line = dothistimeout "rummage in my #{kit} runestone #{rune}", 5, /drawn on it|can't seem to locate|What were you referring to/
-      return nil unless line =~ /with an? "([^"]+)" rune drawn on it/
+    line = dothistimeout "rummage in my #{sack} runestone #{rune}", 5, /drawn on it|can't seem to locate|What were you referring to/
+    return nil unless line =~ /rune drawn on it/
 
-      found = Regexp.last_match(1).downcase
-      stone = nil
-      20.times {
-        stone = [GameObj.right_hand, GameObj.left_hand].find { |hand| hand.noun == 'runestone' && !@set_aside.include?(hand.id) }
-        break if stone
-        sleep 0.1
-      }
-      return nil if stone.nil?
-      return stone if found == rune
-
-      @set_aside << stone.id
-      fput "stow ##{stone.id}"
-    end
-    nil
+    wait_for_hand { |hand| hand.noun == 'runestone' }
   end
 
   # Runes this character can draw, from RUNE COMMON / RUNE UNCOMMON ("    - lorae'tyr   - vakra ...")
@@ -224,12 +215,133 @@ module Summond
     known_runes.empty? ? !rune.include?('-') : known_runes.include?(rune)
   end
 
+  # === runestone making ==========================================================
+  def self.go2(place)
+    Script.run('go2', "#{place} --disable-confirm")
+  end
+
+  def self.wait_for_hand(&match)
+    20.times {
+      item = [GameObj.right_hand, GameObj.left_hand].find { |hand| hand.id && match.call(hand) }
+      return item if item
+      sleep 0.1
+    }
+    nil
+  end
+
+  def self.put_away(item)
+    return if item.nil?
+
+    fput "put ##{item.id} in my #{sack}"
+    @tools.delete(item.id)
+  end
+
+  # Takes a tool out of the sack by noun and returns it in hand, or nil
+  def self.get_tool(noun)
+    line = dothistimeout "get my #{noun} in my #{sack}", 5, /You remove|You get|You grab|You pull|Get what|What were you referring to|can't find/
+    return nil unless line =~ /You remove|You get|You grab|You pull/
+
+    item = wait_for_hand { |hand| hand.noun == noun }
+    @tools << item.id if item
+    item
+  end
+
+  # Rune ink's noun varies by town (Sorena's in Icemule sells an "ink bottle"), so make sure a
+  # "bottle" really is ink and not a potion
+  def self.get_ink
+    %w[ink bottle].each { |noun|
+      item = get_tool(noun)
+      next if item.nil?
+      return item if item.name =~ /ink/i
+
+      put_away(item)
+    }
+    nil
+  end
+
+  # Buys the first catalog item whose name matches pattern and returns it in hand, or nil
+  def self.buy(pattern, what)
+    number = nil
+    Lich::Util.quiet_command_xml("order", /Welcome to|catalog/i).each { |line|
+      line.gsub(/<[^>]+>/, '').scan(/(\d+)\.\s+(.+?)(?=\s{2,}\d+\.|\s*\z)/) { |num, name| number ||= num if name =~ pattern }
+    }
+    if number.nil?
+      msg "This shop doesn't sell #{what}."
+      return nil
+    end
+
+    held = [GameObj.right_hand.id, GameObj.left_hand.id]
+    fput "order #{number}"
+    result = dothistimeout "buy", 5, /Sold for|hands you|need a free hand|enough|afford|What were you referring to/
+    unless result =~ /Sold for|hands you/
+      msg "Couldn't buy #{what}: #{result || 'no answer from the shop'}"
+      return nil
+    end
+
+    item = wait_for_hand { |hand| !held.include?(hand.id) }
+    @tools << item.id if item && what !~ /runestone/
+    item
+  end
+
+  # At an alchemist: get the brush inked, buy a runestone, draw the rune. Returns the stone in hand.
+  # Brush states, from fizzfuse runs: "covered in a rich <color> ink" (ready), "covered with dry
+  # <color> ink" (rinse in a cup, then ink), "clean and smooth" (ink)
+  def self.draw_runestone(rune)
+    brush = get_tool('brush') || buy(/\bbrush\b/, 'a rune brush')
+    return nil if brush.nil?
+
+    state = dothistimeout "look at my brush", 5, /covered in a rich|covered with dry|clean and smooth/
+    if state =~ /covered with dry/
+      cup = get_tool('cup') || buy(/\bcup\b/, 'a cup to rinse your brush')
+      return nil if cup.nil?
+
+      fput "dip brush in my cup"
+      # Sorena's (Icemule) spoils the cup's water after one rinse and sets it aside, so this can fail harmlessly
+      put_away(cup)
+    end
+    unless state =~ /covered in a rich/
+      ink = get_ink || buy(/rune ink|ink bottle/, 'rune ink')
+      return nil if ink.nil?
+
+      fput "dip brush in my #{ink.noun}"
+      put_away(ink)
+    end
+
+    stone = buy(/runestone/, 'a runestone')
+    return nil if stone.nil?
+
+    line = dothistimeout "draw #{rune} rune on runestone", 5, /you draw the|trace out the shape|cleaned off first|will need ink|Roundtime/
+    waitrt?
+    unless line =~ /you draw the|trace out the shape/
+      msg "Drawing the #{rune} rune didn't work: #{line || 'no response'}"
+      return nil
+    end
+    stone
+  end
+
+  # Bank (only if needed), alchemist, draw, deposit what's left. Returns the new stone in hand.
   def self.make_runestone(rune)
-    msg "No #{rune} runestone in your #{kit}. Making one with fizzfuse (bank and alchemist trip)."
-    Script.run('fizzfuse', "rune #{rune}")
-    # fizzfuse only puts the left hand away when it finishes, so the new stone can still be in hand
-    [GameObj.right_hand, GameObj.left_hand].select { |hand| hand.noun == 'runestone' }.each { |hand| fput "put ##{hand.id} in my #{kit}" }
-    take_runestone(rune)
+    msg "No #{rune} runestone in your #{sack}. Making one (bank if needed, then the alchemist)."
+    withdrew = false
+    if Lich::Util.silver_count < RUNESTONE_SILVER
+      go2('bank')
+      line = dothistimeout "withdraw #{RUNESTONE_SILVER} silvers", 5, /hands you|don't have|not have|insufficient|only have/i
+      unless line =~ /hands you/
+        msg "Couldn't withdraw #{RUNESTONE_SILVER} silvers for a runestone: #{line || 'no answer from the teller'}"
+        return nil
+      end
+      withdrew = true
+    end
+
+    go2('alchemist')
+    stone = draw_runestone(rune)
+    [GameObj.right_hand, GameObj.left_hand].each { |hand| put_away(hand) if @tools.include?(hand.id) }
+
+    if withdrew
+      go2('bank')
+      fput "deposit all"
+    end
+    stone
   end
 
   # Best runestone for the request: the specific archetype rune if you have one, else the valence rune
@@ -320,6 +432,7 @@ module Summond
     respond "Options (after the demon):"
     respond "  --here       cast where you are instead of going to the nearest summoning chamber (-25% odds)"
     respond "  --tries=N    give up after N casts (default #{DEFAULT_TRIES})"
+    respond "  --yes        replace your current demon without asking (for other scripts, e.g. fizzarts)"
     respond
     respond "What it does:"
     respond "  1. If you already have a demon: stops if it's what you asked for, otherwise asks you to"
@@ -329,7 +442,8 @@ module Summond
     respond "         rune (RUNE UNCOMMON) and it can make one"
     respond "       - otherwise the plain valence runestone (e.g. lorae'tyr): always a demon of that"
     respond "         valence, but the archetype is random"
-    respond "     Missing runestones are made with fizzfuse (;infuse rune), only for runes you know."
+    respond "     Missing runestones are made on the spot (bank if needed, the alchemist, draw the rune),"
+    respond "     only for runes you know. It brings your rune brush and buys ink, a cup or a brush as needed."
     respond "  3. Goes to the nearest Sorcerer Guild summoning chamber (+25% odds), waits for mana, casts."
     respond "  4. Wrong archetype? Sends it back and re-rolls after the #{SUCCESS_COOLDOWN / 60}-minute cooldown."
     respond "     The game doesn't show that cooldown, so summond counts it down. A cast that's too soon"
@@ -337,10 +451,8 @@ module Summond
     respond "  5. Tells the demon to FOLLOW and GUARD, and puts the runestone back."
     respond
     respond "Settings:"
-    respond "  infusesack   #{kit || '(not set)'}   runestones (shared with fizzfuse)"
-    respond "               set with ;vars set infusesack=<container name>"
-    respond "  scrollsack   #{UserVars.scrollsack || '(not set)'}   fizzfuse won't make runestones without it"
-    respond "               set with ;vars set scrollsack=<container name>"
+    respond "  runestonesack   #{sack || '(not set)'}   runestones and rune tools (brush, ink, cup)"
+    respond "                  set with ;vars set runestonesack=<container name> (falls back to infusesack)"
     respond
   end
 
@@ -359,11 +471,12 @@ module Summond
     @cleaned_up = false
     @emptied_hands = false
     @known_runes = nil
-    @set_aside = []
+    @tools = []
     @stone = nil
 
     words = args.reject { |arg| arg.start_with?('--') }.map(&:downcase)
     here = args.include?('--here')
+    yes = args.include?('--yes')
     tries = (args.find { |arg| arg =~ /^--tries=\d+$/ }&.split('=')&.last || DEFAULT_TRIES).to_i
 
     if words.empty? || words.first =~ /^(help|\?)$/
@@ -374,8 +487,8 @@ module Summond
       exit
     end
 
-    if kit.nil? || kit.strip.empty?
-      msg "Set your runestone container first: ;vars set infusesack=<container name>"
+    if sack.nil?
+      msg "Set your runestone container first: ;vars set runestonesack=<container name>"
       exit
     end
 
@@ -399,8 +512,12 @@ module Summond
       msg "You already have #{a(demon)}."
       exit
     elsif demon
-      msg "You already have #{a(demon)}. Type NOD within #{NOD_TIMEOUT_SECONDS} seconds to send it back and summon #{a(wanted)}."
-      exit unless wait_for_nod(NOD_TIMEOUT_SECONDS)
+      if yes
+        msg "Sending back your #{demon} to summon #{a(wanted)}."
+      else
+        msg "You already have #{a(demon)}. Type NOD within #{NOD_TIMEOUT_SECONDS} seconds to send it back and summon #{a(wanted)}."
+        exit unless wait_for_nod(NOD_TIMEOUT_SECONDS)
+      end
       dismiss_demon
     end
 
@@ -476,14 +593,14 @@ module Summond
     msg "No #{wanted} after #{tries} casts. Stopping."
   end
 
-  # Puts the runestone (and any set-aside ones) back in the kit and re-equips what was in hand
+  # Puts the runestone and any rune tools in hand back in the sack and re-equips what was in hand
   def self.cleanup
     return if @cleaned_up
 
     @cleaned_up = true
     fput "release" unless checkprep == "None"
-    fput "put ##{@stone.id} in my #{kit}" if @stone && [GameObj.right_hand, GameObj.left_hand].any? { |hand| hand.id == @stone.id }
-    @set_aside.to_a.each { |id| multifput "get ##{id}", "put ##{id} in my #{kit}" }
+    fput "put ##{@stone.id} in my #{sack}" if @stone && [GameObj.right_hand, GameObj.left_hand].any? { |hand| hand.id == @stone.id }
+    [GameObj.right_hand, GameObj.left_hand].each { |hand| fput "put ##{hand.id} in my #{sack}" if @tools.to_a.include?(hand.id) }
     fill_hands if @emptied_hands
   end
 end
