@@ -11,6 +11,9 @@
         The type comes from the demon's name: igaesha are "clouds of <color> fog/mist/...",
         shien are darklings/shadowlings, the rest start with the type (verlok'cina).
         Also stops after 3 failed ILLUSION DEMON attempts in a row instead of looping.
+      - demon illusion tasks summon their own demon: with no minor demon, or one this
+        rank can't illusion yet, it runs ;summond <newest type your rank allows> --yes
+        (Igaesha 48, Imp 53, Verlok 54, Grantris 55, ...) before travelling.
       - "Vouchers on Guild Night only" option: only redeems voucher packs while GLD
         says it's a Guild Night (doubled training points). Redeemed vouchers are
         spent automatically on every trade, so it TEARs one voucher off a pack and
@@ -7403,6 +7406,8 @@ module BlackArts
     def self.skilled_masters(skill)
       Guild.get_cauldron
       Inventory.free_hands(both: true)
+      # The Arcane Master asks for your latest illusion; get a usable demon first if that's demon
+      Illusions.ensure_demon if skill == 'illusions' && Illusions.latest_illusion =~ /demon/
 
       if XMLData.injuries.any? { |_a, h| h['wound'] > 0 || h['scar'] > 0 } || percenthealth < 95
         Script.run('eherbs')
@@ -7469,6 +7474,10 @@ module BlackArts
     end
 
     def self.do_illusions(place: nil)
+      illusion = Illusions.latest_illusion
+      # ;summond travels to a summoning chamber, so get the demon before going to the task's room
+      Illusions.ensure_demon if illusion =~ /demon/
+
       if place == 'audience'
         location = XMLData.game == "GSF" ? 20239 : 'town'
         Util.go2(location)
@@ -7477,7 +7486,6 @@ module BlackArts
       end
 
       Util.wait_rt
-      illusion = Illusions.latest_illusion
 
       if illusion =~ /shadow/
         Illusions.do_shadow(place: place)
@@ -7650,6 +7658,11 @@ module BlackArts
         exit
       end
 
+      Illusions.read_demon
+    end
+
+    # Fills demon_id / demon_noun / demon_name from "tell md to follow"
+    def self.read_demon
       BlackArts.data.demon_id = nil
       BlackArts.data.demon_noun = nil
       BlackArts.data.demon_name = nil
@@ -7662,11 +7675,10 @@ module BlackArts
       end
     end
 
-    def self.check_demon_rank
-      return if BlackArts.data.demon_noun.nil?
-
-      # Illusions rank at which each minor demon type can be illusioned (gswiki Illusions page)
-      demon_ranks = {
+    # Illusions rank at which each minor demon type can be illusioned (gswiki Illusions page).
+    # Order matters for ties: ensure_demon picks the first of the newest allowed types.
+    def self.demon_ranks
+      {
         'igaesha'  => 48,
         'imp'      => 53,
         'shien'    => 53,
@@ -7677,10 +7689,14 @@ module BlackArts
         'abyran'   => 63,
         'grik'     => 63,
       }
+    end
 
-      # How each type's noun looks (gswiki Minor demon messaging, Igaesha). Most start with the type
-      # (verlok'cina, grik'pwal, abyran'sa); shien are darklings or shadowlings, and an igaesha is
-      # "a cloud of <color> <haze|fog|...>"
+    # How each type's noun looks (gswiki Minor demon messaging, Igaesha). Most start with the type
+    # (verlok'cina, grik'pwal, abyran'sa); shien are darklings or shadowlings, and an igaesha is
+    # "a cloud of <color> <haze|fog|...>". Returns nil for anything else.
+    def self.demon_type(noun, name)
+      return nil if noun.nil?
+
       demon_nouns = {
         'igaesha'  => /\A(?:haze|rouk|brume|haar|murk|nyle|mist|smoke|vapor|fog)\z/,
         'imp'      => /\Aimp\z/,
@@ -7692,10 +7708,43 @@ module BlackArts
         'abyran'   => /\Aabyran/,
         'grik'     => /\Agrik/,
       }
+      demon_nouns.find { |demon_type, pattern| noun.downcase =~ pattern && (demon_type != 'igaesha' || name.to_s.downcase.include?('cloud')) }&.first
+    end
 
+    # Before a demon illusion task: if there's no minor demon, or it's a type this rank can't
+    # illusion yet, summon the newest type the rank allows with ;summond (Igaesha at 48, Imp at 53,
+    # Verlok at 54, ...). A demon that's already usable is left alone.
+    def self.ensure_demon
+      rank = Guild.gld['illusions'][:rank].to_i
+      allowed = Illusions.demon_ranks.select { |_type, min_rank| rank >= min_rank }
+      return if allowed.empty?
+
+      if Effects::Spells.active?("Minor Summoning")
+        Illusions.read_demon
+        type = Illusions.demon_type(BlackArts.data.demon_noun, BlackArts.data.demon_name)
+        # A demon we can't identify is let through, same as check_demon_rank
+        return if BlackArts.data.demon_id && (type.nil? || allowed.key?(type))
+      end
+
+      wanted = allowed.max_by { |_type, min_rank| min_rank }.first
+      Util.msg("info", " Summoning #{wanted =~ /\A[aeiou]/ ? 'an' : 'a'} #{wanted} for demon illusions (;summond #{wanted} --yes).")
+      Inventory.free_hands(both: true)
+      Script.run('summond', "#{wanted} --yes")
+
+      Illusions.read_demon
+      type = Illusions.demon_type(BlackArts.data.demon_noun, BlackArts.data.demon_name)
+      return if BlackArts.data.demon_id && type && allowed.key?(type)
+
+      Util.msg("yellow", " ;summond didn't get you a demon you can illusion at rank #{rank}. Summon one and restart the script.")
+      exit
+    end
+
+    def self.check_demon_rank
+      return if BlackArts.data.demon_noun.nil?
+
+      demon_ranks = Illusions.demon_ranks
       noun = BlackArts.data.demon_noun.downcase
-      name = BlackArts.data.demon_name.to_s.downcase
-      type = demon_nouns.find { |demon_type, pattern| noun =~ pattern && (demon_type != 'igaesha' || name.include?('cloud')) }&.first
+      type = Illusions.demon_type(BlackArts.data.demon_noun, BlackArts.data.demon_name)
       return if type.nil?
 
       needed = demon_ranks[type]
