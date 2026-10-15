@@ -18,17 +18,17 @@
   The webhook URL is shared by all characters and saved in
   <lich data dir>/exp_check.yaml (not in the scripts repo).
 
-  How it works: every 30 seconds it quietly sends `lumnis info` (the Lumnis tier)
+  How it works: every 5 minutes it quietly sends `lumnis info` (the Lumnis tier)
   and `exp` (Fash'lo'nae is active exactly when exp prints "You feel a heightened
-  understanding of events around you"). A change has to be seen on two checks in
-  a row before it is announced, and nothing is announced for what was already
-  true when the script started.
+  understanding of events around you"). When something changes it looks again
+  10 seconds later and only announces if the second look agrees, and nothing is
+  announced for what was already true when the script started.
 
   The session-ended message can't come from Lich (it dies with the connection,
   and often the network is down too), so exp_check starts a tiny separate
   process that watches Lich's pid, and posts once Lich is gone -- retrying for
   about 10 minutes, with the time the session ended in the text. exp_check
-  touches a heartbeat file every check; if that goes stale while Lich is still
+  touches a heartbeat file every 30 seconds; if that goes stale while Lich is still
   running, exp_check was stopped on purpose and the watcher quietly exits.
   A normal logout (timequit) also counts as the session ending.
 =end
@@ -41,7 +41,8 @@ require 'yaml'
 
 module ExpCheck
   SETTINGS_FILE = File.join(DATA_DIR, 'exp_check.yaml')
-  POLL          = 30   # seconds between checks
+  POLL          = 300  # seconds between checks of the game
+  BEAT          = 30   # seconds between heartbeats for the session-ended watcher
   MULT          = { 'doubled' => 2, 'tripled' => 3, 'quadrupled' => 4, 'quintupled' => 5 }
 
   EVENTS = {   # settings key => checkbox label
@@ -200,31 +201,35 @@ module ExpCheck
 
   # ---- main loop ----
 
+  # [Lumnis info, Fash true/false], or nil if either read failed.
+  def self.snapshot
+    info = read_lumnis
+    fash = read_fash
+    [info, fash] unless info.nil? || fash.nil?
+  end
+
   def self.run
     echo 'no webhook set yet -- run ;exp_check setup' if settings['webhook_url'].to_s.strip.empty?
-    info = fash = phase = pending = nil
+    phase = nil
     loop do
-      guard_watcher(settings)
-      fresh = read_lumnis
-      info = fresh unless fresh.nil?
-      fresh = read_fash
-      fash = fresh unless fresh.nil?
-      unless info.nil? || fash.nil?
-        cur = phase_of(info, fash)
+      if (snap = snapshot)
+        cur = phase_of(*snap)
         if phase.nil?
           phase = cur
           echo "watching; currently #{label(phase)}"
-        elsif cur == phase
-          pending = nil
-        elsif cur == pending
-          changed(phase, cur, info)
-          phase = cur
-          pending = nil
-        else
-          pending = cur
+        elsif cur != phase
+          sleep 10   # look again before announcing
+          again = snapshot
+          if again && phase_of(*again) == cur
+            changed(phase, cur, again.first)
+            phase = cur
+          end
         end
       end
-      sleep POLL
+      (POLL / BEAT).times do
+        guard_watcher(settings)
+        sleep BEAT
+      end
     end
   end
 
