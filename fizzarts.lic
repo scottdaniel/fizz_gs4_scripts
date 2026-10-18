@@ -25,6 +25,10 @@
         normal-night trades don't spend them.
       - training only Illusions (plus Teach/Learn) needs just a default STOW container:
         no herb or reagent container, cauldron, mortar, or sea-water vial and flask.
+      - audience illusions (Skip Audience Illusions off): before the first rep it says
+        "Sorry for the noise, just practicing illusions" and "Just nod at me if it's
+        too bothersome". If a player in the room nods at you, it stops and trades in
+        the audience task.
 
     Alchemy script rewrite based on the original Tillman Alchemy script of DOOM!!!!!!1!!!11.
     Currently relies on the following scripts for full utilization:
@@ -7516,6 +7520,58 @@ module BlackArts
       return "illusion #{illusion}"
     end
 
+    # === Audience courtesy ========================================================
+    # Before the first rep in front of an audience, apologize and ask for a nod if it bothers
+    # anyone. A nod from a player in the room ("Gravinal nods to you.") drops the task. NPCs nod
+    # at you too ("Aerenis nods to you and says...", "He nods to you slightly."), so only
+    # characters in GameObj.pcs count.
+    def self.audience_start
+      @audience_asked = false
+      @audience_objector = nil
+      DownstreamHook.remove('fizzarts_audience_nod')
+      DownstreamHook.add('fizzarts_audience_nod', proc { |xml|
+        if @audience_objector.nil? && xml.gsub(/<[^>]+>/, '') =~ /\b([A-Z][\w'-]+) nods to you\b/
+          name = Regexp.last_match(1)
+          @audience_objector = name if GameObj.pcs.to_a.any? { |pc| pc.noun == name }
+        end
+        xml
+      })
+      before_dying { DownstreamHook.remove('fizzarts_audience_nod') }
+    end
+
+    def self.audience_objected?
+      !@audience_objector.nil?
+    end
+
+    # Before each rep: false means someone nodded and the task should be dropped. Waits for an
+    # audience, and the first time one is there, asks and gives them 15 seconds to nod.
+    def self.audience_ready?
+      return false if Illusions.audience_objected?
+
+      sleep 5 until Guild.check_audience || Illusions.audience_objected?
+      unless @audience_asked || Illusions.audience_objected?
+        @audience_asked = true
+        fput "say Sorry for the noise, just practicing illusions"
+        fput "say Just nod at me if it's too bothersome"
+        Illusions.audience_pause(15)
+      end
+      !Illusions.audience_objected?
+    end
+
+    # Like sleep, but stops as soon as someone nods
+    def self.audience_pause(seconds)
+      end_time = Time.now + seconds
+      sleep 0.5 while Time.now < end_time && !Illusions.audience_objected?
+    end
+
+    def self.audience_done
+      DownstreamHook.remove('fizzarts_audience_nod')
+      return unless Illusions.audience_objected?
+
+      Util.msg("info", " #{@audience_objector} nodded, so dropping the audience task.")
+      Guild.remove_task('illusions')
+    end
+
     def self.do_illusions(place: nil)
       illusion = Illusions.latest_illusion
       # ;summond travels to a summoning chamber, so get the demon before going to the task's room
@@ -7529,12 +7585,15 @@ module BlackArts
       end
 
       Util.wait_rt
+      Illusions.audience_start if place == 'audience'
 
       if illusion =~ /shadow/
         Illusions.do_shadow(place: place)
+        Illusions.audience_done if place == 'audience'
         return
       elsif illusion =~ /demon/
         Illusions.do_demons(place: place)
+        Illusions.audience_done if place == 'audience'
         return
       end
 
@@ -7545,7 +7604,7 @@ module BlackArts
         destroy = nil
 
         if place == 'audience'
-          sleep 5 until Guild.check_audience
+          break unless Illusions.audience_ready?
         end
 
         fput illusion
@@ -7567,10 +7626,11 @@ module BlackArts
           fput destroy
           Util.wait_rt
 
-          sleep 35 if place == 'audience' && Guild.gld['illusions'][:reps].to_i.positive?
+          Illusions.audience_pause(35) if place == 'audience' && Guild.gld['illusions'][:reps].to_i.positive?
         end
         break if Guild.gld['illusions'][:reps].to_i.zero?
       end
+      Illusions.audience_done if place == 'audience'
     end
 
     def self.do_shadow(place: nil, item: nil)
@@ -7586,7 +7646,7 @@ module BlackArts
 
       loop do
         if place == 'audience'
-          sleep 5 until Guild.check_audience
+          break unless Illusions.audience_ready?
         end
 
         sleep 0.5 until checkmana > 3
@@ -7599,7 +7659,7 @@ module BlackArts
           fput 'illusion shadow shadow'
           Util.wait_rt
 
-          sleep 35 if place == 'audience' && Guild.gld['illusions'][:reps].to_i.positive?
+          Illusions.audience_pause(35) if place == 'audience' && Guild.gld['illusions'][:reps].to_i.positive?
         end
         break if Guild.gld['illusions'][:reps].to_i.zero?
       end
@@ -7821,7 +7881,7 @@ module BlackArts
         end
 
         if place == 'audience'
-          sleep 5 until Guild.check_audience
+          break unless Illusions.audience_ready?
         end
 
         sleep 0.5 until checkmana > 5
@@ -7836,7 +7896,7 @@ module BlackArts
           fput "illusion demon ##{BlackArts.data.demon_id} dispel"
           Util.wait_rt
 
-          sleep 35 if place == 'audience' && (Guild.gld['illusions'][:reps].to_i.positive? || lines.any?(/is already illusioned/))
+          Illusions.audience_pause(35) if place == 'audience' && (Guild.gld['illusions'][:reps].to_i.positive? || lines.any?(/is already illusioned/))
         else
           failures += 1
           if failures >= 3
