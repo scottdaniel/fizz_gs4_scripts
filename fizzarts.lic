@@ -4716,9 +4716,10 @@ module BlackArts
       original_once = BlackArts.data.settings[:once_and_done]
 
       finish = proc { |server_string|
-        if server_string =~ /^(?:<c>)?;bla(.*)finish(.*)/i
+        # ;fizzarts finish (or an abbreviation like ;fizza finish); upstream matched ;bla...finish
+        if server_string =~ /^(?:<c>)?;fizza\w*\s+finish\b/i
           BlackArts.data.settings[:once_and_done] = true
-          Util.msg("info", " BlackArts will exit after the next task is completed")
+          Util.msg("info", " fizzarts will exit after the next task is completed")
         elsif server_string =~ /Please rephrase that command/
           nil
         else
