@@ -11,6 +11,10 @@
     ;demonmana send    send it all the mana it can hold   (mdemon_refresh does this while you rest)
     ;demonmana get     ask it for all of it back          (attack-ultima / sac4mana, once a hunt, when low)
 
+  The first send to a demon shows how much it accepts (its capacity). If that's under
+  MIN_STORE (20) the demon is skipped from then on -- no more sends, and no get --
+  until it's replaced by a new one, which is measured afresh.
+
   Silver can be held too; not done here.
 =end
 
@@ -18,22 +22,42 @@
 # arashan, imp, darkling/shadowling (shien), and an igaesha is a haze/rouk/brume/
 # haar/murk/nyle/mist/smoke/vapor/fog.
 DEMON_NOUN = /\A(?:verlok|abyran|grantris|grik|aishan|arashan|darkling|shadowling|imp\z|haze\z|rouk\z|brume\z|haar\z|murk\z|nyle\z|mist\z|smoke\z|vapor\z|fog\z)/i
-SEND_OK  = /points were succes+fully transferred to your .+? while only draining (\d+) mana points/i
+SEND_OK  = /(\d+) points were succes+fully transferred to your .+? while only draining (\d+) mana points/i
 GOT_MANA = /You gain (\d+) mana points/i
 GONE     = /could not find|what were you referring/i
+
+# A demon that holds less than this isn't worth the ~30 mana a send costs (10.19: a
+# silver verlok'asha held 15 and gave back 7; an igaesha held 28 and gave back 26).
+MIN_STORE = 20
 
 def demon
   GameObj.npcs.find { |n| n && (n.noun.to_s =~ DEMON_NOUN || n.name.to_s =~ /minor demon/i) }
 end
 
+# What the first send to the current demon showed: { id:, points: } -- the points it
+# accepted are its capacity. A new demon (new id) gets one send to find out.
+def low_capacity?(d)
+  c = $demonmana_cap
+  !!(d && c && c[:id] == d.id && c[:points] < MIN_STORE)
+end
+
+def skip_note(d)
+  c = $demonmana_cap
+  echo "your #{d.noun} holds only #{c[:points]} mana (under #{MIN_STORE}) -- not worth it, skipping." unless c[:said]
+  c[:said] = true
+end
+
 # `send 50 <noun>` needs the demon's noun as the room shows it (it can be disguised, e.g. a
 # "hawk"); fall back to the mdemon keyword when it isn't in the room list.
 def send_mana
+  d = demon
+  return skip_note(d) if low_capacity?(d)
   waitrt?
-  [demon&.noun, "mdemon"].compact.uniq.each do |who|
+  [d&.noun, "mdemon"].compact.uniq.each do |who|
     r = dothistimeout("send 50 #{who}", 4, Regexp.union(SEND_OK, GONE, /cannot|can't|unable|already|too much/i)).to_s
     if r =~ SEND_OK
-      echo "demon holds it now (#{$1} mana drained)."
+      $demonmana_cap = { id: d&.id, points: $1.to_i }
+      echo "demon holds #{$1} mana now (#{$2} drained)."
       return
     end
     next if r =~ GONE
@@ -44,6 +68,8 @@ def send_mana
 end
 
 def get_mana
+  d = demon
+  return skip_note(d) if low_capacity?(d)
   waitrt?
   r = dothistimeout("tell mdemon send 50", 4, Regexp.union(GOT_MANA, GONE, /has no mana|any mana|nothing to send/i)).to_s
   if r =~ GOT_MANA
