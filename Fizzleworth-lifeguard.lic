@@ -10,6 +10,16 @@
 #      teleport out). Return is INTERRUPTED if you move ("The power from your
 #      symbol dissipates"), so bigshot, go2 and the attack scripts are paused
 #      first, and bigshot is told to rest afterward.
+#   0. (checked first) STUNNED or WEBBED and health <= SHIFT pct (default 50) and
+#      a shadow essence in hand -> SACRIFICE SHIFT, the chalkless Planar Shift (740;
+#      news 12/07/2025: usable while stunned/webbed/immobile/rooted, needs 40
+#      Demonology ranks, 2 uses a day at 50). NEVER TRIED as of 2026-10-19 -- the
+#      Planar Shift page says the chalkless form goes to the last place you shifted
+#      from or SENSE PATTERNed (without a rune book in hand), so do a SENSE PATTERN in
+#      town centre first. Every reply is echoed so the first real use shows in the log.
+#      SHIFT_GAP keeps a miss (no essence / on cooldown / out of uses) from being
+#      hammered; Return and Restoration still back it up. Rooted/immobile aren't
+#      detected (Lich only exposes stunned and webbed).
 #
 # Written after 10.05: stunned for 6 rounds, then 20s + 10s roundtime in a crowd
 # of incubi/inciters; the animate (and luck) kept Fizzleworth alive. There is NO
@@ -20,6 +30,8 @@
 #   ;vars set lifeguard=off              turn the whole thing off (default on)
 #   ;vars set lifeguard_restore_pct=50
 #   ;vars set lifeguard_return_pct=25
+#   ;vars set lifeguard_shift=off        SHIFT only (default on)
+#   ;vars set lifeguard_shift_pct=50
 #
 # Started from Fizzleworth-prep.lic. Stop with ;kill Fizzleworth-lifeguard.
 
@@ -30,16 +42,23 @@ module Lifeguard
   RESTORE_GAP  = 6     # secs between Restoration attempts while health stays low
   RETURN_GAP   = 30    # secs between Return attempts
   RETURN_WAIT  = 12    # secs to wait for the teleport to take (room id changes)
+  SHIFT_GAP    = 120   # secs between SHIFT attempts (own cooldown, few uses a day)
+  SHIFT_WAIT   = 8     # secs to wait for SHIFT to move us (room id changes)
+  SHIFT_REPLY  = /bleed through the veil|gateways? reveal|cannot|can't|don't|do not|not enough|no shadow|cooldown|must wait|wait \d+|unable|already|Roundtime/i
   PAUSE_SCRIPTS = %w[bigshot go2 Fizzleworth-attack-ultima Fizzleworth-attack-cat
                      Fizzleworth-attack-base sac4mana wander fizzsac] unless defined?(PAUSE_SCRIPTS)
 
   VOLN = (defined?(Lich::Gemstone::Societies::OrderOfVoln) ? Lich::Gemstone::Societies::OrderOfVoln : nil) unless defined?(VOLN)
 
-  def on?
-    v = UserVars.lifeguard
+  def flag(name)
+    v = UserVars.send(name)
     return true if v.nil?
     return v if v == true || v == false
     v.to_s !~ /\A\s*(?:0|false|off|no)\s*\z/i
+  end
+
+  def on?
+    flag(:lifeguard)
   end
 
   def pct(name, default)
@@ -111,16 +130,55 @@ module Lifeguard
     end
   end
 
+  # Stunned or webbed: the cases Return can't be counted on for and SHIFT is meant for.
+  def stuck?
+    checkstunned || checkwebbed
+  rescue StandardError
+    false
+  end
+
+  def essence
+    Lich::Resources.shadow_essence.to_i
+  rescue StandardError
+    0
+  end
+
+  # SACRIFICE SHIFT (see the header). Frozen like Return so nothing walks us out of it.
+  def emergency_shift
+    echo "[lifeguard] !! health #{hp_pct}%, #{checkwebbed ? 'webbed' : 'stunned'} -- SACRIFICE SHIFT (essence #{essence})."
+    $bigshot_should_rest = true
+    $rest_reason = "lifeguard (shift)"
+    mine = freeze
+    start = (Room.current.id rescue nil)
+    begin
+      reply = dothistimeout("sacrifice shift", 6, SHIFT_REPLY).to_s
+      echo "[lifeguard] shift reply: #{reply.strip[0, 180]}"
+      deadline = Time.now + SHIFT_WAIT
+      until Time.now > deadline
+        return echo("[lifeguard] shifted out (now room #{Room.current.id}).") if (Room.current.id rescue nil) != start
+        return if checkdead
+        sleep 0.3
+      end
+      echo "[lifeguard] SHIFT didn't move us -- check the log for what the game said."
+    ensure
+      thaw(mine)
+    end
+  end
+
   def run
-    echo "[lifeguard] watching health (restore <= #{pct(:lifeguard_restore_pct, 50)}%, return <= #{pct(:lifeguard_return_pct, 25)}%)."
+    echo "[lifeguard] watching health (shift <= #{pct(:lifeguard_shift_pct, 50)}% when stunned/webbed, restore <= #{pct(:lifeguard_restore_pct, 50)}%, return <= #{pct(:lifeguard_return_pct, 25)}%)."
     last_restore = 0.0
     last_return  = 0.0
+    last_shift   = 0.0
     loop do
       Script.current.kill if checkdead
       if on? && hostiles?
         hp = hp_pct
         now = Time.now.to_f
-        if hp <= pct(:lifeguard_return_pct, 25) && now - last_return > RETURN_GAP
+        if flag(:lifeguard_shift) && stuck? && hp <= pct(:lifeguard_shift_pct, 50) && essence >= 1 && now - last_shift > SHIFT_GAP
+          last_shift = now
+          emergency_shift
+        elsif hp <= pct(:lifeguard_return_pct, 25) && now - last_return > RETURN_GAP
           last_return = now
           emergency_return
         elsif hp <= pct(:lifeguard_restore_pct, 50) && now - last_restore > RESTORE_GAP
