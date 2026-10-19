@@ -17,7 +17,10 @@
   If no vakra runestone is found in your kit, the script needs fizzfuse to make a
   new one -- which will pull you away from the hunt (bank + alchemist trip). How
   that's handled is controlled by AUTO_FUSE_RUNESTONE below:
-    true  - automatically runs fizzfuse to fuse a new vakra runestone.
+    true  - automatically runs fizzfuse to fuse a new vakra runestone, but with
+            FUSE_ONLY_WHEN_RESTING_IN_TOWN (default) only once you're sitting in
+            town with nothing hostile around; until then it just waits. bigshot
+            is paused while fizzfuse walks.
     false - pauses and waits for you to type "nod" before fusing, so it never
             interrupts a hunt without your say-so.
 
@@ -35,7 +38,11 @@ module MdemonRefresh
   REFRESH_THRESHOLD_MINUTES = 10
   CHECK_INTERVAL_SECONDS  = 15
   SEND_MANA_AT            = 40   # resting with at least this much mana -> fill the demon (;demonmana)
-  AUTO_FUSE_RUNESTONE     = false
+  # No vakra runestone left: true = fuse a new one with fizzfuse (a bank + alchemist trip,
+  # then it walks back). With FUSE_ONLY_WHEN_RESTING_IN_TOWN it never starts that
+  # mid-hunt -- it waits until you're resting in town. false = ask you to NOD first.
+  AUTO_FUSE_RUNESTONE     = true
+  FUSE_ONLY_WHEN_RESTING_IN_TOWN = true
 
   # === helpers ===================================================================
   def self.rummage_and_rub
@@ -80,6 +87,30 @@ module MdemonRefresh
     Script.run("demonmana", "send")
   end
 
+  # No built-in "in town": compare this room's location with the one bigshot rests in
+  # (UserVars.op["resting_room_id"]); false when it isn't configured.
+  def self.in_town?
+    id = (UserVars.op.is_a?(Hash) ? UserVars.op["resting_room_id"].to_s.strip : "")
+    return false if id.empty?
+    resting = Room.list[id.to_i]
+    !!(resting && Room.current.location == resting.location)
+  rescue StandardError
+    false
+  end
+
+  def self.safe_to_fuse?
+    return true unless FUSE_ONLY_WHEN_RESTING_IN_TOWN
+    in_town? && checksitting && GameObj.targets.none? { |t| t && t.status.to_s !~ /dead|gone/ }
+  end
+
+  # fizzfuse walks around town; bigshot's rest loop shouldn't also decide to walk.
+  def self.with_bigshot_paused
+    paused = Script.running?("bigshot") && !Script.paused?("bigshot") && Script.pause("bigshot")
+    yield
+  ensure
+    Script.unpause("bigshot") if paused
+  end
+
   def self.wait_for_nod
     echo "Type 'nod' when you're ready to let fizzfuse fuse a new vakra runestone."
     loop do
@@ -93,13 +124,14 @@ module MdemonRefresh
     return :ok if status == :ok
 
     if AUTO_FUSE_RUNESTONE
-      echo "No vakra runestone in kit -- auto-fusing a new one (this will pull you away from the hunt)."
+      return :wait unless safe_to_fuse?
+      echo "No vakra runestone in kit -- fusing a new one (resting in town)."
     else
       echo "No vakra runestone in kit -- fusing one via fizzfuse will pull you away from the hunt."
       wait_for_nod
     end
 
-    Script.run("fizzfuse", "rune vakra")
+    with_bigshot_paused { Script.run("fizzfuse", "rune vakra") }
     rummage_and_rub
   end
 
@@ -112,17 +144,26 @@ module MdemonRefresh
     loop do
       if Effects::Spells.active?(MINOR_SUMMONING_SPELL)
         remaining = Effects::Spells.time_left(MINOR_SUMMONING_SPELL)
+        @waiting = false if remaining >= REFRESH_THRESHOLD_MINUTES
 
-        if remaining < REFRESH_THRESHOLD_MINUTES
+        # waiting for town: don't rummage the kit every 15s mid-hunt, just look again
+        # once it's safe to fuse
+        if remaining < REFRESH_THRESHOLD_MINUTES && (!@waiting || safe_to_fuse?)
           echo "Minor Summoning has #{remaining.round(1)} minutes left, refreshing demon."
           result = attempt_refresh
+          was_waiting = @waiting
+          @waiting = (result == :wait)
 
           if result == :ok
             echo "Demon refreshed."
+          elsif result == :wait
+            echo "No vakra runestone -- will fuse one when you're resting in town." unless was_waiting
           else
             echo "Could not refresh demon -- still no vakra runestone available."
           end
         end
+      else
+        @waiting = false
       end
 
       store_mana_while_resting
