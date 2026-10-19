@@ -18,7 +18,19 @@ DANGER_PCT      = 60 unless defined?(DANGER_PCT)
 DANGER_INTERVAL = 2  unless defined?(DANGER_INTERVAL)
 USE_GAME_CMD = false unless defined?(USE_GAME_CMD)
 
-echo "[manalog] logging mana + health every #{INTERVAL}s (every #{DANGER_INTERVAL}s while health < #{DANGER_PCT}%)."
+# The line goes to the familiar window (the tab beside speech in Saga), not the
+# main window, so it doesn't scroll the screen. Saga only writes the "story" stream
+# to the text log, so add "familiar" to its logged streams to keep these lines in
+# the log. ;vars set manalog_main=on puts them in the main window again.
+def log_line(text)
+  if UserVars.manalog_main.to_s =~ /\A\s*(?:1|true|on|yes)\s*\z/i
+    echo text
+  else
+    _respond "<pushStream id=\"familiar\" ifClosedStyle=\"watching\"/>#{text}\r\n<popStream/>\r\n"
+  end
+end
+
+echo "[manalog] logging mana + health every #{INTERVAL}s (every #{DANGER_INTERVAL}s while health < #{DANGER_PCT}%) to the familiar window."
 loop do
   Script.current.kill if checkdead
   mx  = (maxmana rescue 0).to_i
@@ -27,7 +39,7 @@ loop do
   hmx  = (maxhealth rescue 0).to_i
   hcur = (checkhealth rescue 0).to_i
   hpct = (Char.percent_health rescue (hmx.positive? ? hcur * 100 / hmx : 100))
-  echo "[manalog] mana #{cur}/#{mx} (#{pct}%) | health #{hcur}/#{hmx} (#{hpct}%)"
+  log_line "[manalog] mana #{cur}/#{mx} (#{pct}%) | health #{hcur}/#{hmx} (#{hpct}%)"
   fput "mana" if USE_GAME_CMD
   sleep(hpct < DANGER_PCT ? DANGER_INTERVAL : INTERVAL)
 end
