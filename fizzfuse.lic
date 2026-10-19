@@ -4,7 +4,7 @@
         game: gemstone
         tags: scroll infusion, infuse, unlock, runestone, scroll
     requires: Lich > 5.4.0
-     version: 1.4
+     version: 1.5
         note: Written with assistance from Claude (Anthropic).
 
 
@@ -116,6 +116,10 @@ Infuse!
           (e.g. after a shattered runestone sent us off to make a new one). It now
           relinks and retries once before concluding the scroll is locked. Also stopped
           sending "get #" with a blank id when restoring hands after making a rune.
+        - Fixed a shattered ag'loenar runestone going undetected: the game sometimes puts
+          the shatter and "The scroll glows dimly for a moment." in one line, and the
+          glow check (added in 1.4) matched first. Shatter is now checked first, and
+          "lose your focus" (no runestone in hand) also fetches a new one.
 
 =end
 
@@ -391,10 +395,20 @@ def infuse
 		# for - dothistimeout only returns a line once it matches this regex,
 		# so a phrase missing here (like the rune shattering) just times out
 		# to nil instead of ever reaching its handling branch.
-		infuse_line = dothistimeout "infuse my #{GameObj.right_hand}", 5, /glows dimly for a moment|mana dissipates|You are not prepared to infuse that|cracks slightly and then shatters|You strain to harness/
+		infuse_line = dothistimeout "infuse my #{GameObj.right_hand}", 5, /glows dimly for a moment|mana dissipates|You are not prepared to infuse that|cracks slightly and then shatters|You strain to harness|lose your focus/
 		waitcastrt?
 
-		if infuse_line.include? 'glows dimly for a moment'
+		# The shatter check has to come first: the game can report the shatter and
+		# "The scroll glows dimly for a moment." in the same line, and the glow
+		# check would swallow it, leaving us infusing with a rune that's gone.
+		if infuse_line.include? 'cracks slightly and then shatters'
+			find_rune("ag'loenar")
+		elsif infuse_line.include? 'lose your focus'
+			# No runestone in hand to channel through. Only fetch one if the left hand
+			# really isn't holding a runestone (find_rune would stall on a full hand).
+			left = GameObj.left_hand
+			find_rune("ag'loenar") unless left && left.noun =~ /runestone/
+		elsif infuse_line.include? 'glows dimly for a moment'
 			relinked = false
 		elsif infuse_line.include? 'grows cold'
 			echo "Scroll locked!!"
@@ -414,8 +428,6 @@ def infuse
 		elsif infuse_line.include? 'mana dissipates'
 			echo "Scroll fully infused!"
 			break
-		elsif infuse_line.include? 'cracks slightly and then shatters'
-			find_rune("ag'loenar")
 		elsif infuse_line.include? 'You strain to harness'
 			if infuse_safe?
 				echo "You appear to be struggling with infusing this scroll, if you want to continue nod within the next 10 seconds"
