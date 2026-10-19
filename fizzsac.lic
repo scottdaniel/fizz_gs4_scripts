@@ -24,12 +24,18 @@
 
   Best run at the START of a hunt, rested, with the animate already up.
 
-  Sacrifice mechanics (gswiki): the creature's health must be down ~2/3+ AND
-  it must be incapacitated. Only the "enticingly frail" appraisal is reliably
-  sacrificeable -- "susceptible to manipulation" looks ready but the bond
-  usually bounces ("you are thrown back in a small blast"). Pain (711) does
-  ~90-105 a cast and Den creatures have ~400-600 HP, so this re-appraises
-  after every Pain and stops the instant the target reads frail.
+  Sacrifice mechanics since the 12/07/2025 rework: health lost is the main
+  factor, a rooted/stunned/webbed target adds a bonus, your own Tenebrous Tether
+  adds +15 on top, Necromancy/Demonology ranks add more, the roundtime is 3s,
+  and at 30+ Necromancy ranks an attempt costs no spirit. Pain (711) takes
+  roughly a third of a creature's health per cast (~140 here), so the old
+  "Pain until it reads frail" skipped straight past the window and killed things
+  (10.18 21:57: a vereri died to its third Pain with no sacrifice tried). Now,
+  per creature: Pain up to PAINS times, stopping as soon as the bond reads
+  softer than "stalwart and formidable" (ASSESS shows it; "firmly bound" is the
+  first step down, 10.19: after one 84-point Pain, and a second Pain plus a holy
+  flare killed that vision), then Tenebrous Tether, then up to TRIES sacrifice
+  attempts, and only if it's still standing a last Pain before the next round.
 
     ;fizzsac           harvest essence from the room (the normal use)
     ;fizzsac 719       if essence is already 5/5, incant 719 at the target
@@ -45,16 +51,23 @@ DEBUG = true
 
 IGNORE_NPCS = /verlok|animated/i   # minor demon / Animate Dead buddy -- never a sacrifice target
 ESSENCE_MAX = 5
-MAX_ROUNDS  = 14                   # total Pain/sacrifice actions per room before moving on
+MAX_ROUNDS  = 8                    # creatures worked per room before moving on
+PAINS       = 2                    # Pains before the sacrifice attempts (the 3rd would likely kill it)
+TRIES       = 3                    # sacrifice attempts per creature (3s RT, no spirit loss at 30+ necro)
 MAX_ROOMS   = 8                    # rooms to wander through before giving up
 PAUSE_WHILE = %w[bigshot go2 sac4mana]
 
+# Bond ladder from the logs, full health down: "stalwart and formidable" (10.19: a
+# vision at full health) > "firmly bound" (same vision after one 84-point Pain) >
+# "susceptible to manipulation" > "enticingly frail". Anything softer than
+# stalwart is worth a (cheap) sacrifice attempt now.
 FRAIL_RE = /enticingly frail|ready to be severed|hovering (?:on|at) the brink|near death/i
-MID_RE   = /susceptible to manipulation/i
+MID_RE   = /susceptible to manipulation|firmly bound/i
 SAC_OK   = /You violently shatter the bond on the soul|forming shadow essence/i
-SAC_FAIL = /impossible to forge a bond|unable to complete the link|thrown back in a small blast/i
+SAC_FAIL = /struggle to overpower|effort has no effect|impossible to forge a bond|unable to complete the link|thrown back in a small blast/i
+SAC_FULL = /overwhelm you with shadow essence/i
 
-def debug(msg)
+def fizzsac_step(msg)
   echo "[fizzsac] #{msg}" if DEBUG
 end
 
@@ -70,9 +83,19 @@ rescue StandardError
   false
 end
 
+# The text with the bond line in it. ASSESS prints it (checked 10.19); APPRAISE did
+# too on 9/14, so it's the backup if ASSESS ever comes back without one.
+def bond_text(id)
+  %w[assess appraise].each do |cmd|
+    s = (Lich::Util.issue_command("#{cmd} #{id}", /^The .+? is \w+ in size/,
+          include_end: false, quiet: true, silent: true) rescue []).join(" ")
+    return s if s =~ /bond between/i
+  end
+  ""
+end
+
 def readiness(id)
-  s = (Lich::Util.issue_command("appraise #{id}", /^The .+? is \w+ in size/,
-        include_end: false, quiet: true, silent: true) rescue []).join(" ")
+  s = bond_text(id)
   return :frail if s =~ FRAIL_RE
   return :mid   if s =~ MID_RE
   :tough
@@ -99,11 +122,17 @@ end
 def sacrifice(id)
   waitrt?
   waitcastrt?
-  r = dothistimeout("sacrifice #{id}", 5, Regexp.union(SAC_OK, SAC_FAIL, /Roundtime: \d+/i)).to_s
+  r = dothistimeout("sacrifice #{id}", 5, Regexp.union(SAC_OK, SAC_FAIL, SAC_FULL, /Roundtime: \d+/i)).to_s
   waitrt?
   return :ok   if r =~ SAC_OK
+  return :full if r =~ SAC_FULL
   return :fail if r =~ SAC_FAIL
   :unknown
+end
+
+def alive?(id)
+  gid = id.to_s.delete_prefix("#")
+  GameObj.npcs.any? { |n| n.id.to_s == gid && n.status.to_s !~ /dead|gone/ }
 end
 
 def incant(spell_id, id)
@@ -172,8 +201,33 @@ def next_target(can_pain)
   [nil, nil]
 end
 
-# Work one room: walk creatures to frail and sacrifice them. @return :full /
-# :oom / :dry (room's out of sacrificeable creatures).
+# Work one creature (see the header): Pain only while the bond still reads "stalwart"
+# (at most PAINS), then Tether and try. @return :ok (essence gained) / :full /
+# :oom / :gone (it died or left before we got it) / :tried (still standing,
+# softened by one more Pain for the next round).
+def work_target(id, state)
+  pains = 0
+  while state == :tough && pains < PAINS
+    return :oom if pain(id) == :oom
+    pains += 1
+    return :gone unless alive?(id)
+    state = readiness(id)
+  end
+  tether(id)
+  TRIES.times do
+    return :gone unless alive?(id)
+    case sacrifice(id)
+    when :ok   then return :ok
+    when :full then return :full
+    end
+  end
+  return :gone unless alive?(id)
+  return :oom if pain(id) == :oom
+  :tried
+end
+
+# Work one room: take each creature through work_target. @return :full / :oom /
+# :dry (room's out of sacrificeable creatures).
 def harvest_room(explicit = nil)
   rounds = 0
   while rounds < MAX_ROUNDS
@@ -186,20 +240,13 @@ def harvest_room(explicit = nil)
       return can_pain ? :dry : :oom
     end
 
-    gid = id.delete_prefix("#")
-    next unless GameObj.npcs.any? { |n| n.id.to_s == gid && n.status.to_s !~ /dead|gone/ }
+    next unless alive?(id)
 
-    case state
-    when :tough, :mid
-      debug("#{id} #{state} -- Pain.")
-      return :oom if pain(id) == :oom
-    when :frail
-      debug("#{id} frail -- tether + sacrifice.")
-      tether(id)
-      case sacrifice(id)
-      when :ok   then echo "[fizzsac] harvested shadow essence (#{essence}/#{ESSENCE_MAX})."
-      when :fail then (return :oom if pain(id) == :oom)
-      end
+    fizzsac_step("#{id} #{state} -- working it.")
+    case work_target(id, state)
+    when :ok   then echo "[fizzsac] harvested shadow essence (#{essence}/#{ESSENCE_MAX})."
+    when :full then return :full
+    when :oom  then return :oom
     end
   end
   :dry
@@ -216,7 +263,7 @@ spell_id = args.find { |a| a =~ /^\d+$/ }
 if explicit
   et = GameObj.npcs.find { |n| n.id.to_s == explicit.delete_prefix("#") }
   if et && et.name.to_s =~ IGNORE_NPCS
-    debug("refusing #{explicit} -- that's your own #{et.name}.")
+    fizzsac_step("refusing #{explicit} -- that's your own #{et.name}.")
     exit
   end
 end
@@ -225,7 +272,7 @@ end
 if essence >= ESSENCE_MAX && spell_id
   id = explicit || (GameObj.target && "##{GameObj.target.id}") ||
        (sac_targets.first && "##{sac_targets.first.id}")
-  debug("essence #{essence}/#{ESSENCE_MAX} -- incanting #{spell_id} at #{id || 'nothing'}.")
+  fizzsac_step("essence #{essence}/#{ESSENCE_MAX} -- incanting #{spell_id} at #{id || 'nothing'}.")
   incant(spell_id, id) if id
   exit
 end
@@ -267,7 +314,7 @@ begin
     end
     # room's dry -- move on
     break if room == MAX_ROOMS - 1
-    debug("room #{room + 1} dry (#{essence}/#{ESSENCE_MAX}) -- wandering.")
+    fizzsac_step("room #{room + 1} dry (#{essence}/#{ESSENCE_MAX}) -- wandering.")
     Script.run("wander")
   end
   echo "[fizzsac] done -- shadow essence #{essence}/#{ESSENCE_MAX}."

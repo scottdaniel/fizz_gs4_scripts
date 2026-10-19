@@ -98,7 +98,7 @@ ESSENCE_LOW      = 4 unless defined?(ESSENCE_LOW)
 ESSENCE_RUN_BELOW = 3   unless defined?(ESSENCE_RUN_BELOW)
 ESSENCE_RUN_MANA  = 110 unless defined?(ESSENCE_RUN_MANA)
 FRAIL_RE = /enticingly frail|ready to be severed|hovering (?:on|at) the brink|near death/i unless defined?(FRAIL_RE)
-SAC_DONE = /forming shadow essence|thrown back in a small blast|unable to complete the link|Roundtime: \d+/i unless defined?(SAC_DONE)
+SAC_DONE = /forming shadow essence|struggle to overpower|effort has no effect|thrown back in a small blast|unable to complete the link|Roundtime: \d+/i
 
 # Top mana off (inline `sacrifice mana`, ~89 for 1 shadow essence) at the start
 # of any pass it's below this. Like -cat, ultima keeps the attack script busy
