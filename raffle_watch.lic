@@ -1,0 +1,202 @@
+=begin
+  raffle_watch.lic
+  Checks RAFFLE LIST every half hour and posts to your Discord webhook (the one
+  `;exp_check setup` saved) when a raffle you'd want shows up -- e.g. an "uncommon
+  minor demon rune". Every raffle is looked at once (RAFFLE SHOW <#>, quietly) and
+  remembered in <lich data dir>/raffle_watch.yaml, so you hear about each one only
+  once, even if it runs on several characters. Treasure troves in the list are
+  matched on their prize name only.
+
+  A raffle is interesting when
+    * its prize or details match the prize regex (default: minor demon / demon rune /
+      summoning rune / shadowling / shien), or
+    * its RAFFLE SHOW text mentions "sorcerer" (sorcerer-only prizes say so),
+  and you can actually enter it: raffles that say "You do not meet the restrictions"
+  (the Ebon Gate service-pass ones, other professions) are skipped unless asked for.
+
+    ;raffle_watch           keep checking (run it on ONE character; ;autostart add raffle_watch)
+    ;raffle_watch once      one pass now, then stop
+
+  Knobs (UserVars, read live):
+    ;vars set raffle_watch_regex=minor demon|demon rune|shadowling    prize regex (case-insensitive)
+    ;vars set raffle_watch_sorcerer=off     don't match on "sorcerer" in the details (default on)
+    ;vars set raffle_watch_locked=on        also report raffles you can't enter (default off)
+    ;vars set raffle_watch_minutes=30      minutes between checks
+=end
+
+require 'json'
+require 'net/http'
+require 'uri'
+require 'yaml'
+
+module RaffleWatch
+  SEEN_FILE   = File.join(DATA_DIR, 'raffle_watch.yaml')
+  WEBHOOK_CFG = File.join(DATA_DIR, 'exp_check.yaml')
+  PRIZE_RE    = /minor demon|demon rune|summoning rune|shadowling|\bshien\b/i
+  # RAFFLE SHOW opens with "<a ...>Some raffle tickets</a> for raffle #N can be found on ..."
+  # (markup splits "raffle tickets" from "for raffle", so match the plain text after it) and
+  # says "This raffle is for" -- or "was for" once it has drawn. 10.19: matching the unmarked
+  # text missed that first line, so two lines leaked onto the screen.
+  SHOW_START  = /for raffle #\d+|This raffle (?:is|was) for/
+
+  Entry = Struct.new(:kind, :id, :prize, :cost, :where, :draws, :online, keyword_init: true)
+
+  # ---- knobs ----
+
+  def self.flag(name, default)
+    v = UserVars.send(name)
+    return default if v.nil?
+    return v if v == true || v == false
+    v.to_s !~ /\A\s*(?:0|false|off|no)\s*\z/i
+  end
+
+  def self.prize_re
+    v = UserVars.raffle_watch_regex.to_s.strip
+    v.empty? ? PRIZE_RE : Regexp.new(v, Regexp::IGNORECASE)
+  rescue RegexpError
+    PRIZE_RE
+  end
+
+  def self.minutes
+    v = UserVars.raffle_watch_minutes.to_s
+    v =~ /\A\s*\d+\s*\z/ ? [v.to_i, 5].max : 30
+  end
+
+  # ---- reading the game ----
+
+  def self.clean(lines)
+    lines.join("\n").gsub(/<[^>]*>/, '').gsub(/[\x00-\x08\x0b-\x1f]/, '')
+  end
+
+  def self.read_list
+    clean(Lich::Util.quiet_command_xml('raffle list', /raffles? (?:is|are) currently active|no (?:active )?raffles/i, /<prompt/, true, 10, true))
+  end
+
+  def self.read_show(id)
+    clean(Lich::Util.quiet_command_xml("raffle show #{id}", SHOW_START, /<prompt/, true, 8, true))
+  end
+
+  # => [Entry, ...] from RAFFLE LIST text (raffles, then troves)
+  def self.parse(text)
+    out = []
+    cur = nil
+    text.each_line do |raw|
+      l = raw.strip
+      if l =~ /\ARaffle #(\d+) for "(.*)", Cost: (.+)\z/
+        cur = Entry.new(kind: :raffle, id: $1, prize: $2, cost: $3)
+        out << cur
+      elsif l =~ /\ATreasure Trove for "(.*)", Cost: (.+)\z/
+        cur = Entry.new(kind: :trove, prize: $1, cost: $2)
+        out << cur
+      elsif cur && l =~ /\ALocation: (.+)\z/
+        cur.where = $1
+        cur.id ||= $1[/\((\d+)\)\z/, 1]
+      elsif cur && l =~ /\ADraws at: (.+?)(?: \(in .*\))?\z/
+        cur.draws = $1
+      elsif cur && l =~ /online in order to win/i
+        cur.online = l =~ /must be online/i ? 'must be online' : 'no need to be online'
+      end
+    end
+    out
+  end
+
+  # ---- remembering ----
+
+  def self.key(e)
+    "#{e.kind}:#{e.id}|#{e.draws}"
+  end
+
+  def self.seen
+    h = (YAML.safe_load(File.read(SEEN_FILE)) rescue nil)
+    h.is_a?(Hash) && h['seen'].is_a?(Array) ? h['seen'] : []
+  end
+
+  def self.remember(keys)
+    File.write(SEEN_FILE, YAML.dump('seen' => keys))
+  end
+
+  # ---- deciding ----
+
+  # => [why-it-matches strings] (empty = not interesting) and the locked reason, if any
+  def self.judge(entry, text)
+    return [[], nil] if text =~ /This raffle was for|It drew \d+ winners?/i   # already drawn
+    why = []
+    why << 'prize matches' if "#{entry.prize}\n#{text}" =~ prize_re
+    why << 'sorcerer-only' if flag(:raffle_watch_sorcerer, true) && text =~ /sorcerer/i
+    [why, text[/You do not meet the restrictions for this raffle: (.+)/, 1]]
+  end
+
+  def self.line(e, why, locked)
+    s = %(Raffle #{e.kind == :raffle ? "##{e.id}" : "trove (room #{e.id})"} for "#{e.prize}" -- #{e.cost}, draws #{e.draws}#{e.online ? ", #{e.online}" : ''} -- #{e.where})
+    s << " -- #{why.join(' + ')}" unless why.empty?
+    s << " -- LOCKED: #{locked}" if locked
+    s << (e.kind == :raffle ? " (raffle show #{e.id})" : " (raffle trove #{e.id})")
+    s[0, 1800]
+  end
+
+  # ---- Discord (same webhook as exp_check) ----
+
+  def self.post(text)
+    url = (YAML.safe_load(File.read(WEBHOOK_CFG))['webhook_url'].to_s.strip rescue '')
+    return echo('no webhook set (;exp_check setup) -- screen only.') if url.empty?
+    uri = URI(url)
+    3.times do |i|
+      res = Net::HTTP.start(uri.host, uri.port, use_ssl: true, open_timeout: 5, read_timeout: 5) do |http|
+        http.post(uri.request_uri, { content: "[#{Char.name}] #{text}" }.to_json, 'Content-Type' => 'application/json')
+      end
+      return if res.is_a?(Net::HTTPSuccess)
+      echo "webhook failed (HTTP #{res.code})"
+      sleep 5 if i < 2
+    end
+  rescue StandardError => e
+    echo "webhook error: #{e.class}: #{e.message}"
+  end
+
+  # ---- one pass ----
+
+  def self.check
+    text = read_list
+    entries = parse(text)
+    if entries.empty?
+      echo 'raffle list came back empty -- will try again next time.'
+      return
+    end
+    old = seen
+    unread = []
+    fresh = reported = 0
+    entries.each do |e|
+      next if old.include?(key(e))
+      fresh += 1
+      body = e.kind == :raffle ? read_show(e.id) : ''
+      if e.kind == :raffle && body.strip.empty?
+        unread << key(e)   # RAFFLE SHOW timed out -- look again next pass instead of forgetting it
+        next
+      end
+      why, locked = judge(e, body)
+      next if why.empty?
+      next if locked && !flag(:raffle_watch_locked, false)
+      msg = line(e, why, locked)
+      reported += 1
+      echo msg
+      post(msg)
+    end
+    remember(entries.map { |e| key(e) } - unread)
+    echo "checked #{entries.size} listings: #{fresh} new, #{reported} reported#{unread.empty? ? '' : ", #{unread.size} to retry"}."
+
+  end
+
+  def self.run(mode)
+    echo "watching RAFFLE LIST every #{minutes} minutes (prize regex: #{prize_re.source})." unless mode == 'once'
+    loop do
+      begin
+        check
+      rescue StandardError => e
+        echo "check failed: #{e.class}: #{e.message}"
+      end
+      break if mode == 'once'
+      sleep minutes * 60
+    end
+  end
+end
+
+RaffleWatch.run(script.vars[1].to_s.downcase)
