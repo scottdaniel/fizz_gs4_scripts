@@ -87,16 +87,24 @@ module FizzBuyWeapon
     end
   end
 
-  # Give the weapon to verlok and say whether it actually took it. No minor
-  # demon -> "To whom?" and the weapon stays in hand, so stow it instead of
-  # carrying it into the hunt (10.04: the demon had timed out, but we logged
-  # "gave it to verlok" anyway and five hunts ran with an unarmed animate).
+  # Still in my hands? GLANCE says, whatever the demon answered (an igaesha can't
+  # hold a claidhmore). No answer counts as "still there".
+  def in_hand?
+    r = dothistimeout("glance", 3, /You glance down/i)
+    r.nil? || r =~ /#{Regexp.escape(NOUN)}/i
+  end
+
+  # Give the weapon to verlok and say whether it actually took it (it's out of my
+  # hands afterwards). No demon, or one that can't hold it -> it's still in hand,
+  # so stow it (the cloak) instead of carrying it into the hunt (10.04: the demon
+  # had timed out, we logged "gave it to verlok" anyway and five hunts ran with an
+  # unarmed animate).
   def give_to_verlok
-    g = dothistimeout("give #{NOUN} to verlok", 4,
-          /grudgingly accepts|hand(?:s)? .* to (?:a|an|the)|refuses|isn't interested|To whom|could not find/i).to_s
-    return true if g =~ /grudgingly accepts|hand(?:s)? .* to (?:a|an|the)/i
+    dothistimeout("give #{NOUN} to verlok", 4,
+      /grudgingly accepts|hand(?:s)? .* to (?:a|an|the)|refuses|isn't interested|maximum capacity|To whom|could not find/i)
+    return true unless in_hand?
     fput "stow #{NOUN}"
-    echo "[buyweapon] !! verlok didn't take the #{NOUN} (no minor demon? #{g.strip[0, 60]}) -- stowed it; reanim will drop it itself. Start ;mdemon_refresh / summon a demon."
+    echo "[buyweapon] verlok didn't take the #{NOUN} -- it's in the cloak; reanim will drop it itself. (A demon that can't hold one, like an igaesha, lands here every hunt.)"
     false
   end
 

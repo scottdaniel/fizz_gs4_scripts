@@ -197,9 +197,18 @@ def weapon_on_ground(noun)
   GameObj.loot.find { |o| o && o.name.to_s.split(/\s+/).any? { |w| same_weapon?(w, noun) } }
 end
 
+# Still in my hands? GLANCE says, whatever the demon answered (an igaesha can't
+# hold a claidhmore). No answer counts as "still there": stowing an empty hand is
+# harmless, carrying the weapon into a hunt isn't.
+def in_hand?(noun)
+  r = dothistimeout("glance", 3, /You glance down/i)
+  r.nil? || r =~ /#{Regexp.escape(noun)}/i
+end
+
 # Pick the weapon back up and give it to verlok. Ground first (expiry, or a
 # corpse that already dissolved), then straight off the corpse by id -- NOT
-# search/loot, that's the auto-discard path.
+# search/loot, that's the auto-discard path. If it's still in hand after the give
+# (no demon, or one that can't hold it) it goes in the cloak.
 def recover_weapon(id, noun)
   got = false
   6.times do                       # GameObj.loot lags the drop a beat
@@ -221,7 +230,8 @@ def recover_weapon(id, noun)
   return false unless got
   sleep 0.3
   dothistimeout("give #{noun} to verlok", 3,
-    /grudgingly accepts|hand(?:s)? .* to (?:a|an|the)|refuses|isn't interested/i)
+    /grudgingly accepts|hand(?:s)? .* to (?:a|an|the)|refuses|isn't interested|maximum capacity|To whom|could not find/i)
+  fput "stow #{noun}" if in_hand?(noun)
   true
 end
 

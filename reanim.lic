@@ -212,8 +212,12 @@ end
 #   3) once it has WEAPON (and auto-wields it -- animates take the better
 #      weapon), drop whatever else it's still holding (its innate whip, an
 #      old spare) -- droppable now that it's not the wielded weapon.
+# Any of your minor demons. Noun shapes (summond.lic ARCHETYPE_NOUNS): verlok'ar,
+# abyran'a, grik'..., aishan/arashan..., imp, darkling/shadowling (shien), and an
+# igaesha is a haze/rouk/brume/haar/murk/nyle/mist/smoke/vapor/fog.
+DEMON_NOUN = /\A(?:verlok|abyran|grantris|grik|aishan|arashan|darkling|shadowling|imp\z|haze\z|rouk\z|brume\z|haar\z|murk\z|nyle\z|mist\z|smoke\z|vapor\z|fog\z)/i
 def verlok_here?
-	GameObj.npcs.any? { |n| n && n.name.to_s =~ /verlok'?asha|minor demon/i }
+	GameObj.npcs.any? { |n| n && (n.noun.to_s =~ DEMON_NOUN || n.name.to_s =~ /minor demon/i) }
 rescue StandardError
 	false
 end
@@ -229,7 +233,7 @@ def arm_animate(noun)
 	# 1) get a spare WEAPON onto the ground
 	unless weapon_on_ground(noun)
 		unless verlok_here?
-			echo "[reanim] verlok isn't here -- nudging it to follow. ('tell mdem to follow' before a hunt.)"
+			echo "[reanim] no minor demon here -- nudging it to follow. ('tell mdem to follow' before a hunt.)"
 			fput "tell mdem to follow"
 			sleep 1
 		end
@@ -300,11 +304,19 @@ def animate_here_stable?
 	animate_here? && (sleep(0.4) || true) && animate_here?
 end
 
-# Weapon in hand -> verlok; no minor demon to take it -> don't leave it in hand, stow it.
+# Is the weapon still in my hands? GLANCE says, so this doesn't depend on what a
+# particular demon answers (an igaesha can't hold a claidhmore). No answer counts
+# as "still there" -- stowing an empty hand is harmless, carrying it into a hunt isn't.
+def in_hand?(noun)
+	r = dothistimeout("glance", 3, /You glance down/i)
+	r.nil? || r =~ /#{Regexp.escape(noun)}/i
+end
+
+# Weapon in hand -> the demon; if it's still in hand afterwards, stow it (the cloak).
 def give_or_stow(noun)
-	g = dothistimeout("give #{noun} to verlok", 3,
-		/grudgingly accepts|hand(?:s)? .* to (?:a|an|the)|refuses|isn't interested|To whom|could not find/i).to_s
-	fput "stow #{noun}" unless g =~ /grudgingly accepts|hand(?:s)? .* to (?:a|an|the)/i
+	dothistimeout("give #{noun} to verlok", 3,
+		/grudgingly accepts|hand(?:s)? .* to (?:a|an|the)|refuses|isn't interested|maximum capacity|To whom|could not find/i)
+	fput "stow #{noun}" if in_hand?(noun)
 	sleep 0.3
 end
 
