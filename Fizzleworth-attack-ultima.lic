@@ -366,7 +366,19 @@ end
 # cooldown with essence to spare, then Symbol of Mana (off-cooldown, deeds to
 # spare). sac4mana can't get a harvest window in this rotation, so this is the
 # recovery that actually happens mid-hunt.
+# Once per hunt (the store only refills at rest): ask the minor demon for the mana
+# mdemon_refresh sent it while we rested (;demonmana). Free, so it comes before
+# spending shadow essence. @return true if mana came back.
+def take_demon_mana
+  return false if $demonmana_taken
+  $demonmana_taken = true
+  before = checkmana
+  Script.run("demonmana", "get")
+  checkmana > before
+end
+
 def recover_mana
+  return true if take_demon_mana
   if shadow_essence.positive? && !sacrifice_on_cooldown?
     waitcastrt?
     waitrt?

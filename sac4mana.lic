@@ -207,6 +207,15 @@ module Sac4Mana
     echo "Gave up harvesting after #{MAX_HARVEST_ROUNDS} rounds (essence: #{Resources.shadow_essence.to_i}/#{ESSENCE_MAX})."
   end
 
+  # Once per hunt (the store only refills at rest): ask the minor demon for the mana
+  # mdemon_refresh sent it while we rested (;demonmana). Free, so it goes before
+  # spending shadow essence.
+  def self.take_demon_mana
+    return if $demonmana_taken
+    $demonmana_taken = true
+    Script.run("demonmana", "get")
+  end
+
   # === main ======================================================================
   def self.run
     echo "Sac4Mana started! Watching mana (threshold: #{MANA_THRESHOLD})."
@@ -215,6 +224,7 @@ module Sac4Mana
     spiral_backoff_until = Time.now
 
     loop do
+      take_demon_mana if mana < MANA_THRESHOLD
       if mana < MANA_THRESHOLD and !sacrifice_on_cooldown? and Time.now >= spiral_backoff_until and
          FIZZLEWORTH_ATTACK_SCRIPT_NAMES.none? { |n| Script.running?(n) }
         echo "Mana below #{MANA_THRESHOLD}, sacrificing mana to top off."

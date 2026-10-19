@@ -23,6 +23,10 @@
 
   Usage:  ;mdemon_refresh
   Stop:   ;kill mdemon_refresh
+
+  Also, once per rest (sitting, mana >= SEND_MANA_AT, nothing hostile around), it
+  sends the demon the mana it can hold (;demonmana send); attack-ultima / sac4mana
+  ask for it back with ;demonmana get the first time mana runs low in a hunt.
 =end
 
 module MdemonRefresh
@@ -30,6 +34,7 @@ module MdemonRefresh
   MINOR_SUMMONING_SPELL   = "Minor Summoning"
   REFRESH_THRESHOLD_MINUTES = 10
   CHECK_INTERVAL_SECONDS  = 15
+  SEND_MANA_AT            = 40   # resting with at least this much mana -> fill the demon (;demonmana)
   AUTO_FUSE_RUNESTONE     = false
 
   # === helpers ===================================================================
@@ -59,6 +64,20 @@ module MdemonRefresh
       fput "get ##{held_item_id}"
       waitrt?
     end
+  end
+
+  # Once per rest, as soon as there's mana to spare (the send costs ~30 and the rest
+  # regens it, so the demon's store is free; sending at the end of a rest isn't).
+  def self.store_mana_while_resting
+    unless checksitting
+      @mana_stored = false
+      return
+    end
+    return if @mana_stored || Char.mana < SEND_MANA_AT
+    return unless Effects::Spells.active?(MINOR_SUMMONING_SPELL)
+    return if GameObj.targets.any? { |t| t && t.status.to_s !~ /dead|gone/ }
+    @mana_stored = true
+    Script.run("demonmana", "send")
   end
 
   def self.wait_for_nod
@@ -106,6 +125,7 @@ module MdemonRefresh
         end
       end
 
+      store_mana_while_resting
       sleep CHECK_INTERVAL_SECONDS
     end
   end

@@ -1,0 +1,60 @@
+=begin
+  demonmana.lic
+  A minor demon can hold a little mana (gswiki Minor_Summoning_(725), Minor Demon
+  Abilities): base + Demonology bonus / 10 -- an igaesha 12 + 15 = ~28 at a
+  bonus of 152, a verlok 0 + (15 - 3) = ~12, an aishan none. Sending costs a bit
+  more than arrives and getting it back loses a bit more (10.19: 30 spent -> 28
+  stored -> 26 back), but the demon can be filled while you rest and emptied in
+  the middle of a hunt. Asking for more than it holds is harmless ("does not have
+  that much mana so it resolves to send 28").
+
+    ;demonmana send    send it all the mana it can hold   (mdemon_refresh does this while you rest)
+    ;demonmana get     ask it for all of it back          (attack-ultima / sac4mana, once a hunt, when low)
+
+  Silver can be held too; not done here.
+=end
+
+# Noun shapes (summond.lic ARCHETYPE_NOUNS): verlok'ar, abyran'a, grik'..., aishan,
+# arashan, imp, darkling/shadowling (shien), and an igaesha is a haze/rouk/brume/
+# haar/murk/nyle/mist/smoke/vapor/fog.
+DEMON_NOUN = /\A(?:verlok|abyran|grantris|grik|aishan|arashan|darkling|shadowling|imp\z|haze\z|rouk\z|brume\z|haar\z|murk\z|nyle\z|mist\z|smoke\z|vapor\z|fog\z)/i
+SEND_OK  = /points were succes+fully transferred to your .+? while only draining (\d+) mana points/i
+GOT_MANA = /You gain (\d+) mana points/i
+GONE     = /could not find|what were you referring/i
+
+def demon
+  GameObj.npcs.find { |n| n && (n.noun.to_s =~ DEMON_NOUN || n.name.to_s =~ /minor demon/i) }
+end
+
+# `send 50 <noun>` needs the demon's noun as the room shows it (it can be disguised, e.g. a
+# "hawk"); fall back to the mdemon keyword when it isn't in the room list.
+def send_mana
+  waitrt?
+  [demon&.noun, "mdemon"].compact.uniq.each do |who|
+    r = dothistimeout("send 50 #{who}", 4, Regexp.union(SEND_OK, GONE, /cannot|can't|unable|already|too much/i)).to_s
+    if r =~ SEND_OK
+      echo "demon holds it now (#{$1} mana drained)."
+      return
+    end
+    next if r =~ GONE
+    echo "send said: #{r.strip[0, 120].empty? ? 'nothing' : r.strip[0, 120]}"
+    return
+  end
+  echo "no minor demon here to send mana to."
+end
+
+def get_mana
+  waitrt?
+  r = dothistimeout("tell mdemon send 50", 4, Regexp.union(GOT_MANA, GONE, /has no mana|any mana|nothing to send/i)).to_s
+  if r =~ GOT_MANA
+    echo "got #{$1} mana back from the demon."
+  else
+    echo "no mana from the demon (#{r.strip[0, 100].empty? ? 'no answer' : r.strip[0, 100]})."
+  end
+end
+
+case script.vars[1].to_s.downcase
+when 'send' then send_mana
+when 'get'  then get_mana
+else echo "usage: ;demonmana send   |   ;demonmana get"
+end
