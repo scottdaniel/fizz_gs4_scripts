@@ -1,0 +1,806 @@
+# charge_me_up_scotty.lic
+=begin
+      author: Picko
+        name: charge_me_up_scotty
+        game: gemstone
+        tags: wizard, charge item, 517, recharge, wand, orb gem
+    requires: Lich > 5.14.2
+     version: 0.1
+        note: Written with assistance from Claude (Anthropic).
+
+  Recharges spent wands and used magic items with Charge Item (517).
+  Same idea as fizzfuse (one command does the whole job), and the orb/rub
+  messaging follows Demandred's ;ucharge and the gswiki Charge Item (517) page.
+
+  What it does:
+    1. Survey: casts Elemental Detection (405) at every candidate to read its
+       spell, charges, whether it's mage rechargeable, and the most you can push
+       it to this session. Nothing rechargeable means no orb gem gets used.
+    2. If there's no grot t'kel potion in grotsack, buys one: the bank first
+       (only if you carry under 5,000 silvers), then the nearest alchemist,
+       then deposits what's left. Same again mid-session if the potion runs out.
+    3. Goes to the nearest Wizard Guild workshop (charging bonus) unless --here.
+    4. Pours the potion on an orb gem and casts 517 at it to make a
+       pulsating orb, then casts 517 at the orb until it's humming (ready).
+    5. For each item: waits for enough mana to fill it in as few rubs as it can,
+       then RUBs the orb with the item in the right hand. Re-preps the orb when
+       it shrinks, makes a new orb when it implodes, and stops an item when it's
+       full, greened, or has had charge_maxrubs rubs (every rub past the first
+       couple raises the chance of greening it).
+    6. Spent wands come from bigshot's dead wand container and go back to the
+       fresh wand container; magic items come from chargesack and go to
+       chargedsack. Items that aren't mage rechargeable stay where they were.
+    7. Goes back where you started and prints a report.
+
+  Candidates:
+    - wands in bigshot's dead_wand_container (UserVars.op, the active profile)
+    - with --topoff, wands in the fresh_wand_container that aren't at your max
+    - everything in chargesack (statues, quartz orbs, blue crystals, coins...)
+
+  Settings:
+    ;vars set orbgemsack=<container>      orb gems (required for charging)
+    ;vars set grotsack=<container>        grot t'kel potion, bought if missing (default: orbgemsack)
+    ;vars set charge_pour=false           gems are already poured; don't pour (default true)
+    ;vars set chargesack=<container>      used magic items to recharge (optional)
+    ;vars set chargedsack=<container>     recharged magic items (default: chargesack)
+    ;vars set greensack=<container>       greened items (default: where they'd go anyway)
+    ;vars set charge_maxrubs=<n>          most rubs per item per session (default 3)
+
+  Usage:
+    ;charge_me_up_scotty          survey, then charge everything that needs it
+    ;charge_me_up_scotty check    survey only: 405 every candidate and report
+    ;charge_me_up_scotty help     usage and current settings
+
+  Options:
+    --here       charge where you are instead of the nearest Wizard Guild workshop
+    --topoff     also top off fresh-container wands that are below your max
+
+  Game text verified in Picko's logs (2026-09-02, 2026-10-06) is the 405 output.
+  The orb and rub lines come from the wiki and ;ucharge and haven't been seen
+  live yet; any response the script doesn't recognize is printed in full.
+=end
+
+module ChargeMeUpScotty
+  # === config ====================================================================
+  DEFAULT_MAX_RUBS = 3
+  # Casts at the orb before giving up on getting it to "humming tones of enchantment"
+  PREP_MAX         = 20
+  # Never-empowered items cap at 40 (gswiki)
+  ITEM_CAP         = 40
+  # Wait for this share of max mana at most before a rub, so the orb isn't left
+  # waiting on the last few points of regen
+  RUB_MANA_SHARE   = 0.9
+  WORKSHOP_TAG     = 'wizard guild workshop'
+  # Withdrawn for a grot t'kel potion only if you carry less (price not seen yet)
+  POTION_SILVER    = 5_000
+
+  # === game text =================================================================
+  PREP_DONE   = /^Your spell(?:song)? is ready\.|^You already have a spell readied|^You can't think clearly enough|^You are concentrating too intently|^You are too injured|^But you don't have any mana|^You can't make that dextrous|^You do not know that spell|cough up some blood/
+  CAST_RT     = /^Cast Roundtime \d+ Seconds?\./
+  CAST_FAIL   = /^Cast at what\?|^You don't have a spell prepared!|^But you don't have any mana|^You can't think clearly|^Your magic fizzles|^I could not find|^What were you referring to/
+  WAIT_REGEX  = /^(?:\.\.\.w|W)ait ([0-9]+) sec(?:onds?)?\.?$/
+
+  # 405 (verified): 'You sense that the wand is a magic item that holds the spell "Hurl Boulder"
+  # with 7 charges.' / '... with no charge.' then 'It is a mage rechargeable item.' and 'You
+  # estimate you're skilled enough to push this item to a maximum of 26 charges in a single session.'
+  DETECT_SPELL  = /holds the spell "([^"]+)" with (\d+|no) charges?/
+  DETECT_MAGE   = /It is a mage rechargeable item/
+  DETECT_MAX    = /maximum of (\d+) charges? in a single session/
+  DETECT_WEAR   = /signs of wear|sessions?\b.*\bwear/
+  DETECT_SHOP   = /can be recharged to its original capacity by a merchant/
+
+  POUR_OK       = /absorbed/
+  POUR_BAD      = /evaporat/
+  ORB_READY     = /humming tones of enchantment|already prepared for charging/
+  ORB_GROW      = /It grows in size/
+  ORB_SHRINK    = /pulsating orb shrinks somewhat|^The orb shrinks/
+  ORB_GONE      = /implodes/
+
+  RUB_OK        = /fingers of essence caress|You successfully add \d+ additional charges?/
+  RUB_COUNT     = /You successfully add (\d+) additional charges?/
+  RUB_NO_MANA   = /You do not have enough mana|You feel terribly drained/
+  RUB_FULL      = /You are unable to add any more charges/
+  RUB_NOT_READY = /isn't properly prepared for recharging/
+  RUB_FLOWS     = /unable to properly channel the flows/
+  RUB_GREEN     = /flares a sickening green/
+  RUB_GONE      = /^What were you referring to|^I could not find what you were referring to/
+  RUB_DONE      = Regexp.union(RUB_OK, RUB_NO_MANA, RUB_FULL, RUB_NOT_READY, RUB_FLOWS, RUB_GREEN, RUB_GONE, /suddenly disintegrates/)
+
+  GET_DONE      = /^You (?:remove|get|grab|pull|take|pick up|carefully remove|retrieve)|^Get what\?|^I could not find|^What were you referring to|^You need a free hand|^You can't/
+  PUT_DONE      = /^You (?:put|place|slip|tuck|add|drop|carefully place|gently place)|^I could not find|^What were you referring to|won't fit|^That is closed|too (?:full|heavy|large)/
+
+  # === helpers ===================================================================
+  def self.msg(text)
+    respond "[charge_me_up_scotty] #{text}"
+  end
+
+  def self.setting(name)
+    value = UserVars.send(name).to_s.strip
+    value.empty? ? nil : value
+  end
+
+  def self.pour?
+    UserVars.charge_pour.to_s !~ /\A(?:false|no|off|0)\z/i
+  end
+
+  def self.max_rubs
+    value = UserVars.charge_maxrubs.to_s
+    value =~ /\A\d+\z/ && value.to_i.positive? ? value.to_i : DEFAULT_MAX_RUBS
+  end
+
+  def self.op_setting(key, fallback)
+    op = UserVars.op.is_a?(Hash) ? UserVars.op : {}
+    value = op[key].to_s.strip
+    value.empty? ? fallback : value
+  end
+
+  def self.find_container(name)
+    return nil if name.nil?
+
+    GameObj.inv.find { |obj| obj.noun.to_s.casecmp?(name) } ||
+      GameObj.inv.find { |obj| obj.name.to_s =~ /\b#{Regexp.escape(name)}\b/i }
+  end
+
+  # "look in" forces a fresh listing; GameObj#contents alone can be stale (lockerstow.lic)
+  def self.contents(container)
+    fput "look in ##{container.id}"
+    container.contents.to_a
+  end
+
+  def self.held?(id)
+    [GameObj.right_hand, GameObj.left_hand].any? { |hand| hand.id.to_s == id.to_s }
+  end
+
+  def self.wait_for(seconds = 3)
+    (seconds * 10).to_i.times {
+      return true if yield
+      sleep 0.1
+    }
+    yield
+  end
+
+  # Every line the script reads passes through here, so the orb's ambient shrink and
+  # implode messages are seen even while we're waiting on mana or doing something else
+  def self.scan(line)
+    @orb_ready = false if line =~ ORB_SHRINK || line =~ ORB_GONE
+  end
+
+  def self.drain
+    while (line = get?)
+      scan(line)
+    end
+  end
+
+  # put, not fput or dothistimeout: those can swallow the response line we need, and
+  # dothistimeout clears the buffer, which would drop an ambient "shrinks somewhat"
+  def self.collect(action, done, timeout = 6)
+    drain
+    lines = []
+    put action
+    end_time = Time.now.to_f + timeout
+    loop do
+      line = get?
+      if line.nil?
+        sleep 0.1
+      else
+        scan(line)
+        lines << line
+        if line =~ WAIT_REGEX
+          sleep [Regexp.last_match(1).to_i - 0.5, 0.3].max
+          put action
+          end_time = Time.now.to_f + timeout
+          next
+        end
+        break if line =~ done
+      end
+      break if Time.now.to_f > end_time
+    end
+    lines
+  end
+
+  # Any lines that trail a result (the charge count can follow the success line)
+  def self.more_lines(seconds)
+    lines = []
+    end_time = Time.now.to_f + seconds
+    while Time.now.to_f < end_time
+      line = get?
+      if line
+        scan(line)
+        lines << line
+      else
+        sleep 0.1
+      end
+    end
+    lines
+  end
+
+  def self.wait_for_mana(amount, reason = nil)
+    amount = [amount.to_i, maxmana].min
+    drain
+    return if checkmana >= amount
+
+    msg "Waiting for #{amount} mana#{reason ? " #{reason}" : ''} (you have #{checkmana})."
+    until checkmana >= amount
+      drain
+      sleep 0.5
+    end
+  end
+
+  def self.take(id, from)
+    collect("get ##{id}", GET_DONE)
+    return false unless wait_for { held?(id) }
+
+    @held[id.to_s] = from
+    true
+  end
+
+  def self.stash(id, into)
+    collect("put ##{id} in ##{into.id}", PUT_DONE)
+    return false unless wait_for { !held?(id) }
+
+    @held.delete(id.to_s)
+    true
+  end
+
+  # The item has to be in the right hand to RUB the orb with it
+  def self.in_right_hand(id)
+    fput "swap" if GameObj.left_hand.id.to_s == id.to_s && GameObj.right_hand.id.nil?
+    wait_for { GameObj.right_hand.id.to_s == id.to_s }
+  end
+
+  # Gates every cast on the spell's full cost, re-read live right before the CAST
+  # (casting short overextends you). Orb casts after the first only cost 1 mana per
+  # the wiki, but waiting for 517's listed 17 is the safe side of that.
+  def self.cast_at(num, target, done)
+    spell = Spell[num]
+    wait_for_mana(spell.mana_cost, "for #{spell.name}")
+    waitrt?
+    waitcastrt?
+    unless checkprep == spell.name
+      collect("release", /^You feel the magic|^You don't have a prepared spell/) unless checkprep == 'None'
+      lines = collect("prepare #{num}", PREP_DONE)
+      unless lines.any? { |line| line =~ /^Your spell(?:song)? is ready\./ }
+        msg "Couldn't prepare #{spell.name}. The game said:"
+        lines.each { |line| respond "    #{line}" }
+        exit
+      end
+    end
+    wait_for_mana(spell.mana_cost, "for #{spell.name}")
+    lines = collect("cast at #{target}", Regexp.union(done, CAST_FAIL))
+    waitcastrt?
+    lines
+  end
+
+  # Mana per charge, estimated (gswiki): the spell's cost for an elemental spell,
+  # twice that for a Sorcerer spell, three times for anything else, minus 1 per 5
+  # ranks of Elemental Mana Control but never below the spell's own cost
+  def self.per_charge(rec)
+    spell = rec[:spell] && Spell[rec[:spell]]
+    return nil if spell.nil? || spell.mana_cost.to_i <= 0
+
+    base = spell.mana_cost.to_i
+    multiplier = case spell.circle.to_i
+                 when 4, 5, 9 then 1
+                 when 7 then 2
+                 else 3
+                 end
+    [base * multiplier - Skills.emc.to_i / 5, base].max
+  end
+
+  # Enough mana to fill the item in one rub if we can hold it, else most of our max
+  def self.rub_mana(rec)
+    cap = (maxmana * RUB_MANA_SHARE).floor
+    per = per_charge(rec)
+    return cap if per.nil?
+
+    [[per * (rec[:target] - rec[:charges]), cap].min, per].max
+  end
+
+  # === survey ====================================================================
+  def self.detect(rec)
+    lines = cast_at(405, "##{rec[:id]}", CAST_RT)
+    text = lines.join("\n")
+    if text =~ DETECT_SPELL
+      rec[:spell] = Regexp.last_match(1)
+      rec[:charges] = Regexp.last_match(2) == 'no' ? 0 : Regexp.last_match(2).to_i
+    end
+    rec[:before] ||= rec[:charges]
+    rec[:mage] = text =~ DETECT_MAGE ? true : false
+    rec[:merchant] = text =~ DETECT_SHOP ? true : false
+    rec[:target] = text =~ DETECT_MAX ? [Regexp.last_match(1).to_i, ITEM_CAP].min : ITEM_CAP
+    rec[:wear] = lines.find { |line| line =~ DETECT_WEAR }
+    rec[:raw] = lines if rec[:spell].nil? && !rec[:merchant]
+    rec
+  end
+
+  def self.candidates
+    dead  = find_container(op_setting('dead_wand_container', 'bag'))
+    fresh = find_container(op_setting('fresh_wand_container', 'sack'))
+    items = find_container(setting(:chargesack))
+    charged = find_container(setting(:chargedsack)) || items
+    sources = []
+    sources << [dead, fresh, :wand] if dead && fresh
+    sources << [fresh, fresh, :wand] if fresh && @topoff
+    sources << [items, charged, :item] if items
+
+    msg "Can't find bigshot's wand containers (#{op_setting('dead_wand_container', 'bag')} / #{op_setting('fresh_wand_container', 'sack')})." unless dead && fresh
+    msg "Can't find your chargesack (#{setting(:chargesack)})." if setting(:chargesack) && items.nil?
+
+    seen = {}
+    sources.uniq { |src, _dst, _kind| src.id }.flat_map { |src, dst, kind|
+      fput "open ##{src.id}"
+      contents(src).select { |obj|
+        next false if seen[obj.id]
+        next false if kind == :wand && obj.name !~ /\bwand\b/i
+        next false if obj.type.to_s =~ /gem/ || obj.name =~ /grot t'kel/i
+
+        seen[obj.id] = true
+      }.map { |obj| { id: obj.id, name: obj.name, src: src, dst: dst, kind: kind, rubs: 0 } }
+    }
+  end
+
+  def self.survey
+    recs = candidates
+    if recs.empty?
+      msg "Nothing to check: no wands in your dead wand container#{setting(:chargesack) ? ' and nothing in your chargesack' : ''}."
+      return []
+    end
+
+    msg "Checking #{recs.size} item#{recs.size == 1 ? '' : 's'} with Elemental Detection."
+    recs.each do |rec|
+      unless take(rec[:id], rec[:src])
+        rec[:status] = :missing
+        next
+      end
+      detect(rec)
+      rec[:status] = if !rec[:mage]
+                       rec[:merchant] ? :merchant : :not_rechargeable
+                     elsif rec[:charges] >= rec[:target]
+                       :at_max
+                     else
+                       :charge
+                     end
+      stash(rec[:id], rec[:src])
+    end
+    @records = recs
+  end
+
+  # === the orb ===================================================================
+  def self.orb_ids
+    GameObj.loot.to_a.select { |obj| obj.name =~ /pulsating orb/i }.map(&:id)
+  end
+
+  def self.orb_alive?
+    @orb_id && orb_ids.include?(@orb_id)
+  end
+
+  def self.next_gem
+    contents(@gemsack).find { |obj| obj.type.to_s =~ /gem/ && !@bad_gems.include?(obj.id) }
+  end
+
+  # === grot t'kel potion =========================================================
+  def self.go2(place)
+    Script.run('go2', "#{place} --disable-confirm")
+  end
+
+  def self.find_potion
+    contents(@grotsack).find { |obj| obj.name =~ /grot t'kel/i }
+  end
+
+  # Buys the first catalog item whose name matches pattern and returns it in hand, or nil
+  # (summond's buy; the ORDER catalog is columns of "N. a name")
+  def self.buy(pattern, what)
+    number = nil
+    Lich::Util.quiet_command_xml("order", /Welcome to|catalog/i).each { |line|
+      line.gsub(/<[^>]+>/, '').scan(/(\d+)\.\s+(.+?)(?=\s{2,}\d+\.|\s*\z)/) { |num, name| number ||= num if name =~ pattern }
+    }
+    if number.nil?
+      msg "This shop doesn't sell #{what}."
+      return nil
+    end
+
+    held = [GameObj.right_hand.id, GameObj.left_hand.id]
+    fput "order #{number}"
+    result = dothistimeout "buy", 5, /Sold for|hands you|need a free hand|enough|afford|What were you referring to/
+    unless result =~ /Sold for|hands you/
+      msg "Couldn't buy #{what}: #{result || 'no answer from the shop'}"
+      return nil
+    end
+
+    item = nil
+    wait_for { item = [GameObj.right_hand, GameObj.left_hand].find { |hand| hand.id && !held.include?(hand.id) } }
+    item
+  end
+
+  # Bank (only if you carry less than POTION_SILVER), the nearest alchemist, then back
+  # to where we were. Only called with empty hands and no live orb, so leaving is safe.
+  def self.buy_potion
+    msg "No grot t'kel potion in your #{@grotsack.name}. Buying one (bank if needed, then the alchemist)."
+    return_room = Room.current&.id
+    withdrew = false
+    if Lich::Util.silver_count < POTION_SILVER
+      go2('bank')
+      line = dothistimeout "withdraw #{POTION_SILVER} silvers", 5, /hands you|don't have|not have|insufficient|only have/i
+      unless line =~ /hands you/
+        msg "Couldn't withdraw #{POTION_SILVER} silvers for a potion: #{line || 'no answer from the teller'}"
+        go2(return_room) if return_room
+        return nil
+      end
+      withdrew = true
+    end
+
+    go2('alchemist')
+    potion = buy(/grot t'kel potion/, "a grot t'kel potion")
+    if potion
+      @held[potion.id.to_s] = @grotsack
+      stash(potion.id, @grotsack)
+    end
+    if withdrew
+      go2('bank')
+      fput "deposit all"
+    end
+    go2(return_room) if return_room && Room.current&.id != return_room
+    potion && find_potion
+  end
+
+  def self.ensure_potion
+    find_potion || buy_potion
+  end
+
+  def self.pour_on(gem, potion)
+    return false unless take(potion.id, @grotsack)
+
+    lines = collect("pour ##{potion.id} on ##{gem.id}", Regexp.union(POUR_OK, POUR_BAD, /^You (?:can't|cannot)|^I could not find|^What were you/))
+    lines += more_lines(1)
+    # The last dose: "That was the last drop.  The grot t'kel potion shatters into twinkling dust."
+    stash(potion.id, @grotsack) if held?(potion.id)
+    return true if lines.any? { |line| line =~ POUR_OK }
+
+    if lines.any? { |line| line =~ POUR_BAD }
+      msg "#{gem.name} isn't an orb gem (the potion evaporated). Putting it back; take it out of your #{@gemsack.name}."
+    else
+      msg "Pouring the grot t'kel potion on #{gem.name} didn't work. The game said:"
+      lines.each { |line| respond "    #{line}" }
+    end
+    @bad_gems << gem.id
+    nil
+  end
+
+  # Turns the next orb gem into a pulsating orb on the ground. Hands must be empty.
+  def self.make_orb
+    loop do
+      gem = next_gem
+      if gem.nil?
+        msg "Out of orb gems in your #{@gemsack.name}."
+        return false
+      end
+      # Before the gem comes out: a potion run needs empty hands
+      potion = pour? && ensure_potion
+      if pour? && potion.nil?
+        msg "No grot t'kel potion to pour on #{gem.name}. If your orb gems are already poured, ;vars set charge_pour=false"
+        return false
+      end
+      return false unless take(gem.id, @gemsack)
+
+      if pour?
+        poured = pour_on(gem, potion)
+        if poured.nil?
+          stash(gem.id, @gemsack)
+          next
+        end
+        unless poured
+          stash(gem.id, @gemsack)
+          return false
+        end
+      end
+
+      before = orb_ids
+      msg "Making a pulsating orb from #{gem.name}."
+      lines = cast_at(517, "##{gem.id}", CAST_RT)
+      new_orb = nil
+      wait_for { new_orb = (orb_ids - before).first }
+      if new_orb
+        @held.delete(gem.id.to_s)
+        @orb_id = new_orb
+        @orb_ready = false
+        @gems_used += 1
+        return true
+      end
+
+      msg "Casting 517 at #{gem.name} didn't make an orb. The game said:"
+      lines.each { |line| respond "    #{line}" }
+      stash(gem.id, @gemsack) if held?(gem.id)
+      return false
+    end
+  end
+
+  # Casts 517 at the orb until it's humming. Each cast can also shrink it.
+  def self.prep_orb
+    unknown = 0
+    PREP_MAX.times do
+      return false unless orb_alive?
+
+      lines = cast_at(517, "##{@orb_id}", Regexp.union(ORB_READY, ORB_GROW, ORB_SHRINK, ORB_GONE, CAST_RT))
+      if lines.any? { |line| line =~ ORB_READY }
+        @orb_ready = true
+        return true
+      elsif lines.any? { |line| line =~ ORB_GONE }
+        return false
+      elsif lines.none? { |line| line =~ ORB_GROW || line =~ ORB_SHRINK }
+        unknown += 1
+        next if unknown < 3
+
+        msg "The orb isn't responding the way it should. The game said:"
+        lines.each { |line| respond "    #{line}" }
+        return false
+      end
+    end
+    msg "The orb still wasn't ready after #{PREP_MAX} casts."
+    false
+  end
+
+  # An orb already in the room might be ours from an earlier run; one prep cast tells
+  def self.adopt_orb
+    orb_ids.each do |id|
+      @orb_id = id
+      lines = cast_at(517, "##{id}", Regexp.union(ORB_READY, ORB_GROW, ORB_SHRINK, ORB_GONE, CAST_RT))
+      if lines.any? { |line| line =~ ORB_READY || line =~ ORB_GROW || line =~ ORB_SHRINK }
+        msg "Using the pulsating orb that's already here."
+        @orb_ready = lines.any? { |line| line =~ ORB_READY }
+        return
+      end
+    end
+    @orb_id = nil
+  end
+
+  def self.ensure_orb
+    return true if orb_alive? && @orb_ready
+
+    unless orb_alive?
+      msg "The pulsating orb is gone." if @orb_id
+      @orb_id = nil
+      return false unless make_orb
+    end
+    prep_orb
+  end
+
+  # === charging ==================================================================
+  # Returns :done, :orb_lost (item's back in its container, make a new orb and call
+  # again), or :stop (no orb could be made)
+  def self.charge(rec)
+    return :stop unless ensure_orb
+    return :done unless take(rec[:id], rec[:src]) && in_right_hand(rec[:id])
+
+    rec[:status] = :partial if rec[:status] == :charge
+    short_on_mana = false
+    while rec[:charges] < rec[:target] && rec[:rubs] < max_rubs
+      unless orb_alive?
+        stash(rec[:id], rec[:src])
+        return :orb_lost
+      end
+      unless @orb_ready || prep_orb
+        stash(rec[:id], rec[:src])
+        return :orb_lost
+      end
+
+      wanted = short_on_mana ? (maxmana * RUB_MANA_SHARE).floor : rub_mana(rec)
+      wait_for_mana(wanted, "to charge the #{rec[:name]}")
+      next unless @orb_ready
+
+      mana_before = checkmana
+      lines = collect("rub ##{@orb_id}", RUB_DONE)
+      lines += more_lines(1.5) if lines.any? { |line| line =~ RUB_OK }
+      text = lines.join("\n")
+
+      if text =~ RUB_GREEN
+        rec[:rubs] += 1
+        rec[:status] = :greened
+        msg "The #{rec[:name]} flared green; it can't be recharged again."
+        break
+      elsif text =~ RUB_OK
+        rec[:rubs] += 1
+        short_on_mana = false
+        if text =~ RUB_COUNT
+          rec[:charges] += Regexp.last_match(1).to_i
+        else
+          detect(rec)
+        end
+        msg "#{rec[:name]}: #{rec[:charges]}/#{rec[:target]} charges after rub #{rec[:rubs]}."
+      elsif text =~ RUB_FULL
+        rec[:status] = :full
+        break
+      elsif text =~ RUB_FLOWS
+        rec[:rubs] += 1
+        msg "Couldn't channel the flows into the #{rec[:name]} (rub #{rec[:rubs]})."
+      elsif text =~ RUB_NO_MANA
+        if short_on_mana || mana_before >= (maxmana * RUB_MANA_SHARE).floor
+          msg "Not enough mana to add a charge to the #{rec[:name]} even with #{mana_before}. Moving on."
+          rec[:status] = :no_mana
+          break
+        end
+        short_on_mana = true
+      elsif text =~ RUB_NOT_READY
+        @orb_ready = false
+      elsif text =~ RUB_GONE
+        @orb_id = nil
+      else
+        msg "Didn't recognize the response to RUB. The game said:"
+        lines.each { |line| respond "    #{line}" }
+        rec[:status] = :unknown
+        break
+      end
+    end
+
+    rec[:status] = :charged if rec[:status] == :partial && rec[:charges] >= rec[:target]
+    stash(rec[:id], destination(rec))
+    :done
+  end
+
+  def self.destination(rec)
+    return @greensack if rec[:status] == :greened && @greensack
+    # A wand that didn't take a charge stays with the dead ones
+    return rec[:src] if rec[:charges].to_i.zero?
+
+    rec[:dst]
+  end
+
+  def self.go_to_workshop
+    room = Room.current
+    target = room&.find_nearest_by_tag(WORKSHOP_TAG)
+    if target.nil?
+      msg "Couldn't find a path to a Wizard Guild workshop. Charging here."
+      return
+    end
+    return if room.id == target
+
+    go2(target)
+    msg "Didn't make it to the workshop (room #{target}). Charging here." unless Room.current&.id == target
+  end
+
+  # === report ====================================================================
+  STATUS_TEXT = {
+    charge: 'not reached',
+    partial: 'partly charged',
+    charged: 'charged',
+    full: "charged (can't add more)",
+    at_max: 'already at your max',
+    greened: 'GREENED',
+    no_mana: 'not enough mana',
+    unknown: 'stopped (unrecognized response)',
+    not_rechargeable: 'not mage rechargeable',
+    merchant: 'merchant rechargeable only',
+    missing: "couldn't pick it up",
+  }.freeze
+
+  def self.report
+    return if @reported || @records.empty?
+
+    @reported = true
+    respond
+    msg "Report#{@gems_used.positive? ? " (#{@gems_used} orb gem#{@gems_used == 1 ? '' : 's'} used)" : ''}:"
+    @records.each do |rec|
+      spell = rec[:spell] ? " (#{rec[:spell]})" : ''
+      charges = rec[:mage] ? "  #{rec[:before]} -> #{rec[:charges]} of #{rec[:target]}" : ''
+      rubs = rec[:rubs].positive? ? ", #{rec[:rubs]} rub#{rec[:rubs] == 1 ? '' : 's'}" : ''
+      respond "    #{rec[:name]}#{spell}#{charges}  #{STATUS_TEXT[rec[:status]] || rec[:status]}#{rubs}"
+      respond "        #{rec[:wear]}" if rec[:wear] && rec[:mage]
+      rec[:raw].to_a.each { |line| respond "        | #{line}" }
+    end
+    respond
+  end
+
+  def self.help
+    respond
+    respond "charge_me_up_scotty - recharges spent wands and used magic items with Charge Item (517)."
+    respond
+    respond "Usage:"
+    respond "  ;charge_me_up_scotty          survey with 405, then charge everything that needs it"
+    respond "  ;charge_me_up_scotty check    survey only (no orb, no travel)"
+    respond "  ;charge_me_up_scotty help     this help"
+    respond
+    respond "Options:"
+    respond "  --here       charge where you are instead of the nearest Wizard Guild workshop"
+    respond "  --topoff     also top off fresh-container wands that are below your max"
+    respond
+    respond "Settings:"
+    respond "  orbgemsack       #{setting(:orbgemsack) || '(not set)'}   orb gems (required to charge)"
+    respond "  grotsack         #{setting(:grotsack) || "(orbgemsack)"}   grot t'kel potion (bought at the alchemist if there isn't one)"
+    respond "  charge_pour      #{pour?}   pour grot t'kel on each gem first (false if they're pre-poured)"
+    respond "  chargesack       #{setting(:chargesack) || '(not set)'}   used magic items to recharge"
+    respond "  chargedsack      #{setting(:chargedsack) || '(chargesack)'}   recharged magic items"
+    respond "  greensack        #{setting(:greensack) || '(not set)'}   greened items"
+    respond "  charge_maxrubs   #{max_rubs}   most rubs per item per session"
+    respond "  dead wands       #{op_setting('dead_wand_container', 'bag')}   from bigshot (dead_wand_container)"
+    respond "  fresh wands      #{op_setting('fresh_wand_container', 'sack')}   from bigshot (fresh_wand_container)"
+    respond
+    respond "  Set with ;vars set <setting>=<value>, e.g. ;vars set orbgemsack=pouch"
+    respond
+  end
+
+  # === main ======================================================================
+  def self.run(args)
+    # Module state survives between runs (Lich re-opens the module), so reset it
+    @held = {}
+    @records = []
+    @bad_gems = []
+    @orb_id = nil
+    @orb_ready = false
+    @gems_used = 0
+    @reported = false
+    @cleaned_up = false
+    @emptied_hands = false
+
+    words = args.reject { |arg| arg.start_with?('--') }.map(&:downcase)
+    here = args.include?('--here')
+    @topoff = args.include?('--topoff')
+
+    if words.first =~ /^(help|\?)$/
+      help
+      exit
+    end
+    unless Spell[517].known? && Spell[405].known?
+      msg "You need both Charge Item (517) and Elemental Detection (405)."
+      exit
+    end
+    check_only = words.first == 'check'
+
+    unless check_only
+      @gemsack = find_container(setting(:orbgemsack))
+      @grotsack = find_container(setting(:grotsack)) || @gemsack
+      @greensack = find_container(setting(:greensack))
+      if @gemsack.nil?
+        msg(setting(:orbgemsack) ? "Can't find your orbgemsack (#{setting(:orbgemsack)})." : "Set where your orb gems are first: ;vars set orbgemsack=<container>")
+        exit
+      end
+    end
+
+    # before_dying, not ensure: on ;kill the script's thread dies first and fput from
+    # its ensure fails; before_dying runs after, where fput still works
+    before_dying { ChargeMeUpScotty.cleanup }
+    empty_hands
+    @emptied_hands = true
+
+    survey
+    to_charge = @records.select { |rec| rec[:status] == :charge }
+    if check_only || to_charge.empty?
+      msg "Nothing needs charging." if to_charge.empty? && !@records.empty?
+      return
+    end
+
+    # Gem and potion before walking anywhere, so a potion run doesn't start from the workshop
+    if next_gem.nil? && orb_ids.empty?
+      msg "No orb gems in your #{@gemsack.name}. Stopping."
+      return
+    end
+    if pour? && ensure_potion.nil?
+      msg "No grot t'kel potion to pour on your orb gems. Stopping."
+      return
+    end
+
+    start_room = Room.current&.id
+    go_to_workshop unless here
+    adopt_orb unless orb_ids.empty?
+
+    to_charge.each do |rec|
+      result = charge(rec)
+      result = charge(rec) while result == :orb_lost
+      break if result == :stop
+    end
+    msg "The pulsating orb is still here if you have more to charge." if orb_alive?
+
+    go2(start_room) if start_room && !here && Room.current&.id != start_room
+  end
+
+  # Puts back anything we took out, re-equips what was in hand, prints the report
+  def self.cleanup
+    return if @cleaned_up
+
+    @cleaned_up = true
+    fput "release" unless checkprep == 'None'
+    @held.to_a.each { |id, from| fput "put ##{id} in ##{from.id}" if held?(id) }
+    fill_hands if @emptied_hands
+    report
+  end
+end
+
+ChargeMeUpScotty.run(Script.current.vars[1..] || [])
