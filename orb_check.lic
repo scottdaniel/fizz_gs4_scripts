@@ -1,0 +1,427 @@
+# orb_check.lic
+=begin
+      author: Fizzleworth
+        name: orb_check
+        game: gemstone
+        tags: sorcerer, phase, 704, orb gem, pure gem, charge item, 517, jar
+    requires: Lich > 5.14.2
+     version: 0.2
+        note: Written with assistance from Claude (Anthropic).
+
+  Finds the orb (pure) gems in a container by casting Phase (704) at each one,
+  and moves the orbs into another container. Per gswiki Phase (704): a gem that
+  "becomes momentarily insubstantial and appears lighter" is an orb gem, good for
+  Charge Item (517) and Holy Receptacle (325); any other gem resists the spell.
+
+  Usage:
+    ;orb_check <gem> in <container> to <orb container>
+    ;orb_check in snake.sack to velvet sack       every loose gem and every gem jar in it
+    ;orb_check diamond in snake.sack to velvet sack
+    ;orb_check rubies in snake.sack to velvet sack  just the jar (and loose gems) of rubies
+    ;orb_check in jar to velvet sack              one jar, if it's inside a container you've looked in
+
+  Orbs go to the "to" container, or to orbgemsack if you leave "to" off:
+    ;vars set orbgemsack=<container>
+
+  Jars: each jar comes out into your right hand and gets SHAKEn one gem at a time
+  into your left. Gems that aren't orbs wait loose in the container until the jar
+  is done, then go back into the jar, and the jar goes back where it was.
+
+  Orbs come out of Phase "shifting" (weightless, and a shifting item keeps its
+  container out of a locker trunk), so each one gets a single DROP before it's put
+  away: on a shifting gem that turns it solid again and it stays in your hand.
+
+  Gems that aren't orbs stay where they were. Each cast is 4 mana, waited for
+  and re-checked right before every cast.
+=end
+
+module OrbCheck
+  # Verified 2026-10-20 on a tiny pink pearl: "The pearl becomes somewhat insubstantial and appears
+  # lighter." (the wiki says "momentarily"). Phasing one that's already shifting turns it back:
+  # "Your pink pearl flickers in and out of existence for a moment but then stabilizes.  It seems
+  # heavier." Only pure gems phase at all, so that's an orb too.
+  ORB_REGEX    = /insubstantial and appears lighter|flickers in and out of existence/
+  # Verified 2026-10-20: "An uncut diamond resists the effects of your magic!"
+  RESIST_REGEX = /resists the effects of your magic/
+  PREP_DONE    = /^Your spell(?:song)? is ready\.|^You already have a spell readied|^You can't think clearly enough|^You are concentrating too intently|^You are too injured|^But you don't have any mana|^You can't make that dextrous|^You do not know that spell|cough up some blood/
+  CAST_DONE    = Regexp.union(ORB_REGEX, RESIST_REGEX, /^Cast Roundtime \d+ Seconds?\./, /^Cast at what\?|^You don't have a spell prepared!|^But you don't have any mana|^I could not find|^What were you referring to/)
+  GET_DONE    = /^You (?:remove|get|grab|pull|take|pick up|carefully remove|retrieve)|^Get what\?|^I could not find|^What were you referring to|^You need a free hand|^You can't/
+  PUT_DONE    = /^You (?:put|place|slip|tuck|add|drop|carefully place|gently place)|^I could not find|^What were you referring to|won't fit|^That is closed|too (?:full|heavy|large)/
+  # Verified 2026-10-20: "Inside the glass jar you see 18 portions of pink sapphires.  It is nearly full."
+  # and "The glass jar is empty."
+  JAR_LOOK    = /Inside the .+? you see (\d+) portions? of|is empty\.|^I could not find|^What were you referring to/
+  # Verified 2026-10-20: "You give your jar a hard shake, causing an uncut diamond to fall into your
+  # left hand." and, after the last one, "That was the last diamond in the jar."
+  JAR_SHAKE   = /fall into your|is empty|You are not holding|need a free hand|^I could not find|^What were you referring to/
+  JAR_LAST    = /That was the last .+ in the/
+  JAR_NOUN    = /\A(?:jar|beaker)\z/i
+  # Verified 2026-10-20: DROP on a held shifting gem doesn't drop it. It turns solid and stays
+  # in hand: "Your uncut emerald flickers in and out of existence for a moment but then
+  # stabilizes.  It seems heavier. ... You think that you can safely drop an uncut emerald now
+  # that it is in a solid state again.  Maybe you should try again." A second DROP really drops it.
+  SOLID_DONE  = /solid state again|^You drop|^I could not find|^What were you referring to/
+
+  def self.msg(text)
+    respond "[orb_check] #{text}"
+  end
+
+  # "snake.sack", "snake sack", "my snake sack", "sack": the last word is the noun and
+  # every other word has to be in the item's name
+  def self.matches?(obj, name)
+    words = name.to_s.strip.sub(/\Amy\s+/i, '').split(/[\s.]+/)
+    return false if words.empty?
+
+    obj.noun.to_s.casecmp?(words.last) && words[0..-2].all? { |word| obj.name.to_s =~ /\b#{Regexp.escape(word)}/i }
+  end
+
+  # Returns [item, container it's in] for something you're wearing (container nil), or one
+  # level down inside a worn container whose contents Lich already knows
+  def self.locate(name)
+    return nil if name.nil? || name.strip.empty?
+
+    top = GameObj.inv.find { |obj| matches?(obj, name) }
+    return [top, nil] if top
+
+    GameObj.inv.each { |container|
+      found = container.contents.to_a.find { |obj| matches?(obj, name) }
+      return [found, container] if found
+    }
+    nil
+  end
+
+  def self.jar?(obj)
+    obj.noun.to_s =~ JAR_NOUN
+  end
+
+  # "uncut rubies" and "ruby" both match "a frosted glass jar containing uncut rubies"
+  def self.wanted?(obj, gem_words)
+    return obj.type.to_s =~ /gem/ || jar?(obj) if gem_words.empty?
+
+    stems = gem_words.split.map { |word| word.sub(/(?:ies|y|es|s)\z/i, '') }
+    stems.all? { |stem| obj.name.to_s =~ /\b#{Regexp.escape(stem)}/i }
+  end
+
+  def self.held?(id)
+    [GameObj.right_hand, GameObj.left_hand].any? { |hand| hand.id.to_s == id.to_s }
+  end
+
+  def self.hand(side)
+    side == 'left' ? GameObj.left_hand : GameObj.right_hand
+  end
+
+  def self.hand_empty?(side)
+    hand(side).id.nil?
+  end
+
+  def self.wait_for(seconds = 3)
+    (seconds * 10).to_i.times {
+      return true if yield
+      sleep 0.1
+    }
+    yield
+  end
+
+  # put, not fput: fput would swallow the first response line, which can be the one we need
+  def self.collect(action, done, timeout = 6)
+    lines = []
+    Script.current.clear
+    put action
+    end_time = Time.now.to_f + timeout
+    loop do
+      line = get?
+      if line.nil?
+        sleep 0.1
+      else
+        lines << line
+        if line =~ /^(?:\.\.\.w|W)ait ([0-9]+) sec/
+          sleep [Regexp.last_match(1).to_i - 0.5, 0.3].max
+          put action
+          end_time = Time.now.to_f + timeout
+          next
+        end
+        break if line =~ done
+      end
+      break if Time.now.to_f > end_time
+    end
+    lines
+  end
+
+  def self.wait_for_mana(cost)
+    return if checkmana >= cost
+
+    msg "Waiting for #{cost} mana (you have #{checkmana})."
+    sleep 0.5 until checkmana >= cost
+  end
+
+  # True if the gem in hand is an orb gem. Mana is gated before the PREP and re-read
+  # right before the CAST, so it never casts short and overextends.
+  def self.orb?(gem)
+    cost = Spell[704].mana_cost
+    wait_for_mana(cost)
+    waitrt?
+    waitcastrt?
+    unless checkprep == 'Phase'
+      collect("release", /^You feel the magic|^You don't have a prepared spell/) unless checkprep == 'None'
+      lines = collect("prepare 704", PREP_DONE)
+      unless lines.any? { |line| line =~ /^Your spell(?:song)? is ready\./ }
+        msg "Couldn't prepare Phase. The game said:"
+        lines.each { |line| respond "    #{line}" }
+        exit
+      end
+    end
+    wait_for_mana(cost)
+    lines = collect("cast at ##{gem.id}", CAST_DONE)
+    waitcastrt?
+    return true if lines.any? { |line| line =~ ORB_REGEX }
+    return false if lines.any? { |line| line =~ RESIST_REGEX }
+
+    # Neither phased nor resisted: show it (once) so it can be checked
+    unless @shown_unknown
+      @shown_unknown = true
+      msg "Didn't recognize Phase's response to #{gem.name}; counting it as not an orb. The game said (shown once):"
+      lines.each { |line| respond "    #{line}" }
+    end
+    false
+  end
+
+  # Turns a shifting (phased) gem in hand solid again, so it doesn't stay weightless and
+  # "Special" for the spell's whole duration (that keeps containers out of locker trunks).
+  # Exactly one DROP, and only while it's shifting: on a solid gem, DROP really drops it.
+  # Returns the hand the gem is in afterwards, or nil if it got away.
+  def self.solidify(side, gem)
+    item = nil
+    return side unless wait_for(2) { (item = hand(side)).id && item.name =~ /\bshifting\b/i }
+
+    collect("drop ##{item.id}", SOLID_DONE)
+    return side if wait_for { hand(side).id && hand(side).name !~ /\bshifting\b/i }
+    return side unless hand_empty?(side)
+
+    # It hit the floor after all: pick it back up
+    floor = GameObj.loot.to_a.find { |obj| obj.noun == gem.noun && obj.name !~ /\bshifting\b/i }
+    if floor
+      collect("get ##{floor.id}", GET_DONE)
+      return %w[left right].find { |s| hand(s).id.to_s == floor.id.to_s } if wait_for { held?(floor.id) }
+    end
+    msg "The #{gem.name} ended up on the floor and I couldn't pick it back up. Stopping."
+    nil
+  end
+
+  # Phases the gem in hand, then puts it in the orb container or in home. Returns
+  # true/false for orb, or nil if it couldn't be put away.
+  #
+  # A gem that phases is swapped for a "shifting" copy with a new ID (and phasing it
+  # again swaps the original back), so it's put away by hand, never by its old ID.
+  def self.check_gem(gem, home)
+    side = GameObj.left_hand.id.to_s == gem.id.to_s ? 'left' : 'right'
+    orb = orb?(gem)
+    side = solidify(side, gem) if orb
+    return nil if side.nil?
+
+    collect("put #{side} in ##{(orb ? @dest : home).id}", PUT_DONE)
+    unless wait_for { hand_empty?(side) }
+      msg "Couldn't put the #{gem.name} away. Stopping."
+      return nil
+    end
+
+    @checked += 1
+    @orbs << gem.name if orb
+    orb
+  end
+
+  def self.check_loose(gem)
+    collect("get ##{gem.id}", GET_DONE)
+    if wait_for { held?(gem.id) }
+      check_gem(gem, @source)
+    else
+      @missed += 1
+    end
+  end
+
+  # Gems that weren't orbs go back in the jar (jar in the right hand, gem into the left)
+  def self.refill_jar
+    @set_aside.dup.each do |id|
+      collect("get ##{id}", GET_DONE)
+      next unless wait_for { held?(id) }
+
+      collect("put ##{id} in ##{@jar.id}", PUT_DONE)
+      @set_aside.delete(id) if wait_for { !held?(id) }
+    end
+    return if @set_aside.empty?
+
+    msg "Couldn't put #{@set_aside.size} non-orb gem#{@set_aside.size == 1 ? '' : 's'} back in the jar; they're loose in your #{@source.name}."
+    @set_aside = []
+  end
+
+  def self.check_jar(jar)
+    contents = jar.name[/containing (.+)\z/, 1] || 'gems'
+    collect("get ##{jar.id}", GET_DONE)
+    unless wait_for { held?(jar.id) }
+      msg "Couldn't pick up the jar of #{contents}."
+      return
+    end
+    @jar = jar
+    @set_aside = []
+    # The gem has to land in the left hand
+    fput "swap" if GameObj.left_hand.id.to_s == jar.id.to_s
+
+    look = collect("look in ##{jar.id}", JAR_LOOK).join("\n")
+    count = look[/you see (\d+) portions? of/, 1].to_i
+    msg "Checking #{count} #{contents} from the jar."
+
+    count.times do
+      # The shaken gem lands in the left hand, so that has to be empty first
+      unless hand_empty?('left')
+        msg "Your left hand isn't empty (#{GameObj.left_hand.name}), so the jar can't be shaken. Stopping."
+        break
+      end
+      lines = collect("shake ##{jar.id}", JAR_SHAKE)
+      lines += collect("shake my #{jar.noun}", JAR_SHAKE) if lines.any? { |line| line =~ /You are not holding|^I could not find|^What were you/ }
+      gem = nil
+      unless wait_for { (gem = GameObj.left_hand).id }
+        msg "Shaking the jar didn't give a gem. The game said:"
+        lines.each { |line| respond "    #{line}" }
+        break
+      end
+
+      orb = check_gem(gem, @source)
+      @set_aside << gem.id if orb == false
+      break if orb.nil? || lines.any? { |line| line =~ JAR_LAST }
+    end
+
+    refill_jar
+    collect("put ##{jar.id} in ##{@source.id}", PUT_DONE)
+    @jar = nil if wait_for { !held?(jar.id) }
+  end
+
+  def self.help
+    respond
+    respond "orb_check - finds orb gems with Phase (704) and moves them to another container."
+    respond
+    respond "  ;orb_check <gem> in <container> to <orb container>"
+    respond "  ;orb_check in snake.sack to velvet sack         every loose gem and gem jar in it"
+    respond "  ;orb_check diamond in snake.sack to velvet sack"
+    respond "  ;orb_check rubies in snake.sack to velvet sack  just the rubies (jar or loose)"
+    respond "  ;orb_check in jar to velvet sack                one jar inside a container"
+    respond "  ;orb_check diamond in pouch                     orbs go to your orbgemsack (#{UserVars.orbgemsack || 'not set'})"
+    respond
+    respond "  Jars are shaken one gem at a time; gems that aren't orbs go back in the jar."
+    respond
+  end
+
+  def self.run(arg)
+    @jar = nil
+    @set_aside = []
+    @orbs = []
+    @checked = 0
+    @missed = 0
+    @shown_unknown = false
+    @cleaned_up = false
+    @emptied_hands = false
+
+    match = arg.to_s.match(/\A\s*(.*?)\s*\bin\s+(.+?)(?:\s+to\s+(.+?))?\s*\z/i)
+    if match.nil? || arg.to_s =~ /\A\s*(?:help|\?)\s*\z/i
+      help
+      exit
+    end
+    unless Spell[704].known?
+      msg "You don't know Phase (704)."
+      exit
+    end
+
+    gem_words = match[1].sub(/\Amy\s+/i, '')
+    source, parent = locate(match[2])
+    dest_name = match[3] || UserVars.orbgemsack.to_s
+    @dest, = locate(dest_name)
+    if source.nil?
+      msg "Can't find your #{match[2]}. If it's inside another container, LOOK IN that one first."
+      exit
+    end
+    if @dest.nil?
+      msg(dest_name.strip.empty? ? "Where should the orbs go? Add \"to <container>\" or ;vars set orbgemsack=<container>" : "Can't find your #{dest_name}.")
+      exit
+    end
+
+    if jar?(source)
+      if parent.nil?
+        msg "Put the jar in a container first (e.g. your snake sack), then run this on it."
+        exit
+      end
+      @source = parent
+      jars = [source]
+      loose = []
+    else
+      @source = source
+      fput "open ##{@source.id}"
+      # A fresh LOOK IN right before the loop, so the IDs are live (cached contents go stale)
+      fput "look in ##{@source.id}"
+      items = @source.contents.to_a.select { |obj| wanted?(obj, gem_words) }
+      jars = items.select { |obj| jar?(obj) }
+      loose = items.reject { |obj| jar?(obj) || obj.type.to_s !~ /gem/ }
+    end
+    if [@source.id, source.id].include?(@dest.id) || jar?(@dest)
+      msg "The orbs need to go to a different container (not a jar) than the one you're checking."
+      exit
+    end
+    if jars.empty? && loose.empty?
+      msg "No #{gem_words.empty? ? 'gems' : gem_words} in your #{@source.name}."
+      exit
+    end
+
+    parts = []
+    parts << "#{loose.size} loose gem#{loose.size == 1 ? '' : 's'}" unless loose.empty?
+    parts << "#{jars.size} jar#{jars.size == 1 ? '' : 's'}" unless jars.empty?
+    msg "Checking #{parts.join(' and ')} with Phase (#{Spell[704].mana_cost} mana a gem)."
+    fput "open ##{@dest.id}"
+    before_dying { OrbCheck.cleanup }
+    empty_hands
+    @emptied_hands = true
+
+    # Anything still in hand means a put failed; stop and let cleanup put it away
+    hands_free = -> { hand_empty?('left') && hand_empty?('right') }
+    loose.each { |gem|
+      check_loose(gem)
+      return unless hands_free.call
+    }
+    jars.each { |jar|
+      check_jar(jar)
+      return unless hands_free.call
+    }
+  end
+
+  # On ;kill: a gem in hand goes back loose (by hand: a phased one has a new ID), set-aside
+  # gems go back in the jar, the jar goes back in its container. fput, since this runs after
+  # the script's own thread is gone.
+  def self.cleanup
+    return if @cleaned_up
+
+    @cleaned_up = true
+    fput "release" unless checkprep == 'None'
+    %w[left right].each { |side|
+      obj = hand(side)
+      next if obj.id.nil? || (@jar && obj.id.to_s == @jar.id.to_s)
+
+      # One DROP turns a shifting gem solid in hand (it isn't dropped); never on a solid one
+      if obj.name =~ /\bshifting\b/i
+        fput "drop ##{obj.id}"
+        sleep 0.5
+        obj = hand(side)
+        next if obj.id.nil?
+      end
+      fput "put #{side} in ##{@source.id}"
+      msg "Left #{obj.name} loose in your #{@source.name}; it was mid-check."
+    }
+    if @jar && held?(@jar.id)
+      @set_aside.each { |id|
+        fput "get ##{id}"
+        fput "put ##{id} in ##{@jar.id}" if held?(id)
+      }
+      fput "put ##{@jar.id} in ##{@source.id}"
+    end
+    fill_hands if @emptied_hands
+    msg "Checked #{@checked}: #{@orbs.size} orb gem#{@orbs.size == 1 ? '' : 's'}#{@orbs.empty? ? '' : " moved to your #{@dest.name}"}."
+    @orbs.tally.each { |name, count| respond "    #{count} x #{name}" }
+    msg "Couldn't pick up #{@missed} of them; run it again to retry." if @missed.positive?
+  end
+end
+
+OrbCheck.run(Script.current.vars[0])
