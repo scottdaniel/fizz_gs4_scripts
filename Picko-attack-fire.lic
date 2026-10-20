@@ -36,20 +36,27 @@
 #                             it's a rod, not a wand, so \bwand\b already
 #                             excludes it without special-casing.
 #                          2. Once no fire wand is left, an explicit FALLBACK
-#                             allow-list of other damage wands: acid (crystal,
-#                             smooth crystalline), lightning (iron, silver,
-#                             slender mithril), earth (bronze, faceted topaz)
-#                             and steam (green coral). NEVER water or ice/cold:
-#                             the wiki lists aquamarine and iridescent opal
-#                             (Minor Water), metal, slender azure and slender
-#                             blue (Minor/Major Cold) as those -- they're not
-#                             on the list, and since the fallback is an
-#                             allow-list (not "everything but those"), any
-#                             wand the wiki doesn't cover (copper, black
-#                             walnut, ...) is skipped too instead of gambled
-#                             on. Necromantic wands (bloodwood, bone, yew,
-#                             thanot, black stone, ...) are left off as well:
-#                             these hunts are undead. Every wand drawn is
+#                             allow-list of other damage wands -- everything
+#                             that isn't water or ice/cold (Scott, 10.20): acid
+#                             (crystal, smooth crystalline, black walnut),
+#                             lightning (iron, silver, slender mithril, copper),
+#                             earth (bronze, faceted topaz), steam (green coral),
+#                             plus Elemental Blast (plain mithril), Holy Bolt
+#                             (nacre-inlaid alabaster), Hand of Tonis (whorled
+#                             quartz), Balefire (fluted black stone), Astral
+#                             Spear (white starstone) and Empathic Assault
+#                             (lapis lazuli). NEVER water or ice/cold: the wiki
+#                             lists aquamarine and iridescent opal (Minor
+#                             Water), metal, slender azure and slender blue
+#                             (Minor/Major Cold) as those -- they're not on
+#                             the list, and since the fallback is an allow-list
+#                             (not "everything but those"), any wand the wiki
+#                             doesn't cover is skipped too instead of gambled
+#                             on, as are non-damage wands that share a name
+#                             (sleek alabaster / white linden = Empathy).
+#                             Necromantic wands (bloodwood, bone, yew,
+#                             thanot, plain black stone, ...) are left off as
+#                             well: these hunts are undead. Every wand drawn is
 #                             checked by name against the tier's pattern and
 #                             put straight back if it's not the one we meant
 #                             (GET matches on the last adjective + noun, so
@@ -104,8 +111,8 @@ FIRE_WAND_GET_NOUNS = ["golden wand", "drake wand", "electrum wand", "ebony wand
 # neither water nor ice/cold (see the header). Strongest first; steam (green
 # coral) last because it's the borderline one. Add a type here only after
 # checking its spell on the wiki -- an unlisted wand is never waved.
-FALLBACK_WAND_PATTERN   = /\b(?:an?|the)\s+(?:crystal|slender mithril|bronze|faceted topaz|silver|iron|smooth crystalline|green coral)\s+wand\b/i unless defined?(FALLBACK_WAND_PATTERN)
-FALLBACK_WAND_GET_NOUNS = ["crystal wand", "mithril wand", "bronze wand", "topaz wand", "silver wand", "iron wand", "crystalline wand", "coral wand"].freeze unless defined?(FALLBACK_WAND_GET_NOUNS)
+FALLBACK_WAND_PATTERN   = /\b(?:an?|the)\s+(?:crystal|(?:slender\s+)?mithril|bronze|faceted topaz|silver|iron|smooth crystalline|green coral|nacre-inlaid alabaster|whorled quartz|white starstone|black walnut|fluted black stone|copper|lapis lazuli)\s+wand\b/i unless defined?(FALLBACK_WAND_PATTERN)
+FALLBACK_WAND_GET_NOUNS = ["crystal wand", "mithril wand", "bronze wand", "topaz wand", "silver wand", "iron wand", "crystalline wand", "copper wand", "starstone wand", "alabaster wand", "quartz wand", "walnut wand", "stone wand", "lazuli wand", "coral wand"].freeze unless defined?(FALLBACK_WAND_GET_NOUNS)
 
 # Tiers in the order they're tried: [label, pattern, GET nouns].
 WAND_TIERS = [
@@ -225,7 +232,9 @@ def draw_wand
     next unless text =~ pattern
     nouns.each do |noun|
       r = dothistimeout("get #{noun} from my #{FRESH_WAND_CONTAINER}", 3,
-                        /You (?:remove|slip|slide|get|pull)|Get what\?|What were you referring to|I could not find/i).to_s
+                        /You (?:remove|slip|slide|get|pull)|Get what\?|What were you referring to|I could not find|free hand/i).to_s
+      # Both hands full: a wand we can wave may already be in one of them.
+      return true if r =~ /free hand/i && wand_in_hand?
       next unless r =~ /You (?:remove|slip|slide|get|pull)/i
       drawn = r[/You (?:remove|slip|slide|get|pull) ((?:an?|the|some) .+?) (?:from|out of)\b/i, 1].to_s
       if drawn =~ pattern
@@ -243,7 +252,13 @@ end
 def wand_in_hand?
   [GameObj.right_hand, GameObj.left_hand].compact.any? do |o|
     n = "a #{o.name}"
-    WAND_TIERS.any? { |_, pattern, _| n =~ pattern }
+    # The pattern wants the full "green coral wand", but the hand can report just
+    # the short GET form ("coral wand") -- match either, or a held coral wand
+    # looks empty-handed and the script tries to draw a second one (10.19: "You
+    # need a free hand" -> bogus "no usable wands" with 2 coral wands in the sack).
+    WAND_TIERS.any? do |_, pattern, nouns|
+      n =~ pattern || nouns.any? { |noun| o.name.to_s =~ /\b#{Regexp.escape(noun)}\b/i }
+    end
   end
 end
 
@@ -268,6 +283,30 @@ def wave_wand(foe)
   fput "put my wand in my #{DEAD_WAND_CONTAINER}" unless fired
 end
 
+# Symbol of Mana is a Voln symbol and costs favor (460 -- the voln-favor script
+# showed 678 -> 218 when one fired). With too little favor the game answers "You
+# strain to perform the symbol of mana but you are unable to call forth enough
+# power." and the cooldown never starts, so the plain cooldown check kept
+# picking it: 707 failed tries in one hunt on 10.20 (14:15-14:22, ~5 minutes of
+# standing still, no attack). After a failure, leave it alone for a while --
+# favor comes back from undead kills -- and use wands meanwhile.
+SYMBOL_RETRY_SECS = 180 unless defined?(SYMBOL_RETRY_SECS)
+
+def symbol_of_mana_ready?
+  Spell[9813].known? && !Effects::Cooldowns.active?("Symbol of Mana") &&
+    Time.now.to_f >= $picko_symbol_retry_at.to_f
+end
+
+# @return [Boolean] false if the symbol could not be performed (not enough favor).
+def try_symbol_of_mana
+  r = dothistimeout("symbol of mana", 3,
+                    /special blessing from Koar|surge of mana|unable to call forth enough power/i).to_s
+  return true unless r =~ /unable to call forth enough power/i
+  $picko_symbol_retry_at = Time.now.to_f + SYMBOL_RETRY_SECS
+  echo "Symbol of Mana: not enough Voln favor -- wands for the next #{SYMBOL_RETRY_SECS}s"
+  false
+end
+
 # --- main ----------------------------------------------------------------
 
 foe = GameObj.targets.find { |t| t.id.to_i == XMLData.current_target_id.to_i } if XMLData.current_target_id
@@ -285,10 +324,11 @@ exit if target_dead?(foe)
 
 if checkmana >= MANA_FLOOR
   attack_908(foe)
-elsif Spell[9813].known? && !Effects::Cooldowns.active?("Symbol of Mana")
+elsif symbol_of_mana_ready?
   # Off-cooldown check only -- never touches deeds (same check bigshot.lic and
-  # Picko-duskattack.lic use).
-  fput "symbol of mana"
+  # Picko-duskattack.lic use). A failed try (no Voln favor) falls straight
+  # through to a wand this pass instead of burning it.
+  wave_wand(foe) unless try_symbol_of_mana
 else
   wave_wand(foe)
 end
