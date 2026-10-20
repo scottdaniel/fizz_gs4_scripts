@@ -83,11 +83,19 @@ module ChargeMeUpScotty
   # 405 (verified): 'You sense that the wand is a magic item that holds the spell "Hurl Boulder"
   # with 7 charges.' / '... with no charge.' then 'It is a mage rechargeable item.' and 'You
   # estimate you're skilled enough to push this item to a maximum of 26 charges in a single session.'
-  DETECT_SPELL  = /holds the spell "([^"]+)" with (\d+|no) charges?/
-  DETECT_MAGE   = /It is a mage rechargeable item/
-  DETECT_MAX    = /maximum of (\d+) charges? in a single session/
-  DETECT_WEAR   = /signs of wear|sessions?\b.*\bwear/
-  DETECT_SHOP   = /can be recharged to its original capacity by a merchant/
+  # A mage empowerable item (verified 2026-10-20, a tooled platinum bracelet) instead says 'It is a
+  # mage empowerable item.', 'You determine the platinum bracelet can hold an additional 169
+  # charges.' and 'Given enough time, you feel as though you could push this item to 8 charges.'
+  # Empowered items aren't held to the 40-charge cap (gswiki).
+  DETECT_SPELL   = /holds the spell "([^"]+)" with (\d+|no) charges?/
+  DETECT_MAGE    = /It is a mage (?:rechargeable|empowerable|empowered) item/
+  DETECT_EMPOWER = /It is a mage (?:empowerable|empowered) item/
+  DETECT_MAX     = /maximum of (\d+) charges? in a single session|could push this item to (\d+) charges?/
+  DETECT_ROOM    = /can hold an additional (\d+) charges?/
+  DETECT_WEAR    = /signs of wear|sessions?\b.*\bwear/
+  # The wear line every healthy item gets; only anything else is worth showing
+  WEAR_FINE      = /can take several more sessions/
+  DETECT_SHOP    = /can be recharged to its original capacity by a merchant/
 
   POUR_OK       = /absorbed/
   POUR_BAD      = /evaporat/
@@ -315,8 +323,12 @@ module ChargeMeUpScotty
     end
     rec[:before] ||= rec[:charges]
     rec[:mage] = text =~ DETECT_MAGE ? true : false
+    rec[:empowered] = text =~ DETECT_EMPOWER ? true : false
     rec[:merchant] = text =~ DETECT_SHOP ? true : false
-    rec[:target] = text =~ DETECT_MAX ? [Regexp.last_match(1).to_i, ITEM_CAP].min : ITEM_CAP
+    room = text[DETECT_ROOM, 1]
+    cap = rec[:empowered] && room ? rec[:charges].to_i + room.to_i : ITEM_CAP
+    most = (match = text.match(DETECT_MAX)) ? (match[1] || match[2]).to_i : cap
+    rec[:target] = [most, cap].min
     rec[:wear] = lines.find { |line| line =~ DETECT_WEAR }
     rec[:raw] = lines if rec[:spell].nil? && !rec[:merchant]
     rec
@@ -383,8 +395,20 @@ module ChargeMeUpScotty
     @orb_id && orb_ids.include?(@orb_id)
   end
 
+  # Most valuable kinds first (a pricier gem makes a longer-lasting orb, and an orb gem has to
+  # be worth 1,000+). Rough gswiki values: uncut diamond / emerald / bloodjewel 3,750-5,500,
+  # uncut ruby 2,500-3,000, pink sapphire 2,500, pearls ~1,500. Tiny gems go last.
+  GEM_RANK = [/\bdiamond|\bemerald|bloodjewel/i, /\bruby|\bsapphire/i, /\bpearl/i].freeze
+
+  def self.gem_rank(gem)
+    return GEM_RANK.size + 1 if gem.name =~ /\btiny\b/i
+
+    GEM_RANK.index { |pattern| gem.name =~ pattern } || GEM_RANK.size
+  end
+
   def self.next_gem
-    contents(@gemsack).find { |obj| obj.type.to_s =~ /gem/ && !@bad_gems.include?(obj.id) }
+    gems = contents(@gemsack).select { |obj| obj.type.to_s =~ /gem/ && !@bad_gems.include?(obj.id) }
+    gems.min_by.with_index { |gem, i| [gem_rank(gem), i] }
   end
 
   # === grot t'kel potion =========================================================
@@ -668,7 +692,7 @@ module ChargeMeUpScotty
 
   # === report ====================================================================
   STATUS_TEXT = {
-    charge: 'not reached',
+    charge: 'needs charging',
     partial: 'partly charged',
     charged: 'charged',
     full: "charged (can't add more)",
@@ -676,7 +700,7 @@ module ChargeMeUpScotty
     greened: 'GREENED',
     no_mana: 'not enough mana',
     unknown: 'stopped (unrecognized response)',
-    not_rechargeable: 'not mage rechargeable',
+    not_rechargeable: 'not mage rechargeable or empowerable',
     merchant: 'merchant rechargeable only',
     missing: "couldn't pick it up",
   }.freeze
@@ -689,10 +713,16 @@ module ChargeMeUpScotty
     msg "Report#{@gems_used.positive? ? " (#{@gems_used} orb gem#{@gems_used == 1 ? '' : 's'} used)" : ''}:"
     @records.each do |rec|
       spell = rec[:spell] ? " (#{rec[:spell]})" : ''
-      charges = rec[:mage] ? "  #{rec[:before]} -> #{rec[:charges]} of #{rec[:target]}" : ''
+      charges = if !rec[:mage]
+                  ''
+                elsif rec[:before] == rec[:charges]
+                  "  #{rec[:charges]}/#{rec[:target]} charges"
+                else
+                  "  #{rec[:before]} -> #{rec[:charges]}/#{rec[:target]} charges"
+                end
       rubs = rec[:rubs].positive? ? ", #{rec[:rubs]} rub#{rec[:rubs] == 1 ? '' : 's'}" : ''
       respond "    #{rec[:name]}#{spell}#{charges}  #{STATUS_TEXT[rec[:status]] || rec[:status]}#{rubs}"
-      respond "        #{rec[:wear]}" if rec[:wear] && rec[:mage]
+      respond "        #{rec[:wear]}" if rec[:wear] && rec[:mage] && rec[:wear] !~ WEAR_FINE
       rec[:raw].to_a.each { |line| respond "        | #{line}" }
     end
     respond
