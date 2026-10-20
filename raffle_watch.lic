@@ -1,11 +1,19 @@
 =begin
   raffle_watch.lic
-  Checks RAFFLE LIST every half hour and posts to your Discord webhook (the one
-  `;exp_check setup` saved) when a raffle you'd want shows up -- e.g. an "uncommon
-  minor demon rune". Every raffle is looked at once (RAFFLE SHOW <#>, quietly) and
-  remembered in <lich data dir>/raffle_watch.yaml, so you hear about each one only
-  once, even if it runs on several characters. Treasure troves in the list are
-  matched on their prize name only.
+  Posts to your Discord webhook (the one `;exp_check setup` saved) when a raffle you'd
+  want shows up -- e.g. the Sorcerer Guild's monthly "minor demon sorcerer rune
+  teaching". Two sources, both in this script:
+
+    1. RAFFLE LIST every half hour. Every raffle is looked at once (RAFFLE SHOW <#>,
+       quietly). Treasure troves in the list are matched on their prize name only.
+    2. The Town Crier. That raffle is in person (Wednesdays 9pm ET outside the Mist Harbor
+       bank on Four Winds Isle, Premium sorcerers, you must be in the room) and the crier
+       announces it days ahead and again the morning of ("[PREMIUM RAFFLE] ...", "#TODAY
+       ... Minor Demon Rune Raffle"), so a hook on the Thoughts stream posts those the
+       moment they appear -- no waiting for the next list check.
+
+  Everything is remembered in <lich data dir>/raffle_watch.yaml, so you hear about each
+  one only once, even if it runs on several characters.
 
   A raffle is interesting when
     * its prize or details match the prize regex (default: minor demon / demon rune /
@@ -106,13 +114,45 @@ module RaffleWatch
     "#{e.kind}:#{e.id}|#{e.draws}"
   end
 
-  def self.seen
+  def self.stored
     h = (YAML.safe_load(File.read(SEEN_FILE)) rescue nil)
-    h.is_a?(Hash) && h['seen'].is_a?(Array) ? h['seen'] : []
+    h.is_a?(Hash) ? h : {}
   end
 
+  def self.seen
+    Array(stored['seen'])
+  end
+
+  # Raffle keys are replaced each pass (finished raffles drop out); crier keys are kept.
   def self.remember(keys)
-    File.write(SEEN_FILE, YAML.dump('seen' => keys))
+    File.write(SEEN_FILE, YAML.dump(stored.merge('seen' => keys)))
+  end
+
+  # ---- Town Crier ----
+
+  # What a Newsby thought says, without markup or Lich's inserted "(Room Info: ...)".
+  def self.crier_text(line)
+    t = clean([line]).strip
+    t = t[/Newsby: "(.*)"\s*\z/m, 1] || t[/Newsby: "(.*)/m, 1] || t
+    t.gsub(/\s*\(Room Info:[^)]*\)/, '').strip
+  end
+
+  # A Town Crier line about a raffle that matches the prize regex.
+  def self.crier_hit?(line)
+    return false unless line.include?('Newsby') && line =~ /raffle/i
+    crier_text(line) =~ prize_re ? true : false
+  end
+
+  def self.announce(line)
+    text = crier_text(line)
+    # the daily "#TODAY" list repeats from month to month, so it's keyed by day as well
+    key  = "crier:#{text.include?('#TODAY') ? Time.now.strftime('%F') : ''}#{text[0, 140]}"
+    done = Array(stored['crier'])
+    return if done.include?(key)
+    File.write(SEEN_FILE, YAML.dump(stored.merge('crier' => (done + [key]).last(100))))
+    msg = "Town Crier: #{text}"[0, 1800]
+    echo msg
+    post(msg)
   end
 
   # ---- deciding ----
@@ -182,19 +222,35 @@ module RaffleWatch
     end
     remember(entries.map { |e| key(e) } - unread)
     echo "checked #{entries.size} listings: #{fresh} new, #{reported} reported#{unread.empty? ? '' : ", #{unread.size} to retry"}."
-
   end
 
   def self.run(mode)
-    echo "watching RAFFLE LIST every #{minutes} minutes (prize regex: #{prize_re.source})." unless mode == 'once'
+    @events = Queue.new
+    unless mode == 'once'
+      DownstreamHook.add('raffle_watch', proc { |line|
+        @events << line if line.include?('Newsby') && line =~ /raffle/i   # cheap test here; the real one runs in crier_hit?
+        line
+      }, persist: false)
+      echo "watching RAFFLE LIST every #{minutes} minutes and the Town Crier (prize regex: #{prize_re.source})."
+    end
+    next_check = Time.at(0)
     loop do
-      begin
-        check
-      rescue StandardError => e
-        echo "check failed: #{e.class}: #{e.message}"
+      if Time.now >= next_check
+        begin
+          check
+        rescue StandardError => e
+          echo "check failed: #{e.class}: #{e.message}"
+        end
+        break if mode == 'once'
+        next_check = Time.now + minutes * 60
       end
-      break if mode == 'once'
-      sleep minutes * 60
+      line = @events.pop(timeout: [next_check - Time.now, 1].max)
+      next unless line
+      begin
+        announce(line) if crier_hit?(line)
+      rescue StandardError => e
+        echo "crier check failed: #{e.class}: #{e.message}"
+      end
     end
   end
 end
