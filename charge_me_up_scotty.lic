@@ -134,11 +134,20 @@ module ChargeMeUpScotty
     value.empty? ? fallback : value
   end
 
+  # GS4 style names, the way bigshot and ;vars hold them: "buck.bag", "mail sack", "my cloak",
+  # "sack". The last word is the noun; every other word has to start a word of the item's
+  # name ("buck" matches "juniper buckskin bag", like the game's own adjective matching).
+  def self.matches?(obj, name)
+    words = name.to_s.strip.sub(/\Amy\s+/i, '').split(/[\s.]+/)
+    return false if words.empty?
+
+    obj.noun.to_s.casecmp?(words.last) && words[0..-2].all? { |word| obj.name.to_s =~ /\b#{Regexp.escape(word)}/i }
+  end
+
   def self.find_container(name)
     return nil if name.nil?
 
-    GameObj.inv.find { |obj| obj.noun.to_s.casecmp?(name) } ||
-      GameObj.inv.find { |obj| obj.name.to_s =~ /\b#{Regexp.escape(name)}\b/i }
+    GameObj.inv.find { |obj| matches?(obj, name) }
   end
 
   # "look in" forces a fresh listing; GameObj#contents alone can be stale (lockerstow.lic)
