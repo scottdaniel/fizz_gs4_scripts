@@ -5,7 +5,7 @@
         game: gemstone
         tags: bounty, adventurer's guild, undead, voln
     requires: Lich > 5.4.0
-     version: 1.10
+     version: 1.11
 
   Want to keep earning favor with Voln while at the same time completing bounties?
 
@@ -96,6 +96,14 @@
   bounty" over and over).
 
   changelog:
+    1.11
+      - fix a crash ("undefined method 'number' for an instance of
+        Lich::Gemstone::Bounty::Task") when the guard assigns a creature
+        bounty that has no kill count, e.g. a single dangerous creature:
+        Bounty::Task only answers #number when the task has a :number
+        requirement and raises otherwise, so `task.number || '?'` never
+        reached its fallback. The count is now read from the task's
+        requirements directly and shows as '?' when the task has none
     1.10
       - recognize a directly-assigned task like :escort, not just types
         ending in "assignment" - previously it could sit unrecognized for
@@ -156,6 +164,18 @@ module UndeadBounty
 
   def self.bounty_history
     @bounty_history ||= []
+  end
+
+  # How many of the creature the bounty wants, or nil when the task doesn't
+  # carry a count (e.g. a single named dangerous creature, rescue, heirloom).
+  # Bounty::Task has no real #number method -- it only answers through
+  # method_missing when requirements has a :number key, and RAISES
+  # NoMethodError otherwise, so a plain `task.number || '?'` can never reach
+  # its '?' fallback. That crashed the script right after a guard assignment
+  # with no count (Picko, 2026-10-20 01:34: "undefined method 'number' for an
+  # instance of Lich::Gemstone::Bounty::Task"). Read the hash directly.
+  def self.task_number(task)
+    task.requirements&.[](:number)
   end
 
   def self.record_bounty(creature:, number:, type:, location:, verdict:)
@@ -553,9 +573,9 @@ module UndeadBounty
     creature = task.creature
     return unless creature_undead?(creature) && creature_matches_filter?(creature, creature_filter)
 
-    record_bounty(creature: creature, number: task.number, type: task.type, location: task.location,
+    record_bounty(creature: creature, number: task_number(task), type: task.type, location: task.location,
                   verdict: 'UNDEAD - already in progress, left as-is')
-    respond "UndeadBounty: current bounty is already #{task.number || '?'} x #{creature} in/near " \
+    respond "UndeadBounty: current bounty is already #{task_number(task) || '?'} x #{creature} in/near " \
             "#{task.location} - UNDEAD#{" and matches '#{creature_filter}'" if creature_filter}, leaving it alone."
     :already_matching
   end
@@ -745,24 +765,24 @@ module UndeadBounty
       task = ask_guard_for_bounty(assignment)
 
       unless task.creature
-        record_bounty(creature: nil, number: task.number, type: task.type, location: task.location,
+        record_bounty(creature: nil, number: task_number(task), type: task.type, location: task.location,
                        verdict: "couldn't parse creature from guard response")
         respond "UndeadBounty: could not determine the bounty creature from the guard's response, stopping."
         return
       end
 
       creature = task.creature
-      respond "UndeadBounty: assigned #{task.number || '?'} x #{creature} in/near #{task.location}."
+      respond "UndeadBounty: assigned #{task_number(task) || '?'} x #{creature} in/near #{task.location}."
 
       if creature_undead?(creature) && creature_matches_filter?(creature, creature_filter)
-        record_bounty(creature: creature, number: task.number, type: task.type, location: task.location,
+        record_bounty(creature: creature, number: task_number(task), type: task.type, location: task.location,
                        verdict: 'UNDEAD - stopped here')
         respond "UndeadBounty: #{creature} is UNDEAD#{" and matches '#{creature_filter}'" if creature_filter} - stopping, take it from here."
         return
       end
 
       verdict = creature_undead?(creature) ? "undead, but doesn't match filter '#{creature_filter}' - rerolled" : 'not undead - rerolled'
-      record_bounty(creature: creature, number: task.number, type: task.type, location: task.location, verdict: verdict)
+      record_bounty(creature: creature, number: task_number(task), type: task.type, location: task.location, verdict: verdict)
 
       respond "UndeadBounty: #{creature} doesn't qualify, requesting removal and rerolling..."
       ask_master_for_removal
