@@ -9,7 +9,10 @@
 # pawnshop limit) stayed in the cloak, Picko sat at 50% encumbered against
 # bigshot's `encumbered: 33`, and bigshot refused to hunt for 8+ hours.
 #
-#   ;stow_the_shiny          the normal run (what Picko-prerest calls)
+#   ;stow_the_shiny          the normal run (what Picko-prerest calls, after its own hook)
+#   ;stow_the_shiny sell     run ;eloot sell under the appraisal recorder, THEN the normal
+#                            run -- one line in a prerest instead of the hook block
+#                            (what Salvi-prerest calls)
 #   ;stow_the_shiny dry      say what it would store, don't move anything
 #   ;stow_the_shiny force    skip the encumbrance check (for testing the walk)
 #
@@ -173,6 +176,8 @@ def self.open_locker(booths)
         entered = true
         break
       end
+      # Public hall: that booth is in use -- the next one is a step east.
+      fput "east" if r.to_s =~ /presently using|You'll have to wait/i
     end
     sleep 1 unless entered
   end
@@ -283,7 +288,43 @@ def self.store_item(item, state)
   nil
 end
 
+# ;eloot sell with a downstream hook that records every appraisal it asks a
+# shopkeeper for into $shiny_quotes: the "You ask <npc> to appraise <item>." line
+# names the item, the first quote after it (or the gemshop's "not buying anything
+# this valuable today") is its value. Only the game's own text is needed. This is
+# the same recorder Picko-prerest.lic carries inline.
+def self.sell_with_recorder
+  $shiny_quotes = {}
+  $shiny_appraising = nil
+  DownstreamHook.remove("shiny_appraise_down") rescue nil
+  DownstreamHook.add("shiny_appraise_down", proc { |line|
+    text = line.to_s.gsub(/<[^>]+>/, '')
+    if text =~ /^You ask .+? to appraise (.+?)\.\s*$/i
+      $shiny_appraising = Regexp.last_match(1).sub(/\A(?:an?|the|some)\s+/i, '').strip
+    elsif $shiny_appraising
+      # First quote only; later lines ("It had 235 silvers on it.") must not overwrite it.
+      if text =~ /not buying anything this valuable today/i
+        $shiny_quotes[$shiny_appraising] = :refused
+        $shiny_appraising = nil
+      elsif text =~ /([,0-9]+) (?:silvers?|for it if you want to sell|for this if you'd like)/
+        $shiny_quotes[$shiny_appraising] = Regexp.last_match(1).delete(',').to_i
+        $shiny_appraising = nil
+      end
+    end
+    line
+  })
+  begin
+    Script.run("eloot", "sell")
+  ensure
+    DownstreamHook.remove("shiny_appraise_down")
+  end
+end
+
 mode = Script.current.vars[1].to_s.downcase
+if mode == "sell"
+  sell_with_recorder
+  mode = ""
+end
 
 if mode == "show"
   quotes = ($shiny_quotes || {})

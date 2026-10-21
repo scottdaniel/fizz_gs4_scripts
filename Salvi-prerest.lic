@@ -3,7 +3,10 @@
 module SalviPrerest
 
 Script.run("eherbs")
-Script.run("eloot", "sell")
+# ;eloot sell under the appraisal recorder, then store anything eloot refused to
+# sell (appraised above your eloot limits) in the locker -- only when encumbered
+# past bigshot's limit. See stow_the_shiny.lic.
+Script.run("stow_the_shiny", "sell")
 Script.run("undead_bounty", "kill moaning spirit")
 Script.run("buyitems")
 
