@@ -195,7 +195,7 @@ module ChargeMeUpScotty
     GameObj.inv.find { |obj| matches?(obj, name) }
   end
 
-  # "look in" forces a fresh listing; GameObj#contents alone can be stale (lockerstow.lic)
+  # "look in" forces a fresh listing; GameObj#contents alone can be stale (dusk_locker.lic)
   def self.contents(container)
     fput "look in ##{container.id}"
     container.contents.to_a

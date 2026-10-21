@@ -1,5 +1,6 @@
-#Picko-locker.lic
-# Run from Picko-prerest.lic right after ;eloot sell. Stores the items eloot
+#stow_the_shiny.lic
+# Not character-specific: run it from a prerest right after ;eloot sell (see
+# Picko-prerest.lic for the hook block that wraps the sell). Stores the items eloot
 # REFUSED to sell because they appraised above your eloot sell_appraise limits
 # (pawnshop / gemshop) in the locker trunk -- but ONLY while you are over
 # bigshot's encumbrance limit.
@@ -8,17 +9,17 @@
 # pawnshop limit) stayed in the cloak, Picko sat at 50% encumbered against
 # bigshot's `encumbered: 33`, and bigshot refused to hunt for 8+ hours.
 #
-#   ;Picko-locker          the normal run (what Picko-prerest calls)
-#   ;Picko-locker dry      say what it would store, don't move anything
-#   ;Picko-locker force    skip the encumbrance check (for testing the walk)
+#   ;stow_the_shiny          the normal run (what Picko-prerest calls)
+#   ;stow_the_shiny dry      say what it would store, don't move anything
+#   ;stow_the_shiny force    skip the encumbrance check (for testing the walk)
 #
 # Rules (Scott, 10/21):
 #   1. Nothing goes to the locker unless Char.percent_encumbrance is at or over
 #      the loaded bigshot profile's `encumbered` setting.
-#   2. Only items that were too valuable to sell. Picko-prerest watches the
+#   2. Only items that were too valuable to sell. The prerest watches the
 #      appraisals eloot asks for while it sells ("You ask <npc> to appraise
 #      <item>." plus the shopkeeper's quote that comes back) and keeps them in
-#      $picko_over_limit {item name => quote}; an item is "too valuable" if its quote is at or above
+#      $shiny_quotes {item name => quote}; an item is "too valuable" if its quote is at or above
 #      the SMALLER of your two eloot limits (anything cheaper than that would
 #      have been sold) or the gemshop refused to quote it at all. Items eloot
 #      never appraised -- the moonstone cube, small statue etc. that Picko-prep
@@ -39,7 +40,18 @@
 #      whether or not you're encumbered, so you hear about it without opening the
 #      locker; each item is announced once (the log is the memory). To mute it
 #      add `valuable_item: false` to exp_check.yaml.
-#   ;Picko-locker testhook   posts one test line to the webhook and exits
+#   ;stow_the_shiny show       print the appraisals recorded from eloot so far, then exit
+#   ;stow_the_shiny testhook   posts one test line to the webhook and exits
+#
+# Per-character locker settings -- optional file data/GSIV/<char>/stow_the_shiny.yaml:
+#     locker_target: locker        # a go2 target or a room id (default: locker)
+#     booth_command: go curtain    # what gets you into your booth; `none` if you open
+#                                  # the locker where you arrive (a house locker)
+#   Defaults: walk to `;go2 locker` and try GO CURTAIN (Icemule's Clovertooth Hall)
+#   then GO OPEN (the public Moot Hall booths). Fizzleworth's locker is in the
+#   Pauper's guild house, with no booth to enter -- give him booth_command: none and
+#   locker_target: <the room id>. With no file, UserVars.fizzdusk[:locker_is_house]
+#   (the fizzdusk setting) is honored the same way.
 #
 # Route (confirmed from the 10/20 log, Icemule Trace's Clovertooth Hall):
 #   ;go2 locker -> "Clovertooth Hall, Lockers" -> GO CURTAIN (into a booth) ->
@@ -47,7 +59,7 @@
 #   -> GET #id / PUT #id IN TRUNK, falling back to PUT #id IN LOCKER ->
 #   CLOSE LOCKER -> ;go2 back to where it started.
 #
-# lockerstow.lic isn't a fit: it is fizzdusk's dry-run -- it appraises the whole
+# dusk_locker.lic (was lockerstow) isn't a fit: it is fizzdusk's dry-run -- it appraises the whole
 # lootsack itself, defaults to Wehnimer's Moot Hall and enters a PUBLIC booth with
 # "go open".
 
@@ -56,7 +68,7 @@ require 'json'
 require 'net/http'
 require 'uri'
 
-module PickoLocker
+module StowTheShiny
 
 # Never touched even if eloot flagged them.
 KEEP_NAME = /runestaff|\bstaff\b|sheath/i unless defined?(KEEP_NAME)
@@ -93,7 +105,7 @@ end
 # Items eloot flagged as too valuable that are still in the loot container.
 # Fresh LOOK IN so the contents (and ids) are current.
 def self.flagged_items
-  flagged = ($picko_over_limit || {})
+  flagged = ($shiny_quotes || {})
   return [] if flagged.empty?
   threshold = eloot_limits.min
   names = flagged.select { |_name, amount| amount == :refused || amount.to_i >= threshold }.keys
@@ -125,16 +137,42 @@ def self.clear_hands
   end
 end
 
-# Walk into a locker booth and open the locker. @return [Boolean]
-def self.open_locker
+# This character's locker settings (see the header). @return [Hash] target:, booths:
+def self.locker_settings
+  path = File.join(DATA_DIR, XMLData.game, Char.name, "stow_the_shiny.yaml")
+  own = (YAML.load_file(path) rescue nil)
+  own = {} unless own.is_a?(Hash)
+  fd = (UserVars.fizzdusk.is_a?(Hash) ? UserVars.fizzdusk : {})
+  house = fd[:locker_is_house] == true
+  target = own["locker_target"] || (house ? fd[:locker_location] : nil) || "locker"
+  booth = own.key?("booth_command") ? own["booth_command"] : (house ? "none" : nil)
+  booth = booth.to_s.strip
+  booths = if booth.empty? then ["go curtain", "go open"]
+           elsif booth =~ /\A(?:none|no|false|nil)\z/i then []
+           else [booth]
+           end
+  { target: target.to_s, booths: booths }
+end
+
+# Walk into a locker booth (when this locker has one) and open the locker.
+# @return [Boolean]
+def self.open_locker(booths)
+  entered = booths.empty?
   3.times do
-    r = dothistimeout("go curtain", 5, /You step through the curtained opening|presently using|occupied|can't go|What were you referring/i)
-    break if r.to_s =~ /You step through the curtained opening/i
-    sleep 1
+    break if entered
+    booths.each do |cmd|
+      r = dothistimeout(cmd, 5, /You step through the curtained opening|presently using|occupied|can't go|What were you referring/i)
+      if r.to_s =~ /You step through the curtained opening/i
+        entered = true
+        break
+      end
+    end
+    sleep 1 unless entered
   end
+  echo "stow_the_shiny: couldn't get into a booth (tried #{booths.join(' / ')}) -- trying the locker anyway." unless entered
   r = dothistimeout("open locker", 5, /As you open the locker|already open|What were you referring/i)
   if r.nil? || r =~ /What were you referring/i
-    echo "Picko-locker: couldn't open the locker (not in a booth?) -- leaving the items where they are."
+    echo "stow_the_shiny: couldn't open the locker -- leaving the items where they are."
     return false
   end
   true
@@ -149,7 +187,7 @@ end
 def self.log_line(text)
   File.open(log_file, "a") { |f| f.puts "#{Time.now.strftime('%Y-%m-%d %H:%M')}  #{text}" }
 rescue StandardError => e
-  echo "Picko-locker: couldn't write #{log_file} (#{e.message})"
+  echo "stow_the_shiny: couldn't write #{log_file} (#{e.message})"
 end
 
 def self.already_found?(item)
@@ -162,7 +200,7 @@ end
 
 # The silver quote eloot got for this item, or :refused, or nil.
 def self.quote_for(item)
-  pair = ($picko_over_limit || {}).find { |name, _| name.casecmp(item.name.to_s.strip).zero? }
+  pair = ($shiny_quotes || {}).find { |name, _| name.casecmp(item.name.to_s.strip).zero? }
   pair && pair.last
 end
 
@@ -179,7 +217,7 @@ def self.post_webhook(text)
   end
   res.is_a?(Net::HTTPSuccess)
 rescue StandardError => e
-  echo "Picko-locker: webhook failed (#{e.class}: #{e.message})"
+  echo "stow_the_shiny: webhook failed (#{e.class}: #{e.message})"
   false
 end
 
@@ -191,7 +229,7 @@ def self.announce_new(items)
     value = quote == :refused ? "too valuable for the gemshop to quote" : "appraised at #{commas(quote)} silvers"
     log_line("FOUND   ##{item.id}  #{item.name}  (#{value})")
     sent = post_webhook("Found a valuable item: #{item.name} -- #{value}, too valuable to sell.")
-    echo "Picko-locker: found #{item.name} (#{value})#{sent ? ' -- webhook sent' : ''}."
+    echo "stow_the_shiny: found #{item.name} (#{value})#{sent ? ' -- webhook sent' : ''}."
   end
 end
 
@@ -218,7 +256,7 @@ def self.store_item(item, state)
     count = fetch_mantle
     state[:mantle] = count ? :held : :none
     state[:count] = count.to_i
-    echo "Picko-locker: no mantle in the trunk -- putting the items in the trunk instead." unless count
+    echo "stow_the_shiny: no mantle in the trunk -- putting the items in the trunk instead." unless count
   end
 
   put_rx = /You put|won't fit|can't fit|no room|too full|doesn't fit|What were you referring/i
@@ -240,8 +278,14 @@ end
 
 mode = Script.current.vars[1].to_s.downcase
 
+if mode == "show"
+  quotes = ($shiny_quotes || {})
+  echo(quotes.empty? ? "stow_the_shiny: nothing recorded from eloot yet." : "stow_the_shiny: recorded appraisals: #{quotes.map { |n, v| "#{n} = #{v}" }.join('; ')}")
+  exit
+end
+
 if mode == "testhook"
-  echo(post_webhook("Picko-locker test message -- the webhook works.") ? "Picko-locker: test message sent." : "Picko-locker: test message NOT sent (no webhook_url in exp_check.yaml, valuable_item: false, or an error above).")
+  echo(post_webhook("stow_the_shiny test message -- the webhook works.") ? "stow_the_shiny: test message sent." : "stow_the_shiny: test message NOT sent (no webhook_url in exp_check.yaml, valuable_item: false, or an error above).")
   exit
 end
 
@@ -250,20 +294,22 @@ items = flagged_items
 announce_new(items) unless mode == "dry"
 
 if !over && mode != "force"
-  echo "Picko-locker: encumbrance #{current}% is under bigshot's #{limit}% limit -- nothing to store."
+  echo "stow_the_shiny: encumbrance #{current}% is under bigshot's #{limit}% limit -- nothing to store."
 elsif items.empty?
-  echo "Picko-locker: #{current}% encumbered (limit #{limit}%), but no too-valuable item eloot flagged is in the #{loot_container} -- nothing to store."
+  echo "stow_the_shiny: #{current}% encumbered (limit #{limit}%), but no too-valuable item eloot flagged is in the #{loot_container} -- nothing to store.#{($shiny_quotes || {}).empty? ? ' (Nothing has been recorded from eloot yet: the sell has to run under the recorder -- see the header.)' : ''}"
 elsif mode == "dry"
-  echo "Picko-locker (dry run): would put #{items.length} item(s) in the mantle (max #{MANTLE_LIMIT}, the rest in the trunk): #{items.map(&:name).join(', ')}"
+  echo "stow_the_shiny (dry run): would put #{items.length} item(s) in the mantle (max #{MANTLE_LIMIT}, the rest in the trunk): #{items.map(&:name).join(', ')}"
 else
-  echo "Picko-locker: #{current}% encumbered (limit #{limit}%) -- storing #{items.length} too-valuable item(s) in the locker: #{items.map(&:name).join(', ')}"
+  echo "stow_the_shiny: #{current}% encumbered (limit #{limit}%) -- storing #{items.length} too-valuable item(s) in the locker: #{items.map(&:name).join(', ')}"
   home = Room.current.id
   begin
     clear_hands
-    Script.run("go2", "locker")
-    if XMLData.room_title.to_s !~ /locker/i
-      echo "Picko-locker: didn't end up at the lockers (room: #{XMLData.room_title}) -- giving up."
-    elsif open_locker
+    cfg = locker_settings
+    Script.run("go2", cfg[:target])
+    arrived = cfg[:target] =~ /\A\d+\z/ ? Room.current.id == cfg[:target].to_i : XMLData.room_title.to_s =~ /locker/i
+    if !arrived
+      echo "stow_the_shiny: didn't end up at the locker (room: #{XMLData.room_title}, wanted #{cfg[:target]}) -- giving up."
+    elsif open_locker(cfg[:booths])
       state = { mantle: nil, count: 0 }
       tally = Hash.new(0)
       items.first(MAX_ITEMS).each do |item|
@@ -271,11 +317,11 @@ else
         break unless where
         tally[where] += 1
         log_line("STORED  ##{item.id}  #{item.name}  -> #{where}")
-        $picko_over_limit.delete_if { |n, _| n.casecmp(item.name.to_s.strip).zero? }
+        $shiny_quotes.delete_if { |n, _| n.casecmp(item.name.to_s.strip).zero? }
       end
       # The mantle goes back in the trunk with whatever it now holds.
       fput "put my mantle in trunk" if state[:mantle] == :held
-      echo "Picko-locker: stored #{tally.values.sum} of #{items.length} item(s) -- " \
+      echo "stow_the_shiny: stored #{tally.values.sum} of #{items.length} item(s) -- " \
            "#{tally[:mantle]} in the mantle, #{tally[:trunk]} in the trunk, #{tally[:locker]} in the locker."
       fput "close locker"
     end

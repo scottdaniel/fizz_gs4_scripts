@@ -1,4 +1,4 @@
-# lockerstow.lic
+# dusk_locker.lic
 # Manual test/utility command for the appraise-and-locker logic fizzdusk.lic's
 # check_valuable_loot runs automatically once you hit UserVars.fizzdusk
 # [:encumbrance_limit] percent encumbered. Run this on demand -- no encumbrance
@@ -106,16 +106,16 @@ fput "look in my #{Vars.lootsack}"
 sack = GameObj.inv.find { |i| i.name =~ /#{Regexp.escape(Vars.lootsack)}/i }
 
 if sack.nil? || sack.contents.to_a.empty?
-  echo "lockerstow: #{Vars.lootsack} is empty, nothing to appraise."
+  echo "dusk_locker: #{Vars.lootsack} is empty, nothing to appraise."
 else
   items = sack.contents.dup
   if SELL_EXCLUDE_REGEX
     excluded, items = items.partition { |item| item.name =~ SELL_EXCLUDE_REGEX }
-    echo "lockerstow: skipping #{excluded.length} item(s) on your eloot sell_exclude list." unless excluded.empty?
+    echo "dusk_locker: skipping #{excluded.length} item(s) on your eloot sell_exclude list." unless excluded.empty?
   end
 
   if items.empty?
-    echo "lockerstow: nothing left to appraise after eloot exclusions."
+    echo "dusk_locker: nothing left to appraise after eloot exclusions."
   else
     jewelry, regular = items.partition { |item| item.type?('jewelry') }
     valuable = []
@@ -133,9 +133,9 @@ else
     end
 
     if valuable.empty?
-      echo "lockerstow: nothing appraised above your eloot sell_appraise limits."
+      echo "dusk_locker: nothing appraised above your eloot sell_appraise limits."
     else
-      echo "lockerstow: #{valuable.length} item(s) appraised above your eloot sell_appraise limits, moving to locker."
+      echo "dusk_locker: #{valuable.length} item(s) appraised above your eloot sell_appraise limits, moving to locker."
       start_script("go2", [UserVars.fizzdusk[:locker_location].to_s])
       wait_while { running?("go2") }
       enter_locker_booth
@@ -153,7 +153,7 @@ end
 if Script.exists?("eloot")
   Script.run("eloot", "sell")
 else
-  echo "lockerstow: eloot isn't installed, skipping the sell step."
+  echo "dusk_locker: eloot isn't installed, skipping the sell step."
 end
 
-echo "lockerstow: done."
+echo "dusk_locker: done."
