@@ -7983,12 +7983,36 @@ module BlackArts
       exit
     end
 
+    # The demon has to be in the room to be illusioned. After TELL MDEMON SCOUT (or wandering off)
+    # it still says "Your brown buzzard is already following you." but ILLUSION DEMON gets "I
+    # could not find what you were referring to." (2026-10-21). TELL MDEMON RETURN brings it back:
+    # "Your brown buzzard acknowledges your order and begins to travel to your location."
+    def self.demon_here?
+      id = BlackArts.data.demon_id.to_s
+      (GameObj.npcs.to_a + GameObj.loot.to_a + GameObj.room_desc.to_a).any? { |obj| obj.id.to_s == id }
+    end
+
+    def self.bring_demon_back
+      return if Illusions.demon_here?
+
+      Util.msg("info", " Your #{BlackArts.data.demon_noun || 'demon'} isn't here, so telling it to come back.")
+      fput "tell mdemon return"
+      60.times {
+        return if Illusions.demon_here?
+        sleep 1
+      }
+      # Not seen, but it may just be listed somewhere unexpected; let the illusion try anyway
+      Util.msg("info", " Didn't see your demon arrive within a minute; trying anyway.")
+    end
+
     def self.do_demons(place: nil)
       Illusions.demon_allowed? unless place.nil?
       Illusions.determine_demon
       Illusions.check_demon_rank
+      Illusions.bring_demon_back
       Illusions.track_task_start
       failures = 0
+      recalls = 0
 
       loop do
         unless Effects::Spells.active?("Minor Summoning")
@@ -8011,12 +8035,20 @@ module BlackArts
         why = Illusions.interrupted_reason(waited ? Guild.gld['illusions'] : nil)
         Illusions.stop_training(why) if why
 
-        lines = Util.issue_command("illusion demon ##{BlackArts.data.demon_id}", /You shift your gaze to your|is already illusioned/)
+        lines = Util.issue_command("illusion demon ##{BlackArts.data.demon_id}", /You shift your gaze to your|is already illusioned|I could not find what you were referring to/)
         Illusions.audience_rep_done if place == 'audience'
         Util.wait_rt
 
+        # The demon wandered off (or was sent to scout): call it back instead of counting a failure
+        if lines.any?(/I could not find what you were referring to/) && recalls < 3
+          recalls += 1
+          Illusions.bring_demon_back
+          next
+        end
+
         if lines.any?(/Piece by piece, the creature's form changes until|is already illusioned/)
           failures = 0
+          recalls = 0
           Util.wait_rt
           Util.msg("info", " Waiting for mana to dispel the illusion (you have #{checkmana}).") if checkmana <= 5
           sleep 0.5 until checkmana > 5
