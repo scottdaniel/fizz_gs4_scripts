@@ -7311,7 +7311,7 @@ module BlackArts
       Util.msg("yellow", " #{@voucher_streak} voucher trades in a row without a task you can do, so no more vouchers this run.")
       left = Guild.gld['guild'][:vouchers].to_i
       Guild.save_vouchers(left) if left.positive?
-      Util.msg("yellow", " Restart fizzarts to use vouchers again.")
+      Util.msg("yellow", " Carrying on with the normal 15-minute waits; restart fizzarts to use vouchers again.")
     end
 
     # GLD VOUCHER {1-1000} signs redeemed vouchers into an "Elanthian Guilds voucher pack" in hand:
