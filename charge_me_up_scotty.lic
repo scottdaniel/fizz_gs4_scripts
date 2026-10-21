@@ -34,6 +34,10 @@
        it shrinks, makes a new orb when it implodes, and stops an item when it's
        full, greened, or has had charge_maxrubs rubs (every rub past the first
        couple raises the chance of greening it).
+       An item stopped short by the orb's limit ("unable to add any more charges"
+       before your max: a cheaper gem's orb caps what it can add) gets one more try
+       on the next orb. If none is made before everything else is done, it lets
+       the orb run out (up to 30 minutes, not re-prepped) and makes the next one.
     7. Spent wands come from bigshot's dead wand container and go back to the
        fresh wand container; magic items come from chargesack and go to
        chargedsack. Items that aren't mage rechargeable stay where they were.
@@ -759,6 +763,7 @@ module ChargeMeUpScotty
         @orb_id = new_orb
         @orb_ready = false
         @gems_used += 1
+        @orb_count += 1
         return true
       end
 
@@ -802,6 +807,7 @@ module ChargeMeUpScotty
       if lines.any? { |line| line =~ ORB_READY || line =~ ORB_GROW || line =~ ORB_SHRINK }
         msg "Using the pulsating orb that's already here."
         @orb_ready = lines.any? { |line| line =~ ORB_READY }
+        @orb_count += 1
         return
       end
     end
@@ -824,17 +830,20 @@ module ChargeMeUpScotty
   # again), or :stop (no orb could be made)
   def self.charge(rec)
     return :stop unless ensure_orb
-    return :done unless take(rec[:id], rec[:src]) && in_right_hand(rec[:id])
 
-    rec[:status] = :partial if rec[:status] == :charge
+    # A retried item is wherever its last charge() left it
+    home = rec[:loc] || rec[:src]
+    return :done unless take(rec[:id], home) && in_right_hand(rec[:id])
+
+    rec[:status] = :partial if %i[charge orb_limit].include?(rec[:status])
     short_on_mana = false
     while rec[:charges] < rec[:target] && rec[:rubs] < max_rubs
       unless orb_alive?
-        stash(rec[:id], rec[:src])
+        stash(rec[:id], home)
         return :orb_lost
       end
       unless @orb_ready || prep_orb
-        stash(rec[:id], rec[:src])
+        stash(rec[:id], home)
         return :orb_lost
       end
 
@@ -862,7 +871,17 @@ module ChargeMeUpScotty
         end
         msg "#{rec[:name]}: #{rec[:charges]}/#{rec[:target]} charges after rub #{rec[:rubs]}."
       elsif text =~ RUB_FULL
-        rec[:status] = :full
+        # "You are unable to add any more charges." means the item is full OR the orb isn't
+        # valuable enough (gswiki). Short of the target, it's the orb: 2026-10-20 a 3,648 pink
+        # sapphire orb stopped a golden wand at 17/40 and a drake wand at 17/34, while a 7,612
+        # emerald orb took two drake wands to 35. That kind gets another go on the next orb.
+        if rec[:charges] < rec[:target]
+          rec[:status] = :orb_limit
+          rec[:capped_orb] = @orb_count
+          msg "#{rec[:name]} hit this orb's limit at #{rec[:charges]}/#{rec[:target]}#{rec[:retried] ? '' : '; it gets another try on the next orb'}."
+        else
+          rec[:status] = :full
+        end
         break
       elsif text =~ RUB_FLOWS
         rec[:rubs] += 1
@@ -887,7 +906,8 @@ module ChargeMeUpScotty
     end
 
     rec[:status] = :charged if rec[:status] == :partial && rec[:charges] >= rec[:target]
-    stash(rec[:id], destination(rec))
+    dest = destination(rec)
+    rec[:loc] = dest if stash(rec[:id], dest)
     # A greened item needs a fresh 405 next time; anything else keeps its new charge count
     if rec[:status] == :greened
       @survey_cache.delete(rec[:id].to_s)
@@ -896,6 +916,76 @@ module ChargeMeUpScotty
     end
     save_survey
     :done
+  end
+
+  # An item that hit an orb's limit gets one more try, on a later orb, if it has rubs left
+  def self.retryable?(rec)
+    rec[:status] == :orb_limit && !rec[:retried] && rec[:rubs] < max_rubs
+  end
+
+  def self.requeue(recs, queue)
+    recs.each do |rec|
+      @capped.delete(rec)
+      queue << rec
+    end
+  end
+
+  # Charges everything in order. An item stopped by the orb's limit is set aside and goes
+  # back in line as soon as a newer orb exists. If some are still waiting when the line is
+  # empty and there's a gem left, let this orb run out (it isn't re-prepped), then make
+  # the next one for them.
+  def self.charge_all(recs)
+    queue = recs.dup
+    waited = false
+    loop do
+      until queue.empty?
+        rec = queue.shift
+        # Marked when the retry really starts, so the report never claims one that didn't happen
+        rec[:retried] = true if rec[:status] == :orb_limit
+        result = charge(rec)
+        result = charge(rec) while result == :orb_lost
+        return if result == :stop
+
+        @capped << rec if rec[:status] == :orb_limit && !@capped.include?(rec)
+        requeue(@capped.select { |capped| retryable?(capped) && capped[:capped_orb] < @orb_count }, queue)
+      end
+
+      waiting = @capped.select { |capped| retryable?(capped) }
+      return if waiting.empty? || waited
+      if next_gem.nil?
+        msg "No orb gems left to retry #{waiting.map { |capped| "the #{capped[:name]}" }.join(', ')} on another orb."
+        return
+      end
+      waited = true
+      return unless wait_out_orb(waiting)
+
+      requeue(waiting, queue)
+    end
+  end
+
+  # The orb can't add more to these, and a new orb can only be made once this one's gone
+  ORB_WAIT_MAX = 30 * 60
+
+  def self.wait_out_orb(waiting)
+    names = waiting.map { |rec| "#{rec[:name]} (#{rec[:charges]}/#{rec[:target]})" }.join(', ')
+    msg "Letting this orb run out so the next one can retry #{names}. Up to #{ORB_WAIT_MAX / 60} minutes; ;kill to stop here."
+    started = Time.now
+    reported = started
+    while orb_alive?
+      drain
+      if Time.now - started > ORB_WAIT_MAX
+        msg "The orb is still going after #{ORB_WAIT_MAX / 60} minutes. Leaving the retries for next time (--topoff)."
+        return false
+      end
+      if Time.now - reported >= 5 * 60
+        reported = Time.now
+        msg "Still waiting for the orb to run out (#{((Time.now - started) / 60).floor} minutes so far)."
+      end
+      sleep 1
+    end
+    msg "The orb's gone. Making the next one for the retries."
+    @orb_id = nil
+    true
   end
 
   def self.destination(rec)
@@ -925,6 +1015,7 @@ module ChargeMeUpScotty
     partial: 'partly charged',
     charged: 'charged',
     full: "charged (can't add more)",
+    orb_limit: 'orb limit (a more valuable orb may add more)',
     at_max: 'already at your max',
     greened: 'GREENED',
     no_mana: 'not enough mana',
@@ -950,6 +1041,7 @@ module ChargeMeUpScotty
                   "  #{rec[:before]} -> #{rec[:charges]}/#{rec[:target]} charges"
                 end
       rubs = rec[:rubs].positive? ? ", #{rec[:rubs]} rub#{rec[:rubs] == 1 ? '' : 's'}" : ''
+      rubs += ', retried on a second orb' if rec[:retried]
       respond "    #{rec[:name]}#{spell}#{charges}  #{STATUS_TEXT[rec[:status]] || rec[:status]}#{rubs}"
       respond "        #{rec[:wear]}" if rec[:wear] && rec[:mage] && rec[:wear] !~ WEAR_FINE
       rec[:raw].to_a.each { |line| respond "        | #{line}" }
@@ -999,6 +1091,8 @@ module ChargeMeUpScotty
     @orb_id = nil
     @orb_ready = false
     @gems_used = 0
+    @orb_count = 0
+    @capped = []
     @reported = false
     @cleaned_up = false
     @emptied_hands = false
@@ -1073,11 +1167,7 @@ module ChargeMeUpScotty
     go_to_workshop unless here
     adopt_orb unless orb_ids.empty?
 
-    to_charge.each do |rec|
-      result = charge(rec)
-      result = charge(rec) while result == :orb_lost
-      break if result == :stop
-    end
+    charge_all(to_charge)
     msg "The pulsating orb is still here if you have more to charge." if orb_alive?
 
     go2(start_room) if start_room && !here && Room.current&.id != start_room
