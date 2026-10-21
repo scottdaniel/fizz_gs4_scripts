@@ -18,6 +18,8 @@
         says it's a Guild Night (doubled training points), and signs leftovers back
         into a pack afterwards. Redeems the whole pack at once: tearing off one voucher
         per trade put a GIVE between every trade, and speed tasks nearly vanished.
+      - illusion loops stop the script if you walk away from the practice room or the
+        Illusions task changes under them (you turned it in or took a new one yourself).
       - voucher safety stop: 10 voucher trades in a row without a usable task stops
         voucher use for the run and signs the redeemed ones back into a pack.
       - redeems a pack when GLD shows no voucher count at all (upstream needed
@@ -7643,6 +7645,30 @@ module BlackArts
       Guild.remove_task('illusions')
     end
 
+    # === Stop when you take over ===================================================
+    # 2026-10-21: the speed task finished while fizzarts waited for mana; you turned it in and took
+    # a new task yourself, then went to your locker, and fizzarts kept casting demon illusions in
+    # the vault because the new task had repetitions too. Each illusion loop now remembers where it
+    # started and which task it's on, and stops the script if either changes.
+    def self.track_task_start
+      @task_room = Room.current.id
+      @task_text = Guild.gld['illusions'][:task]
+    end
+
+    # status: a fresh Guild.gld['illusions'] to also check the task; nil checks only the room
+    def self.interrupted_reason(status = nil)
+      return "you left the room I was practicing illusions in" if Room.current.id != @task_room
+      return nil if status.nil? || status[:reps].to_i.zero?
+      return "your Illusions task changed to \"#{status[:task]}\"" if status[:task] != @task_text
+
+      nil
+    end
+
+    def self.stop_training(reason)
+      Util.msg("yellow", " Stopping fizzarts: #{reason}, so it looks like you've taken over.")
+      exit
+    end
+
     def self.do_illusions(place: nil)
       illusion = Illusions.latest_illusion
       # ;summond travels to a summoning chamber, so get the demon before going to the task's room
@@ -7670,6 +7696,7 @@ module BlackArts
 
       # Util.travel's STORE can leave a weapon in hand (e.g. a scepter that won't fit the staff sling)
       Inventory.free_hands(both: true)
+      Illusions.track_task_start
 
       loop do
         destroy = nil
@@ -7677,6 +7704,9 @@ module BlackArts
         if place == 'audience'
           break unless Illusions.audience_ready?
         end
+
+        why = Illusions.interrupted_reason
+        Illusions.stop_training(why) if why
 
         fput illusion
         Illusions.audience_rep_done if place == 'audience'
@@ -7700,7 +7730,11 @@ module BlackArts
 
           Illusions.audience_wait_next if place == 'audience' && Guild.gld['illusions'][:reps].to_i.positive?
         end
-        break if Guild.gld['illusions'][:reps].to_i.zero?
+        status = Guild.gld['illusions']
+        break if status[:reps].to_i.zero?
+
+        why = Illusions.interrupted_reason(status)
+        Illusions.stop_training(why) if why
       end
       Illusions.audience_done if place == 'audience'
     end
@@ -7715,13 +7749,18 @@ module BlackArts
         Util.get_res("_drag ##{BlackArts.data.shadow_item.id} drop", BlackArts.data.get_regex)
         Util.wait_rt
       end
+      Illusions.track_task_start
+      stopped = nil
 
       loop do
         if place == 'audience'
           break unless Illusions.audience_ready?
         end
 
+        waited = checkmana <= 3
+        Util.msg("info", " Waiting for mana to cast the next illusion (you have #{checkmana}).") if waited
         sleep 0.5 until checkmana > 3
+        break if (stopped = Illusions.interrupted_reason(waited ? Guild.gld['illusions'] : nil))
 
         fput "illusion shadow #{drop_item}"
         Illusions.audience_rep_done if place == 'audience'
@@ -7734,11 +7773,18 @@ module BlackArts
 
           Illusions.audience_wait_next if place == 'audience' && Guild.gld['illusions'][:reps].to_i.positive?
         end
-        break if Guild.gld['illusions'][:reps].to_i.zero?
+        status = Guild.gld['illusions']
+        break if status[:reps].to_i.zero?
+        break if (stopped = Illusions.interrupted_reason(status))
       end
 
       sleep 1
-      Inventory.store_item(BlackArts.data.shadow_container, BlackArts.data.shadow_item) unless !item.nil?
+      if Room.current.id == @task_room
+        Inventory.store_item(BlackArts.data.shadow_container, BlackArts.data.shadow_item) unless !item.nil?
+      elsif item.nil?
+        Util.msg("yellow", " Your #{BlackArts.data.shadow_item&.name || 'shadow item'} is still on the floor in room #{@task_room}.")
+      end
+      Illusions.stop_training(stopped) if stopped
     end
 
     def self.shadow_item(item: nil)
@@ -7941,6 +7987,7 @@ module BlackArts
       Illusions.demon_allowed? unless place.nil?
       Illusions.determine_demon
       Illusions.check_demon_rank
+      Illusions.track_task_start
       failures = 0
 
       loop do
@@ -7957,7 +8004,12 @@ module BlackArts
           break unless Illusions.audience_ready?
         end
 
+        waited = checkmana <= 5
+        # A silent wait here looked like the script had hung (2026-10-21), so say what it's doing
+        Util.msg("info", " Waiting for mana to cast the next illusion (you have #{checkmana}).") if waited
         sleep 0.5 until checkmana > 5
+        why = Illusions.interrupted_reason(waited ? Guild.gld['illusions'] : nil)
+        Illusions.stop_training(why) if why
 
         lines = Util.issue_command("illusion demon ##{BlackArts.data.demon_id}", /You shift your gaze to your|is already illusioned/)
         Illusions.audience_rep_done if place == 'audience'
@@ -7966,6 +8018,7 @@ module BlackArts
         if lines.any?(/Piece by piece, the creature's form changes until|is already illusioned/)
           failures = 0
           Util.wait_rt
+          Util.msg("info", " Waiting for mana to dispel the illusion (you have #{checkmana}).") if checkmana <= 5
           sleep 0.5 until checkmana > 5
           fput "illusion demon ##{BlackArts.data.demon_id} dispel"
           Util.wait_rt
@@ -7978,7 +8031,11 @@ module BlackArts
             exit
           end
         end
-        break if Guild.gld['illusions'][:reps].to_i.zero?
+        status = Guild.gld['illusions']
+        break if status[:reps].to_i.zero?
+
+        why = Illusions.interrupted_reason(status)
+        Illusions.stop_training(why) if why
       end
     end
   end
