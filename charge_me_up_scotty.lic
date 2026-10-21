@@ -52,6 +52,9 @@
     ;vars set chargedsack=<container>     recharged magic items (default: chargesack)
     ;vars set greensack=<container>       greened items (default: where they'd go anyway)
     ;vars set charge_maxrubs=<n>          most rubs per item per session (default 3)
+    ;vars set charge_symbol=false         never use Symbol of Mana (default true: while waiting
+                                          to rub, whenever it's off cooldown; it costs Voln
+                                          favor, and one "not enough favor" stops it for the run)
 
   Usage:
     ;charge_me_up_scotty          survey, then charge everything that needs it
@@ -127,6 +130,12 @@ module ChargeMeUpScotty
   APPRAISE_VALUE = /give you ([\d,]+) silvers?/
   APPRAISE_HIGH  = /not buying anything this valuable/
   APPRAISE_DONE  = Regexp.union(APPRAISE_VALUE, APPRAISE_HIGH, /not quite my field|I only deal in|worthless|not interested|^I could not find|^What were you referring to|must be holding/)
+  # Verified in Picko's logs: "You call upon a special blessing from Koar." / "You feel a surge
+  # of mana flow through you." and, short on favor, "You strain to perform the symbol of mana but
+  # you are unable to call forth enough power."
+  SYMBOL_OK       = /surge of mana flow through you|special blessing from Koar/
+  SYMBOL_NO_FAVOR = /unable to call forth enough power/
+  SYMBOL_DONE     = Regexp.union(/surge of mana flow through you/, SYMBOL_NO_FAVOR, /^You can't|^You don't|^You are not|^What were you/)
   ORB_READY     = /humming tones of enchantment|already prepared for charging/
   ORB_GROW      = /It grows in size/
   ORB_SHRINK    = /pulsating orb shrinks somewhat|^The orb shrinks/
@@ -283,7 +292,8 @@ module ChargeMeUpScotty
     lines
   end
 
-  def self.wait_for_mana(amount, reason = nil)
+  # symbol: true (rub waits only) also uses Symbol of Mana whenever it's off cooldown
+  def self.wait_for_mana(amount, reason = nil, symbol: false)
     amount = [amount.to_i, maxmana].min
     drain
     return if checkmana >= amount
@@ -291,7 +301,41 @@ module ChargeMeUpScotty
     msg "Waiting for #{amount} mana#{reason ? " #{reason}" : ''} (you have #{checkmana})."
     until checkmana >= amount
       drain
+      symbol_of_mana if symbol && symbol_ready?
       sleep 0.5
+    end
+  end
+
+  # Voln's Symbol of Mana costs favor (about 460: 678 -> 218 on Picko, per Picko-attack-fire).
+  # Without enough favor the game says "You strain to perform the symbol of mana but you are
+  # unable to call forth enough power." and no cooldown starts, so a cooldown check alone would
+  # retry it forever (Picko-attack-fire did 839 times). One failure turns it off for the run;
+  # favor only comes back from hunting. ;vars set charge_symbol=false to never spend favor.
+  def self.symbol?
+    UserVars.charge_symbol.to_s !~ /\A(?:false|no|off|0)\z/i
+  end
+
+  def self.symbol_ready?
+    symbol? && !@symbol_off && Spell[9813].known? && !Effects::Cooldowns.active?('Symbol of Mana')
+  end
+
+  def self.symbol_of_mana
+    waitrt?
+    waitcastrt?
+    before = checkmana
+    text = collect("symbol of mana", SYMBOL_DONE).join("\n")
+    waitrt?
+    if text =~ SYMBOL_NO_FAVOR
+      @symbol_off = true
+      msg "Not enough Voln favor for Symbol of Mana; not trying it again this run."
+    elsif text =~ SYMBOL_OK
+      wait_for(2) { checkmana > before }
+      msg "Symbol of Mana: #{before} -> #{checkmana} mana."
+    else
+      # Unrecognized: don't keep spamming it
+      @symbol_off = true
+      msg "Symbol of Mana didn't work as expected; not trying it again this run. The game said:"
+      text.lines.each { |line| respond "    #{line.chomp}" }
     end
   end
 
@@ -795,7 +839,7 @@ module ChargeMeUpScotty
       end
 
       wanted = short_on_mana ? (maxmana * RUB_MANA_SHARE).floor : rub_mana(rec)
-      wait_for_mana(wanted, "to charge the #{rec[:name]}")
+      wait_for_mana(wanted, "to charge the #{rec[:name]}", symbol: true)
       next unless @orb_ready
 
       mana_before = checkmana
@@ -938,6 +982,7 @@ module ChargeMeUpScotty
     respond "  chargedsack      #{setting(:chargedsack) || '(chargesack)'}   recharged magic items"
     respond "  greensack        #{setting(:greensack) || '(not set)'}   greened items"
     respond "  charge_maxrubs   #{max_rubs}   most rubs per item per session"
+    respond "  charge_symbol    #{symbol?}   use Voln's Symbol of Mana while waiting to rub (costs favor)"
     respond "  dead wands       #{op_setting('dead_wand_container', 'bag')}   from bigshot (dead_wand_container)"
     respond "  fresh wands      #{op_setting('fresh_wand_container', 'sack')}   from bigshot (fresh_wand_container)"
     respond
@@ -957,6 +1002,7 @@ module ChargeMeUpScotty
     @reported = false
     @cleaned_up = false
     @emptied_hands = false
+    @symbol_off = false
     @survey_cache = recall('charge_survey', {})
     @gem_values = recall('charge_gem_values', {})
     @poured = recall('charge_poured', [])
