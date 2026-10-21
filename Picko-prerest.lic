@@ -3,7 +3,42 @@
 module PickoPrerest
 
 Script.run("eherbs")
-Script.run("eloot", "sell")
+# While eloot sells, note every appraisal it asks a shopkeeper for: the line
+# "You ask <npc> to appraise <item>." names the item, and the quote that follows
+# (or "not buying anything this valuable today" from the gemshop) is its value.
+# Items it won't sell because they're too valuable stay in the cloak --
+# Picko-locker moves those to the locker trunk, but only if Picko is over
+# bigshot's encumbrance limit (10/20: an unsellable 187,866-silver half plate
+# left him 50% encumbered and bigshot refused to hunt for 8+ hours).
+# $picko_over_limit is {item name => silver quote or :refused}. Names, not ids:
+# only the downstream text is needed, no upstream hook.
+$picko_over_limit = {}
+$picko_appraising = nil
+DownstreamHook.add("picko_appraise_down", proc { |line|
+  text = line.to_s.gsub(/<[^>]+>/, '')
+  if text =~ /^You ask .+? to appraise (.+?)\.\s*$/i
+    $picko_appraising = Regexp.last_match(1).sub(/\A(?:an?|the|some)\s+/i, '').strip
+  elsif $picko_appraising
+    # First quote only, then stop watching -- later lines ("It had 235 silvers on
+    # it.") must not overwrite it.
+    if text =~ /not buying anything this valuable today/i
+      $picko_over_limit[$picko_appraising] = :refused
+      $picko_appraising = nil
+    elsif text =~ /([,0-9]+) (?:silvers?|for it if you want to sell|for this if you'd like)/
+      $picko_over_limit[$picko_appraising] = Regexp.last_match(1).delete(',').to_i
+      $picko_appraising = nil
+    end
+  end
+  line
+})
+begin
+  Script.run("eloot", "sell")
+ensure
+  DownstreamHook.remove("picko_appraise_down")
+end
+# No-op, with no walking, unless Picko is over bigshot's encumbrance limit AND
+# eloot left a too-valuable item in the cloak.
+Script.run("Picko-locker")
 Script.run("undead_bounty", "kill Skeletal ice troll")
 Script.run("buyitems")
 
