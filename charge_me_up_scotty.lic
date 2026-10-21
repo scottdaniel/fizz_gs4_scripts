@@ -5,7 +5,7 @@
         game: gemstone
         tags: wizard, charge item, 517, recharge, wand, orb gem
     requires: Lich > 5.14.2
-     version: 0.1
+     version: 0.2
         note: Written with assistance from Claude (Anthropic).
 
   Recharges spent wands and used magic items with Charge Item (517).
@@ -14,23 +14,30 @@
 
   What it does:
     1. Survey: casts Elemental Detection (405) at every candidate to read its
-       spell, charges, whether it's mage rechargeable, and the most you can push
-       it to this session. Nothing rechargeable means no orb gem gets used.
-    2. If there's no grot t'kel potion in grotsack, buys one: the bank first
+       spell, charges, whether it's mage rechargeable/empowerable, and the most
+       you can push it to. Nothing chargeable means no orb gem gets used. The
+       results are remembered: a run within 24 hours of a check (or another run)
+       reuses them instead of casting 405 again (--fresh to re-check anyway).
+    2. Appraises any orb gems it hasn't appraised before at the nearest gem shop
+       (values are remembered), so the most valuable gem becomes the first orb.
+    3. If there's no grot t'kel potion in grotsack, buys one: the bank first
        (only if you carry under 5,000 silvers), then the nearest alchemist,
-       then deposits what's left. Same again mid-session if the potion runs out.
-    3. Goes to the nearest Wizard Guild workshop (charging bonus) unless --here.
-    4. Pours the potion on an orb gem and casts 517 at it to make a
+       then deposits what's left. Sorena's (Icemule) potions are one dose, so
+       expect another trip each time a new orb is needed.
+    4. Goes to the nearest Wizard Guild workshop (charging bonus) unless --here.
+    5. Pours the potion on an orb gem and casts 517 at it to make a
        pulsating orb, then casts 517 at the orb until it's humming (ready).
-    5. For each item: waits for enough mana to fill it in as few rubs as it can,
+       A poured gem is remembered, so if a run stops before the orb is made,
+       the next one uses that gem first without pouring again.
+    6. For each item: waits for enough mana to fill it in as few rubs as it can,
        then RUBs the orb with the item in the right hand. Re-preps the orb when
        it shrinks, makes a new orb when it implodes, and stops an item when it's
        full, greened, or has had charge_maxrubs rubs (every rub past the first
        couple raises the chance of greening it).
-    6. Spent wands come from bigshot's dead wand container and go back to the
+    7. Spent wands come from bigshot's dead wand container and go back to the
        fresh wand container; magic items come from chargesack and go to
        chargedsack. Items that aren't mage rechargeable stay where they were.
-    7. Goes back where you started and prints a report.
+    8. Goes back where you started and prints a report.
 
   Candidates:
     - wands in bigshot's dead_wand_container (UserVars.op, the active profile)
@@ -52,13 +59,18 @@
     ;charge_me_up_scotty help     usage and current settings
 
   Options:
-    --here       charge where you are instead of the nearest Wizard Guild workshop
+    --here       charge where you are: no gem shop or workshop trip (a potion
+                 run still happens if you have none)
     --topoff     also top off fresh-container wands that are below your max
+    --fresh      cast 405 at everything again instead of using the last check
 
-  Game text verified in Picko's logs (2026-09-02, 2026-10-06) is the 405 output.
-  The orb and rub lines come from the wiki and ;ucharge and haven't been seen
-  live yet; any response the script doesn't recognize is printed in full.
+  Game text verified in Picko's logs: the 405 output (2026-09-02, 2026-10-06,
+  2026-10-20), the potion purchase and pour, and APPRAISE (2026-10-20). The orb
+  and rub lines come from the wiki and ;ucharge and haven't been seen live yet;
+  any response the script doesn't recognize is printed in full.
 =end
+
+require 'json'
 
 module ChargeMeUpScotty
   # === config ====================================================================
@@ -71,8 +83,16 @@ module ChargeMeUpScotty
   # waiting on the last few points of regen
   RUB_MANA_SHARE   = 0.9
   WORKSHOP_TAG     = 'wizard guild workshop'
-  # Withdrawn for a grot t'kel potion only if you carry less (price not seen yet)
+  # Withdrawn for a grot t'kel potion only if you carry less (2,000 at Sorena's, 2026-10-20)
   POTION_SILVER    = 5_000
+  # How long a 405 result is trusted. Items that aren't chargeable never change, so
+  # those are kept until the item's gone.
+  SURVEY_TTL       = 24 * 60 * 60
+  SURVEY_PRUNE     = 30 * 24 * 60 * 60
+  # gswiki: an orb gem has to be worth at least 1,000
+  ORB_GEM_FLOOR    = 1_000
+  # A gem the shop won't quote ("not buying anything this valuable") sorts first
+  TOO_VALUABLE     = 1_000_000
 
   # === game text =================================================================
   PREP_DONE   = /^Your spell(?:song)? is ready\.|^You already have a spell readied|^You can't think clearly enough|^You are concentrating too intently|^You are too injured|^But you don't have any mana|^You can't make that dextrous|^You do not know that spell|cough up some blood/
@@ -97,8 +117,16 @@ module ChargeMeUpScotty
   WEAR_FINE      = /can take several more sessions/
   DETECT_SHOP    = /can be recharged to its original capacity by a merchant/
 
+  # Verified 2026-10-20: "You pour your grot t'kel potion on your uncut emerald.  You carefully
+  # work the liquid in until it is all absorbed." (Sorena's potion: "That was the last drop.")
+  # The poured gem comes back with a NEW ID, so it's re-read from the hand afterwards.
   POUR_OK       = /absorbed/
   POUR_BAD      = /evaporat/
+  # Verified 2026-10-20: 'The gemcutter Zirconia takes the pink sapphire and inspects it carefully
+  # before saying, "I'll give you 1,837 silvers for it if you want to sell."'
+  APPRAISE_VALUE = /give you ([\d,]+) silvers?/
+  APPRAISE_HIGH  = /not buying anything this valuable/
+  APPRAISE_DONE  = Regexp.union(APPRAISE_VALUE, APPRAISE_HIGH, /not quite my field|I only deal in|worthless|not interested|^I could not find|^What were you referring to|must be holding/)
   ORB_READY     = /humming tones of enchantment|already prepared for charging/
   ORB_GROW      = /It grows in size/
   ORB_SHRINK    = /pulsating orb shrinks somewhat|^The orb shrinks/
@@ -166,6 +194,30 @@ module ChargeMeUpScotty
 
   def self.held?(id)
     [GameObj.right_hand, GameObj.left_hand].any? { |hand| hand.id.to_s == id.to_s }
+  end
+
+  def self.hand(side)
+    side == 'left' ? GameObj.left_hand : GameObj.right_hand
+  end
+
+  def self.side_of(id)
+    %w[right left].find { |side| hand(side).id.to_s == id.to_s }
+  end
+
+  # === memory between runs =======================================================
+  # Kept in CharSettings as JSON strings (a stored hash comes back as a settings proxy):
+  #   charge_survey      item id => last 405 result
+  #   charge_gem_values  gem id => appraised value
+  #   charge_poured      ids of gems that were poured but not yet made into an orb
+  def self.recall(key, empty)
+    value = JSON.parse(CharSettings[key].to_s)
+    value.is_a?(empty.class) ? value : empty
+  rescue StandardError
+    empty
+  end
+
+  def self.remember(key, value)
+    CharSettings[key] = JSON.generate(value)
   end
 
   def self.wait_for(seconds = 3)
@@ -256,6 +308,17 @@ module ChargeMeUpScotty
     return false unless wait_for { !held?(id) }
 
     @held.delete(id.to_s)
+    true
+  end
+
+  # For something whose ID may have changed in hand (a poured gem)
+  def self.stash_hand(side, into, old_id = nil)
+    return true if side.nil? || hand(side).id.nil?
+
+    collect("put #{side} in ##{into.id}", PUT_DONE)
+    return false unless wait_for { hand(side).id.nil? }
+
+    @held.delete(old_id.to_s) if old_id
     true
   end
 
@@ -360,6 +423,50 @@ module ChargeMeUpScotty
     }
   end
 
+  def self.status_for(rec)
+    if !rec[:mage]
+      rec[:merchant] ? :merchant : :not_rechargeable
+    elsif rec[:charges] >= rec[:target]
+      :at_max
+    else
+      :charge
+    end
+  end
+
+  # The last 405 result for this item, if it's still good: same name, and under a day
+  # old unless it said the item can't be charged (that never changes)
+  def self.cached(rec)
+    entry = @survey_cache[rec[:id].to_s]
+    return nil unless entry.is_a?(Hash) && entry['name'] == rec[:name]
+    return entry unless entry['mage']
+
+    Time.now.to_i - entry['at'].to_i < SURVEY_TTL ? entry : nil
+  end
+
+  def self.apply_cached(rec, entry)
+    %i[spell charges target mage empowered merchant wear].each { |key| rec[key] = entry[key.to_s] }
+    rec[:charges] = rec[:charges].to_i
+    rec[:target] = rec[:target].to_i
+    rec[:before] = rec[:charges]
+    rec[:cached] = true
+  end
+
+  def self.cache_record(rec)
+    return if rec[:spell].nil? && rec[:mage].nil?
+
+    @survey_cache[rec[:id].to_s] = {
+      'name' => rec[:name], 'spell' => rec[:spell], 'charges' => rec[:charges], 'target' => rec[:target],
+      'mage' => rec[:mage], 'empowered' => rec[:empowered], 'merchant' => rec[:merchant], 'wear' => rec[:wear],
+      'at' => Time.now.to_i
+    }
+  end
+
+  def self.save_survey
+    cutoff = Time.now.to_i - SURVEY_PRUNE
+    @survey_cache.delete_if { |_id, entry| !entry.is_a?(Hash) || entry['at'].to_i < cutoff }
+    remember('charge_survey', @survey_cache)
+  end
+
   def self.survey
     recs = candidates
     if recs.empty?
@@ -367,22 +474,23 @@ module ChargeMeUpScotty
       return []
     end
 
-    msg "Checking #{recs.size} item#{recs.size == 1 ? '' : 's'} with Elemental Detection."
-    recs.each do |rec|
+    reuse = @fresh ? [] : recs.select { |rec| (entry = cached(rec)) && apply_cached(rec, entry) }
+    unless reuse.empty?
+      msg "Using your last check for #{reuse.size} item#{reuse.size == 1 ? '' : 's'} (--fresh to cast 405 at them again)."
+    end
+    to_detect = recs - reuse
+    msg "Checking #{to_detect.size} item#{to_detect.size == 1 ? '' : 's'} with Elemental Detection." unless to_detect.empty?
+    to_detect.each do |rec|
       unless take(rec[:id], rec[:src])
         rec[:status] = :missing
         next
       end
       detect(rec)
-      rec[:status] = if !rec[:mage]
-                       rec[:merchant] ? :merchant : :not_rechargeable
-                     elsif rec[:charges] >= rec[:target]
-                       :at_max
-                     else
-                       :charge
-                     end
+      cache_record(rec)
       stash(rec[:id], rec[:src])
     end
+    recs.each { |rec| rec[:status] ||= status_for(rec) }
+    save_survey
     @records = recs
   end
 
@@ -395,20 +503,59 @@ module ChargeMeUpScotty
     @orb_id && orb_ids.include?(@orb_id)
   end
 
-  # Most valuable kinds first (a pricier gem makes a longer-lasting orb, and an orb gem has to
-  # be worth 1,000+). Rough gswiki values: uncut diamond / emerald / bloodjewel 3,750-5,500,
-  # uncut ruby 2,500-3,000, pink sapphire 2,500, pearls ~1,500. Tiny gems go last.
-  GEM_RANK = [/\bdiamond|\bemerald|bloodjewel/i, /\bruby|\bsapphire/i, /\bpearl/i].freeze
-
-  def self.gem_rank(gem)
-    return GEM_RANK.size + 1 if gem.name =~ /\btiny\b/i
-
-    GEM_RANK.index { |pattern| gem.name =~ pattern } || GEM_RANK.size
+  def self.orb_gems
+    contents(@gemsack).select { |obj| obj.type.to_s =~ /gem/ && !@bad_gems.include?(obj.id) }
   end
 
+  def self.gem_value(gem)
+    @gem_values[gem.id.to_s]
+  end
+
+  def self.poured?(gem)
+    @poured.include?(gem.id.to_s)
+  end
+
+  # A gem that's already poured goes first (its potion is spent), then the most valuable
+  # (a pricier gem makes a longer-lasting orb), then any not appraised, in bag order.
+  # Value varies a lot within one kind (uncut emeralds 3,517 and 7,612), so it's the
+  # appraisal that counts, not the gem's name.
   def self.next_gem
-    gems = contents(@gemsack).select { |obj| obj.type.to_s =~ /gem/ && !@bad_gems.include?(obj.id) }
-    gems.min_by.with_index { |gem, i| [gem_rank(gem), i] }
+    orb_gems.each_with_index.min_by { |gem, i| [poured?(gem) ? 0 : 1, -(gem_value(gem) || -1), i] }&.first
+  end
+
+  # APPRAISE every orb gem that hasn't been appraised before, at the nearest gem shop.
+  # Values are remembered by gem, so this is a one-time stop per gem. It doesn't walk
+  # back: the run goes on from here to the alchemist or workshop, and home at the end.
+  def self.appraise_gems
+    gems = orb_gems.reject { |gem| gem_value(gem) || poured?(gem) }
+    return if gems.empty?
+
+    msg "Appraising #{gems.size} orb gem#{gems.size == 1 ? '' : 's'} at the nearest gem shop so the best one is used first."
+    go2('gemshop')
+    unless Room.current&.tags.to_a.include?('gemshop')
+      msg "Couldn't get to a gem shop; unappraised gems go in the order they're in your #{@gemsack.name}."
+      return
+    end
+
+    gems.each do |gem|
+      next unless take(gem.id, @gemsack)
+
+      text = collect("appraise ##{gem.id}", APPRAISE_DONE).join("\n")
+      if text =~ APPRAISE_VALUE
+        @gem_values[gem.id.to_s] = Regexp.last_match(1).delete(',').to_i
+      elsif text =~ APPRAISE_HIGH
+        @gem_values[gem.id.to_s] = TOO_VALUABLE
+      else
+        msg "Couldn't get an appraisal for the #{gem.name}: #{text.lines.last.to_s.strip}"
+      end
+      stash(gem.id, @gemsack)
+    end
+    remember('charge_gem_values', @gem_values)
+
+    ranked = orb_gems.select { |gem| gem_value(gem) }.sort_by { |gem| -gem_value(gem) }
+    msg "Orb gems by value: #{ranked.map { |gem| "#{gem.name} #{gem_value(gem) >= TOO_VALUABLE ? '(too valuable to quote)' : gem_value(gem)}" }.join(', ')}."
+    cheap = ranked.select { |gem| gem_value(gem) < ORB_GEM_FLOOR }
+    msg "Under #{ORB_GEM_FLOOR} (an orb gem has to be worth at least that): #{cheap.map(&:name).join(', ')}. Those go last." unless cheap.empty?
   end
 
   # === grot t'kel potion =========================================================
@@ -499,6 +646,28 @@ module ChargeMeUpScotty
     nil
   end
 
+  # Pouring gives the gem a new ID (2026-10-20: casting at the old one got "Cast at what?"),
+  # so read it back out of the hand it's in, carry its appraisal over, and remember it's
+  # poured in case the run stops before the orb is made. Returns the gem as it is now.
+  def self.after_pour(gem, side)
+    wait_for(2) { hand(side).id && hand(side).id.to_s != gem.id.to_s }
+    now = hand(side)
+    if now.id.nil?
+      msg "Lost track of the #{gem.name} after pouring on it. Stopping."
+      return nil
+    end
+    if now.id.to_s != gem.id.to_s
+      @held.delete(gem.id.to_s)
+      @held[now.id.to_s] = @gemsack
+      value = @gem_values.delete(gem.id.to_s)
+      @gem_values[now.id.to_s] = value if value
+      remember('charge_gem_values', @gem_values)
+    end
+    @poured << now.id.to_s unless @poured.include?(now.id.to_s)
+    remember('charge_poured', @poured)
+    now
+  end
+
   # Turns the next orb gem into a pulsating orb on the ground. Hands must be empty.
   def self.make_orb
     loop do
@@ -507,33 +676,42 @@ module ChargeMeUpScotty
         msg "Out of orb gems in your #{@gemsack.name}."
         return false
       end
+      needs_pour = pour? && !poured?(gem)
       # Before the gem comes out: a potion run needs empty hands
-      potion = pour? && ensure_potion
-      if pour? && potion.nil?
+      potion = needs_pour && ensure_potion
+      if needs_pour && potion.nil?
         msg "No grot t'kel potion to pour on #{gem.name}. If your orb gems are already poured, ;vars set charge_pour=false"
         return false
       end
       return false unless take(gem.id, @gemsack)
 
-      if pour?
+      if needs_pour
+        gem_side = side_of(gem.id)
         poured = pour_on(gem, potion)
+        # By hand, not by ID: the pour may have swapped the gem's ID
         if poured.nil?
-          stash(gem.id, @gemsack)
+          stash_hand(gem_side, @gemsack, gem.id)
           next
         end
         unless poured
-          stash(gem.id, @gemsack)
+          stash_hand(gem_side, @gemsack, gem.id)
           return false
         end
+        gem = after_pour(gem, gem_side)
+        return false if gem.nil?
       end
 
       before = orb_ids
-      msg "Making a pulsating orb from #{gem.name}."
+      msg "Making a pulsating orb from #{gem.name}#{gem_value(gem) ? " (#{gem_value(gem)})" : ''}."
       lines = cast_at(517, "##{gem.id}", CAST_RT)
       new_orb = nil
       wait_for { new_orb = (orb_ids - before).first }
       if new_orb
         @held.delete(gem.id.to_s)
+        @poured.delete(gem.id.to_s)
+        @gem_values.delete(gem.id.to_s)
+        remember('charge_poured', @poured)
+        remember('charge_gem_values', @gem_values)
         @orb_id = new_orb
         @orb_ready = false
         @gems_used += 1
@@ -666,6 +844,13 @@ module ChargeMeUpScotty
 
     rec[:status] = :charged if rec[:status] == :partial && rec[:charges] >= rec[:target]
     stash(rec[:id], destination(rec))
+    # A greened item needs a fresh 405 next time; anything else keeps its new charge count
+    if rec[:status] == :greened
+      @survey_cache.delete(rec[:id].to_s)
+    else
+      cache_record(rec)
+    end
+    save_survey
     :done
   end
 
@@ -738,8 +923,12 @@ module ChargeMeUpScotty
     respond "  ;charge_me_up_scotty help     this help"
     respond
     respond "Options:"
-    respond "  --here       charge where you are instead of the nearest Wizard Guild workshop"
+    respond "  --here       charge where you are: no gem shop or workshop trip"
     respond "  --topoff     also top off fresh-container wands that are below your max"
+    respond "  --fresh      cast 405 at everything again instead of using the last check"
+    respond
+    respond "Remembered between runs: 405 results (24 hours; a check refreshes them),"
+    respond "gem appraisals (#{@gem_values.to_h.size rescue 0} gems), and poured gems not yet made into an orb."
     respond
     respond "Settings:"
     respond "  orbgemsack       #{setting(:orbgemsack) || '(not set)'}   orb gems (required to charge)"
@@ -768,10 +957,14 @@ module ChargeMeUpScotty
     @reported = false
     @cleaned_up = false
     @emptied_hands = false
+    @survey_cache = recall('charge_survey', {})
+    @gem_values = recall('charge_gem_values', {})
+    @poured = recall('charge_poured', [])
 
     words = args.reject { |arg| arg.start_with?('--') }.map(&:downcase)
     here = args.include?('--here')
     @topoff = args.include?('--topoff')
+    @fresh = args.include?('--fresh')
 
     if words.first =~ /^(help|\?)$/
       help
@@ -782,6 +975,8 @@ module ChargeMeUpScotty
       exit
     end
     check_only = words.first == 'check'
+    # A check is the explicit "look again", so it always casts 405 (and saves the results)
+    @fresh ||= check_only
 
     unless check_only
       @gemsack = find_container(setting(:orbgemsack))
@@ -796,6 +991,16 @@ module ChargeMeUpScotty
     # before_dying, not ensure: on ;kill the script's thread dies first and fput from
     # its ensure fails; before_dying runs after, where fput still works
     before_dying { ChargeMeUpScotty.cleanup }
+    # A gem poured on a run that stopped before the orb was made goes back with the orb
+    # gems instead of wherever empty_hands would stash it
+    if @gemsack
+      %w[right left].each { |side|
+        next unless hand(side).id && @poured.include?(hand(side).id.to_s)
+
+        msg "Putting the poured #{hand(side).name} back in your #{@gemsack.name}; it'll be the next orb."
+        stash_hand(side, @gemsack)
+      }
+    end
     empty_hands
     @emptied_hands = true
 
@@ -806,17 +1011,19 @@ module ChargeMeUpScotty
       return
     end
 
-    # Gem and potion before walking anywhere, so a potion run doesn't start from the workshop
+    # Gems, appraisals and potion before the workshop, so none of those trips start from it
+    start_room = Room.current&.id
     if next_gem.nil? && orb_ids.empty?
       msg "No orb gems in your #{@gemsack.name}. Stopping."
       return
     end
-    if pour? && ensure_potion.nil?
+    appraise_gems unless here
+    first_gem = next_gem
+    if pour? && first_gem && !poured?(first_gem) && ensure_potion.nil?
       msg "No grot t'kel potion to pour on your orb gems. Stopping."
       return
     end
 
-    start_room = Room.current&.id
     go_to_workshop unless here
     adopt_orb unless orb_ids.empty?
 
