@@ -4727,6 +4727,10 @@ module BlackArts
         if server_string =~ /^(?:<c>)?;fizza\w*\s+finish\b/i
           BlackArts.data.settings[:once_and_done] = true
           Util.msg("info", " fizzarts will exit after the next task is completed")
+          # Swallow the command. Each UpstreamHook's return value is handed to the next one, and
+          # Util.msg returns an Array, which crashed Lich's client thread ("undefined method '=~'
+          # for an instance of Array").
+          nil
         elsif server_string =~ /Please rephrase that command/
           nil
         else
