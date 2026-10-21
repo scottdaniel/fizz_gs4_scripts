@@ -202,8 +202,35 @@ rescue StandardError => e
   echo "stow_the_shiny: couldn't write #{log_file} (#{e.message})"
 end
 
-def self.already_found?(item)
-  File.exist?(log_file) && File.read(log_file).include?("FOUND   ##{item.id}  ")
+# Has this item already been announced? Object ids are reassigned every login, so
+# the id can't be the key -- an item found once and found again in a later session
+# looks new. Key on name + value instead: a FOUND line with the same article-less
+# name and the same quote counts as the same item while it's "open", i.e. until a
+# STORED line for that name follows it, and for at most DEDUPE_DAYS days (so an item
+# that was sold or thrown away doesn't hide the next identical find forever).
+DEDUPE_DAYS = 7 unless defined?(DEDUPE_DAYS)
+
+def self.found_key(name, quote)
+  [plain_name(name), quote == :refused ? "refused" : quote.to_i.to_s]
+end
+
+def self.already_found?(item, quote)
+  return false unless File.exist?(log_file)
+  cutoff = Time.now - DEDUPE_DAYS * 86_400
+  open_keys = []
+  File.foreach(log_file) do |line|
+    next unless line =~ /\A(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d)\s+(FOUND|STORED)\s+#\d+\s+(.+?)\s+(?:\((.*)\)|->.*)\s*\z/
+    stamp = Time.local($1.to_i, $2.to_i, $3.to_i, $4.to_i, $5.to_i)
+    kind, name, detail = $6, $7, $8
+    if kind == "FOUND"
+      next if stamp < cutoff
+      value = detail.to_s =~ /appraised at ([\d,]+) silvers/ ? $1.delete(",") : "refused"
+      open_keys << [plain_name(name), value]
+    else
+      open_keys.delete_at(open_keys.index { |k| k[0] == plain_name(name) } || open_keys.length)
+    end
+  end
+  open_keys.include?(found_key(item.name, quote))
 end
 
 def self.commas(number)
@@ -236,8 +263,8 @@ end
 # Log and announce each too-valuable item the first time it is seen.
 def self.announce_new(items)
   items.each do |item|
-    next if already_found?(item)
     quote = quote_for(item)
+    next if already_found?(item, quote)
     value = quote == :refused ? "too valuable for the gemshop to quote" : "appraised at #{commas(quote)} silvers"
     log_line("FOUND   ##{item.id}  #{item.name}  (#{value})")
     sent = post_webhook("Found a valuable item: #{item.name} -- #{value}, too valuable to sell.")
