@@ -7068,7 +7068,7 @@ module BlackArts
         elsif line =~ /month|check in again sometime in the next (.*?) day/i
           amount = $1
           task['guild'][:checkin] = amount.to_i
-        elsif line =~ /have (.*?) task trading vouchers/i
+        elsif line =~ /have (.*?) task trading vouchers?/i   # "1 task trading voucher" is singular
           task['guild'][:vouchers] = $1.to_i
         elsif line =~ /You currently have (.*?) ranks? out of a possible (.*?) for your training/
           task['guild'][:total_ranks] = $1.to_i
