@@ -6,7 +6,8 @@
     2) a Lumnis tier ends and the next one begins (3x -> 2x)
     3) the last Lumnis tier ends (and Fash'lo'nae's Tutelage starts)
     4) Fash'lo'nae's Tutelage ends
-    5) the session ends (disconnect or logout)
+    5) the character levels up (with the stats that went up)
+    6) the session ends (disconnect or logout)
   Every message starts with the character's name, so one webhook can serve all
   of your characters.
 
@@ -26,6 +27,8 @@
   Fash'lo'nae starting and ending are announced within seconds instead: the game
   prints a line at each (see FASH_START / FASH_END), and seeing one makes
   exp_check check right away and take the game at its word.
+  Level-ups are announced within seconds too, from the game's "You are now
+  level N!" line and the stat table that follows it.
 
   The session-ended message can't come from Lich (it dies with the connection,
   and often the network is down too), so exp_check starts a tiny separate
@@ -48,6 +51,8 @@ module ExpCheck
   BEAT          = 30   # seconds between heartbeats for the session-ended watcher
   FASH_START    = 'A sensation of heightened understanding crests over you'
   FASH_END      = 'The feeling of heightened understanding departs'
+  LEVEL_UP      = /^\s*You are now level (\d+)!/                # anchored: ">think You are now level 69!" isn't one
+  STAT_GAIN     = /\((\w{3})\)\s*:\s*(\d+)\s+\+\d+\s+\.\.\./   # "Constitution (CON) :  85   +1  ...     27    +1"
   MULT          = { 'doubled' => 2, 'tripled' => 3, 'quadrupled' => 4, 'quintupled' => 5 }
 
   EVENTS = {   # settings key => checkbox label
@@ -55,6 +60,7 @@ module ExpCheck
     'tier_end'     => 'A Lumnis tier ends and the next begins (3x -> 2x)',
     'lumnis_end'   => "Lumnis ends (and Fash'lo'nae starts)",
     'fash_end'     => "Fash'lo'nae ends",
+    'level_up'     => 'The character levels up',
     'disconnect'   => 'The session ends (disconnect or logout)'
   }
 
@@ -152,6 +158,28 @@ module ExpCheck
     end
   end
 
+  # ---- level-ups ----
+
+  # Called by the downstream hook on every line. The game prints the level line,
+  # then a table of only the stats that rose (or "[No statistic increases this
+  # level.]"), all within the same second; the "Training adjusted" line after it
+  # is missing at low levels, so it isn't used as the end marker.
+  def self.watch_level(line)
+    text = line.gsub(/<[^>]*>/, '')
+    if text =~ LEVEL_UP
+      @gains = []
+      @events << [:level_up, $1.to_i, @gains]
+    elsif @gains && text =~ STAT_GAIN
+      @gains << "#{$1} #{$2}"
+    end
+  end
+
+  def self.level_up(level, gains)
+    sleep 3   # let the hook collect the stat table
+    @gains = nil
+    notify('level_up', "Reached level #{level}! #{gains.empty? ? 'No stat increases this level.' : "Stats up: #{gains.join(', ')}."}")
+  end
+
   # ---- session-ended notice (separate process, see the header) ----
 
   WATCHER = <<~'RUBY'
@@ -229,11 +257,16 @@ module ExpCheck
     DownstreamHook.add('exp_check', proc { |line|
       @events << :fash_start if line.include?(FASH_START)
       @events << :fash_end if line.include?(FASH_END)
+      watch_level(line)
       line
     }, persist: false)
     phase = event = nil
     last  = Time.at(0)
     loop do
+      if event.is_a?(Array)   # [:level_up, level, gains]
+        level_up(*event.drop(1))
+        event = nil
+      end
       if event || Time.now - last >= POLL
         last = Time.now
         told = { fash_start: true, fash_end: false }[event]   # what the game itself just said, if anything
