@@ -104,21 +104,28 @@ end
 
 # Items eloot flagged as too valuable that are still in the loot container.
 # Fresh LOOK IN so the contents (and ids) are current.
+# Item name without its article, lowercased, for comparing against eloot's wording
+# ("some polished vultite half plate" vs the inventory's "polished vultite half plate").
+def self.plain_name(text)
+  text.to_s.sub(/\A(?:an?|the|some)\s+/i, '').strip.downcase
+end
+
 def self.flagged_items
+  $shiny_debug = nil
   flagged = ($shiny_quotes || {})
   return [] if flagged.empty?
   threshold = eloot_limits.min
-  names = flagged.select { |_name, amount| amount == :refused || amount.to_i >= threshold }.keys
+  names = flagged.select { |_name, amount| amount == :refused || amount.to_i >= threshold }.keys.map { |n| plain_name(n) }
+  $shiny_debug = "recorded #{flagged.map { |n, v| "#{n}=#{v}" }.join('; ')} (threshold #{threshold}"
   return [] if names.empty?
 
   fput "open my #{loot_container}"
   fput "look in my #{loot_container}"
   sleep 0.5
   box = GameObj.inv.find { |i| i.name =~ /\b#{Regexp.escape(loot_container)}\b/i }
-  return [] unless box
-  box.contents.to_a.select do |item|
-    item.name !~ KEEP_NAME && names.any? { |n| n.casecmp(item.name.to_s.strip).zero? }
-  end
+  held = box ? box.contents.to_a : []
+  $shiny_debug += "); container #{box ? "#{box.name} ##{box.id}" : 'NOT FOUND'} holds #{held.length}: #{held.map(&:name).join(', ')}"
+  held.select { |item| item.name !~ KEEP_NAME && names.include?(plain_name(item.name)) }
 end
 
 # Hands must be free for GET/PUT. A wand goes to the fresh-wand container;
@@ -200,7 +207,7 @@ end
 
 # The silver quote eloot got for this item, or :refused, or nil.
 def self.quote_for(item)
-  pair = ($shiny_quotes || {}).find { |name, _| name.casecmp(item.name.to_s.strip).zero? }
+  pair = ($shiny_quotes || {}).find { |name, _| plain_name(name) == plain_name(item.name) }
   pair && pair.last
 end
 
@@ -296,7 +303,7 @@ announce_new(items) unless mode == "dry"
 if !over && mode != "force"
   echo "stow_the_shiny: encumbrance #{current}% is under bigshot's #{limit}% limit -- nothing to store."
 elsif items.empty?
-  echo "stow_the_shiny: #{current}% encumbered (limit #{limit}%), but no too-valuable item eloot flagged is in the #{loot_container} -- nothing to store.#{($shiny_quotes || {}).empty? ? ' (Nothing has been recorded from eloot yet: the sell has to run under the recorder -- see the header.)' : ''}"
+  echo "stow_the_shiny: #{current}% encumbered (limit #{limit}%), but no too-valuable item eloot flagged is in the #{loot_container} -- nothing to store.#{($shiny_quotes || {}).empty? ? ' (Nothing has been recorded from eloot yet: the sell has to run under the recorder -- see the header.)' : " [#{$shiny_debug}]"}"
 elsif mode == "dry"
   echo "stow_the_shiny (dry run): would put #{items.length} item(s) in the mantle (max #{MANTLE_LIMIT}, the rest in the trunk): #{items.map(&:name).join(', ')}"
 else
@@ -317,7 +324,7 @@ else
         break unless where
         tally[where] += 1
         log_line("STORED  ##{item.id}  #{item.name}  -> #{where}")
-        $shiny_quotes.delete_if { |n, _| n.casecmp(item.name.to_s.strip).zero? }
+        $shiny_quotes.delete_if { |n, _| plain_name(n) == plain_name(item.name) }
       end
       # The mantle goes back in the trunk with whatever it now holds.
       fput "put my mantle in trunk" if state[:mantle] == :held
