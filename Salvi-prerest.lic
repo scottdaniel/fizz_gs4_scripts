@@ -7,7 +7,7 @@ Script.run("eherbs")
 # sell (appraised above your eloot limits) in the locker -- only when encumbered
 # past bigshot's limit. See stow_the_shiny.lic.
 Script.run("stow_the_shiny", "sell")
-Script.run("undead_bounty", "kill moaning spirit")
+Script.run("undead_bounty", "kill ghostly pooka")
 Script.run("buyitems")
 
 # Sweep every wand out of the default stow container into the active bigshot
