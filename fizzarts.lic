@@ -28,7 +28,9 @@
       - audience illusions (Skip Audience Illusions off): before the first rep it says
         "Sorry for the noise, just practicing illusions" and "Just nod at me if it's
         too bothersome". If a player in the room nods at you, it stops and trades in
-        the audience task.
+        the audience task. Reps are paced 31 seconds apart (the game needs 30), and an
+        audience is 4 points as the game counts it (Guild Masters 3, active members 2,
+        anyone else 1) instead of upstream's 5.
 
     Alchemy script rewrite based on the original Tillman Alchemy script of DOOM!!!!!!1!!!11.
     Currently relies on the following scripts for full utilization:
@@ -6576,19 +6578,27 @@ module BlackArts
       }
     end
 
+    # gswiki Illusions: an audience is four other characters. Sorcerer Guild Masters count as
+    # three and other active guild members as two; anyone else counts as one. (Upstream wanted
+    # five and gave Guild Masters nothing, so it waited for more people than the game needs.)
     def self.check_audience
-      return true if GameObj.pcs.size > 4
-      return false if GameObj.pcs.size < 3
+      return true if GameObj.pcs.size >= 4
+      return false if GameObj.pcs.size < 2
 
       audience = 0
       lines = Lich::Util.quiet_command_xml("gld rank all", /<a exist=".*?" noun=".*?\/a> is .*? of (your guild|the Sorcerer Guild).|You look around, but don't see anyone else/i)
       lines.each { |line|
-        audience += 1 if line =~ /is not part of your guild/
-        audience += 1 if line =~ /is an inactive member of the Sorcerer Guild/
-        audience += 2 if line =~ /is an active member of the Sorcerer Guild/
+        next unless line =~ /<a exist="[^"]+" noun="[^"]+">[^<]*<\/a> is /
+
+        audience += if line =~ /(?:Guild Master|Grandmaster) of the Sorcerer Guild/
+                      3
+                    elsif line =~ /is an active member of the Sorcerer Guild/
+                      2
+                    else
+                      1
+                    end
       }
-      return true if audience > 4
-      return false
+      audience >= 4
     end
 
     def self.check_boost(guild_status)
@@ -7529,6 +7539,7 @@ module BlackArts
     def self.audience_start
       @audience_asked = false
       @audience_objector = nil
+      @audience_last_rep = nil
       DownstreamHook.remove('fizzarts_audience_nod')
       DownstreamHook.add('fizzarts_audience_nod', proc { |xml|
         if @audience_objector.nil? && xml.gsub(/<[^>]+>/, '') =~ /\b([A-Z][\w'-]+) nods to you\b/
@@ -7563,6 +7574,17 @@ module BlackArts
     def self.audience_pause(seconds)
       end_time = Time.now + seconds
       sleep 0.5 while Time.now < end_time && !Illusions.audience_objected?
+    end
+
+    # gswiki Illusions: "Once a rep is executed, 30 seconds must pass before another can be
+    # achieved." Time the next rep from the last one (plus a second of margin) rather than
+    # sleeping a flat 35 seconds after dismissing the illusion.
+    def self.audience_rep_done
+      @audience_last_rep = Time.now
+    end
+
+    def self.audience_wait_next
+      Illusions.audience_pause([(@audience_last_rep || Time.now) + 31 - Time.now, 0].max)
     end
 
     def self.audience_done
@@ -7609,6 +7631,7 @@ module BlackArts
         end
 
         fput illusion
+        Illusions.audience_rep_done if place == 'audience'
         Util.wait_rt
 
         held = [GameObj.right_hand, GameObj.left_hand].find { |hand| hand.name =~ /black essence rose|vortex|tempest|void/ }
@@ -7627,7 +7650,7 @@ module BlackArts
           fput destroy
           Util.wait_rt
 
-          Illusions.audience_pause(35) if place == 'audience' && Guild.gld['illusions'][:reps].to_i.positive?
+          Illusions.audience_wait_next if place == 'audience' && Guild.gld['illusions'][:reps].to_i.positive?
         end
         break if Guild.gld['illusions'][:reps].to_i.zero?
       end
@@ -7653,6 +7676,7 @@ module BlackArts
         sleep 0.5 until checkmana > 3
 
         fput "illusion shadow #{drop_item}"
+        Illusions.audience_rep_done if place == 'audience'
         Util.wait_rt
 
         if GameObj.loot.find { |object| object.name =~ /errant shadow/ }
@@ -7660,7 +7684,7 @@ module BlackArts
           fput 'illusion shadow shadow'
           Util.wait_rt
 
-          Illusions.audience_pause(35) if place == 'audience' && Guild.gld['illusions'][:reps].to_i.positive?
+          Illusions.audience_wait_next if place == 'audience' && Guild.gld['illusions'][:reps].to_i.positive?
         end
         break if Guild.gld['illusions'][:reps].to_i.zero?
       end
@@ -7888,6 +7912,7 @@ module BlackArts
         sleep 0.5 until checkmana > 5
 
         lines = Util.issue_command("illusion demon ##{BlackArts.data.demon_id}", /You shift your gaze to your|is already illusioned/)
+        Illusions.audience_rep_done if place == 'audience'
         Util.wait_rt
 
         if lines.any?(/Piece by piece, the creature's form changes until|is already illusioned/)
@@ -7897,7 +7922,7 @@ module BlackArts
           fput "illusion demon ##{BlackArts.data.demon_id} dispel"
           Util.wait_rt
 
-          Illusions.audience_pause(35) if place == 'audience' && (Guild.gld['illusions'][:reps].to_i.positive? || lines.any?(/is already illusioned/))
+          Illusions.audience_wait_next if place == 'audience' && (Guild.gld['illusions'][:reps].to_i.positive? || lines.any?(/is already illusioned/))
         else
           failures += 1
           if failures >= 3
