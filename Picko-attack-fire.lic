@@ -25,8 +25,10 @@
 #                        get -- see Smite/302's wiki page for that mechanic).
 #
 #   otherwise:           cast Symbol of Mana if it's known and off cooldown
-#                        (cooldown-only check -- never spends deeds); THEN, if
-#                        that's not available either, wave a wand at the
+#                        (cooldown-only check -- never spends deeds); THEN the
+#                        combat-reserve scrolls (INVOKE 908 Major Fire, and
+#                        INVOKE 306 Holy Bolt at undead only); THEN, if
+#                        none of that is available either, wave a wand at the
 #                        target, in two tiers -- never a random one:
 #                          1. FIRE wands first, since this script is fire-
 #                             themed. Per https://gswiki.play.net/Wand: golden
@@ -307,6 +309,65 @@ def try_symbol_of_mana
   false
 end
 
+# Combat-reserve scrolls (RESERVE LIST: "a sheaf of light paper" holds Major
+# Fire 908, "a pure white scroll" holds Holy Bolt 306). INVOKE <number> readies
+# the spell from the reserved scroll, then it's cast at the target like any
+# prepared spell (confirmed by Scott: no mana cost, just `cast <target>` after
+# `invoke <number>`). Used after Symbol of Mana and BEFORE any wand -- they cost
+# no mana, which is why they stand in for wands at low mana. Holy Bolt only goes at
+# undead. Each entry: [spell number, spell name, undead only?]. A scroll whose
+# INVOKE doesn't leave a prepared spell (used up, not reserved, ...) is skipped
+# for SCROLL_RETRY_SECS so the pass moves on to the next source.
+RESERVE_SCROLLS = [[908, "Major Fire", false], [306, "Holy Bolt", true]].freeze unless defined?(RESERVE_SCROLLS)
+SCROLL_RETRY_SECS = 600 unless defined?(SCROLL_RETRY_SECS)
+UNDEAD_NAME = /skelet|zombie|wraith|ghoul|ghost|spirit|lich\b|vampire|banshee|revenant|mummy|ghast|shade|phantom|wight|apparition|spectre|specter|lost soul/i unless defined?(UNDEAD_NAME)
+
+def undead_foe?(foe)
+  foe.type.to_s =~ /undead/i || foe.name.to_s =~ UNDEAD_NAME ? true : false
+end
+
+# INVOKE one reserved scroll's spell and cast it at foe.
+# @return [Boolean] false if the scroll couldn't be invoked (nothing was cast).
+def cast_scroll(number, name, foe)
+  $picko_scroll_retry_at ||= {}
+  fput "release" if checkprep != "None"
+  waitrt?
+  waitcastrt?
+  put "invoke #{number}"
+  deadline = Time.now.to_f + 3
+  sleep 0.2 until checkprep != "None" || Time.now.to_f >= deadline
+  if checkprep == "None"
+    $picko_scroll_retry_at[number] = Time.now.to_f + SCROLL_RETRY_SECS
+    echo "invoke #{number} (#{name}) didn't ready a spell -- skipping that scroll for #{SCROLL_RETRY_SECS / 60} min"
+    return false
+  end
+
+  fput "stance offensive" if stance != "offensive"
+  text = cast_and_collect("cast ##{foe.id}")
+  if text =~ CANT_CAST_WOUNDED
+    Script.run("eherbs", "--spellcast")
+    fput "release" if checkprep != "None"
+    fput "stance defensive"
+    return true
+  end
+  fput "release" if checkprep != "None"
+  waitcastrt?
+  waitrt?
+  fput "stance defensive"
+  true
+end
+
+# First reserve scroll that applies to foe and works. @return [Boolean]
+def cast_reserve_scroll(foe)
+  $picko_scroll_retry_at ||= {}
+  RESERVE_SCROLLS.each do |number, name, undead_only|
+    next if undead_only && !undead_foe?(foe)
+    next if Time.now.to_f < $picko_scroll_retry_at[number].to_f
+    return true if cast_scroll(number, name, foe)
+  end
+  false
+end
+
 # --- main ----------------------------------------------------------------
 
 foe = GameObj.targets.find { |t| t.id.to_i == XMLData.current_target_id.to_i } if XMLData.current_target_id
@@ -324,11 +385,13 @@ exit if target_dead?(foe)
 
 if checkmana >= MANA_FLOOR
   attack_908(foe)
-elsif symbol_of_mana_ready?
+elsif symbol_of_mana_ready? && try_symbol_of_mana
   # Off-cooldown check only -- never touches deeds (same check bigshot.lic and
-  # Picko-duskattack.lic use). A failed try (no Voln favor) falls straight
-  # through to a wand this pass instead of burning it.
-  wave_wand(foe) unless try_symbol_of_mana
+  # Picko-duskattack.lic use). A failed try (no Voln favor) falls through to the
+  # scrolls and then a wand in this same pass instead of burning it.
+  nil
+elsif cast_reserve_scroll(foe)
+  nil
 else
   wave_wand(foe)
 end
