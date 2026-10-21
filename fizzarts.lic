@@ -15,9 +15,11 @@
         rank can't illusion yet, it runs ;summond <newest type your rank allows> --yes
         (Igaesha 48, Imp 53, Verlok 54, Grantris 55, ...) before travelling.
       - "Vouchers on Guild Night only" option: only redeems voucher packs while GLD
-        says it's a Guild Night (doubled training points). Redeemed vouchers are
-        spent automatically on every trade, so it TEARs one voucher off a pack and
-        redeems only that, leaving the rest of the pack for the next Guild Night.
+        says it's a Guild Night (doubled training points), and signs leftovers back
+        into a pack afterwards. Redeems the whole pack at once: tearing off one voucher
+        per trade put a GIVE between every trade, and speed tasks nearly vanished.
+      - voucher safety stop: 10 voucher trades in a row without a usable task stops
+        voucher use for the run and signs the redeemed ones back into a pack.
       - redeems a pack when GLD shows no voucher count at all (upstream needed
         an explicit 0, which GLD doesn't print).
       - when Guild Night ends with vouchers still redeemed, signs them back into a
@@ -4718,6 +4720,7 @@ module BlackArts
 
     def self.set_hooks
       original_once = BlackArts.data.settings[:once_and_done]
+      Guild.voucher_safety_reset
 
       finish = proc { |server_string|
         # ;fizzarts finish (or an abbreviation like ;fizza finish); upstream matched ;bla...finish
@@ -7193,6 +7196,8 @@ module BlackArts
 
       lines = Util.get_command("ask ##{GameObj.npcs.find { |npc| npc.name =~ /training/i }.id} to train #{item}", /You ask|Who are you trying to ask/i)
 
+      Guild.voucher_safety_reset if lines.any? { |l| l =~ /All done with that task/ } && !Guild.vouchers_paused?
+
       # Exit if Run one task and quit
       if lines.any? { |l| l =~ /All done with that task/ } && BlackArts.data.settings[:once_and_done]
         Guild.get_promoted(item, BlackArts.data.current_room.id) if lines.any? { |l| l =~ /Go find a Guild Master and get yourself promoted/ }
@@ -7241,7 +7246,7 @@ module BlackArts
       # GLD doesn't list vouchers when you have none, so nil counts as zero.
       # Redeemed vouchers are spent automatically on every trade, so Guild Night only gates redeeming packs.
       guild_night_ok = !BlackArts.data.settings[:vouchers_guild_night_only] || guild_status['guild'][:guild_night]
-      if guild_status['guild'][:vouchers].to_i.zero? && BlackArts.data.settings[:use_vouchers] && guild_night_ok
+      if guild_status['guild'][:vouchers].to_i.zero? && BlackArts.data.settings[:use_vouchers] && guild_night_ok && !Guild.vouchers_paused?
         Guild.redeem_voucher
       end
 
@@ -7268,39 +7273,45 @@ module BlackArts
     # Gives the Training Administrator a loose voucher if there is one, otherwise a voucher pack.
     # With "Vouchers on Guild Night only", one voucher is torn off the pack first, so the rest
     # aren't redeemed and then spent on trades after Guild Night ends.
+    # Gives the Training Administrator a voucher pack (or a loose voucher if there's no pack).
+    # This used to tear off and give one voucher before every trade, but on the 2026-10-21 Guild
+    # Night that put a GIVE between every trade and speed tasks fell to 5% of assignments (27% the
+    # week before, when the whole pack was redeemed at once). Leftovers are signed back into a
+    # pack by save_vouchers when Guild Night ends, so redeeming the whole pack costs nothing.
     def self.redeem_voucher
-      # A torn-off voucher's noun is "voucher" (the pack's is "pack"); its name in hand isn't the
-      # full "Elanthian Guilds voucher", so matching the name exactly missed it
       single_voucher = lambda { |obj| obj.noun == 'voucher' || obj.name.to_s =~ /Guilds voucher\z/i }
       default_sack = BlackArts.data.sacks["default"]
-      voucher = default_sack.contents.to_a.find { |i| single_voucher.call(i) }
-      voucher_pack = default_sack.contents.to_a.find { |i| i.name == 'Elanthian Guilds voucher pack' }
-      return if voucher.nil? && voucher_pack.nil?
+      voucher = default_sack.contents.to_a.find { |i| i.name == 'Elanthian Guilds voucher pack' } ||
+                default_sack.contents.to_a.find { |i| single_voucher.call(i) }
+      return if voucher.nil?
 
       Util.travel("#{Char.prof.downcase} alchemy administrator")
       Inventory.free_hands(both: true)
-
-      if voucher.nil? && BlackArts.data.settings[:vouchers_guild_night_only]
-        Inventory.drag(voucher_pack)
-        Util.get_res("tear ##{voucher_pack.id}", /You tear out|tear|What were you referring to/i)
-
-        20.times {
-          voucher = [GameObj.right_hand, GameObj.left_hand].find { |hand| hand.id != voucher_pack.id && single_voucher.call(hand) }
-          break if voucher
-          sleep 0.1
-        }
-
-        if voucher
-          # A 1-voucher pack may not survive the tear, so only put it back if it's still in hand
-          Inventory.store_item(default_sack, voucher_pack) if [GameObj.right_hand, GameObj.left_hand].any? { |hand| hand.id == voucher_pack.id }
-        else
-          Util.msg("yellow", " Couldn't tear a voucher off your pack. Redeeming the whole pack.")
-        end
-      end
-
-      voucher ||= voucher_pack
-      fput "_drag ##{voucher.id} right" unless GameObj.right_hand.id == voucher.id
+      fput "_drag ##{voucher.id} right"
       fput "give ##{GameObj.npcs.find { |npc| npc.name =~ /training/i }.id}"
+    end
+
+    # Safety stop: after this many voucher trades in a row without finishing a task, stop using
+    # vouchers for the rest of the run and sign the redeemed ones back into a pack (2026-10-21: the
+    # guild handed out about 25 teach/learn/audience tasks in a row and burned through the pack).
+    def self.voucher_safety_reset
+      @voucher_streak = 0
+      @vouchers_paused = false
+    end
+
+    def self.vouchers_paused?
+      @vouchers_paused == true
+    end
+
+    def self.voucher_trade_made
+      @voucher_streak = @voucher_streak.to_i + 1
+      return if @voucher_streak < 10 || @vouchers_paused
+
+      @vouchers_paused = true
+      Util.msg("yellow", " #{@voucher_streak} voucher trades in a row without a task you can do, so no more vouchers this run.")
+      left = Guild.gld['guild'][:vouchers].to_i
+      Guild.save_vouchers(left) if left.positive?
+      Util.msg("yellow", " Restart fizzarts to use vouchers again.")
     end
 
     # GLD VOUCHER {1-1000} signs redeemed vouchers into an "Elanthian Guilds voucher pack" in hand:
@@ -7323,7 +7334,8 @@ module BlackArts
 
     def self.remove_task(skill)
       Util.travel(BlackArts.data.current_admin)
-      Util.get_res("ask ##{GameObj.npcs.find { |npc| npc.name =~ /training/i }.id} about trade #{skill}", /^#{GameObj.npcs.last.noun} .*?, "/i)
+      result = Util.get_res("ask ##{GameObj.npcs.find { |npc| npc.name =~ /training/i }.id} about trade #{skill}", /^#{GameObj.npcs.last.noun} .*?, "/i)
+      Guild.voucher_trade_made if result =~ /redeemed a task trading voucher/
     end
 
     def self.activity(guild_status, skill)
