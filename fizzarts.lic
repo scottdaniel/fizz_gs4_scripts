@@ -28,7 +28,9 @@
       - audience illusions (Skip Audience Illusions off): before the first rep it says
         "Sorry for the noise, just practicing illusions" and "Just nod at me if it's
         too bothersome". If a player in the room nods at you, it stops and trades in
-        the audience task. Reps are paced 31 seconds apart (the game needs 30), and an
+        the audience task, and while they're around (2 hours) later audience tasks are
+        traded without asking them again. The apology is said once per room every 30
+        minutes. Reps are paced 31 seconds apart (the game needs 30), and an
         audience is 4 points as the game counts it (Guild Masters 3, active members 2,
         anyone else 1) instead of upstream's 5.
 
@@ -7536,19 +7538,34 @@ module BlackArts
     # anyone. A nod from a player in the room ("Gravinal nods to you.") drops the task. NPCs nod
     # at you too ("Aerenis nods to you and says...", "He nods to you slightly."), so only
     # characters in GameObj.pcs count.
+    # Someone who nodded is remembered for 2 hours: if they're in the room for a later audience
+    # task, it's dropped without asking them again. The apology is said once per room every
+    # 30 minutes, not on every audience task (the guild can hand out several in a row).
     def self.audience_start
       @audience_asked = false
       @audience_objector = nil
+      @audience_repeat_objector = false
+      @audience_traded = false
       @audience_last_rep = nil
+      @audience_objectors ||= {}
+      @audience_announced ||= {}
       DownstreamHook.remove('fizzarts_audience_nod')
       DownstreamHook.add('fizzarts_audience_nod', proc { |xml|
         if @audience_objector.nil? && xml.gsub(/<[^>]+>/, '') =~ /\b([A-Z][\w'-]+) nods to you\b/
           name = Regexp.last_match(1)
-          @audience_objector = name if GameObj.pcs.to_a.any? { |pc| pc.noun == name }
+          if GameObj.pcs.to_a.any? { |pc| pc.noun == name }
+            @audience_objector = name
+            @audience_objectors[name] = Time.now
+          end
         end
         xml
       })
       before_dying { DownstreamHook.remove('fizzarts_audience_nod') }
+    end
+
+    # Name of someone in the room who nodded at an earlier audience task in the last 2 hours
+    def self.audience_objector_here
+      GameObj.pcs.to_a.map(&:noun).find { |name| @audience_objectors[name] && Time.now - @audience_objectors[name] < 2 * 3600 }
     end
 
     def self.audience_objected?
@@ -7560,12 +7577,21 @@ module BlackArts
     def self.audience_ready?
       return false if Illusions.audience_objected?
 
-      sleep 5 until Guild.check_audience || Illusions.audience_objected?
+      sleep 5 until Guild.check_audience || Illusions.audience_objected? || Illusions.audience_objector_here
+      if (name = Illusions.audience_objector_here)
+        @audience_objector ||= name
+        @audience_repeat_objector = true
+        return false
+      end
       unless @audience_asked || Illusions.audience_objected?
         @audience_asked = true
-        fput "say Sorry for the noise, just practicing illusions"
-        fput "say Just nod at me if it's too bothersome"
-        Illusions.audience_pause(15)
+        last = @audience_announced[Room.current.id]
+        if last.nil? || Time.now - last > 30 * 60
+          @audience_announced[Room.current.id] = Time.now
+          fput "say Sorry for the noise, just practicing illusions"
+          fput "say Just nod at me if it's too bothersome"
+          Illusions.audience_pause(15)
+        end
       end
       !Illusions.audience_objected?
     end
@@ -7590,8 +7616,14 @@ module BlackArts
     def self.audience_done
       DownstreamHook.remove('fizzarts_audience_nod')
       return unless Illusions.audience_objected?
+      return if @audience_traded # only ever trade the task once
 
-      Util.msg("info", " #{@audience_objector} nodded, so dropping the audience task.")
+      @audience_traded = true
+      if @audience_repeat_objector
+        Util.msg("info", " #{@audience_objector} asked us to stop earlier and is here, so dropping the audience task.")
+      else
+        Util.msg("info", " #{@audience_objector} nodded, so dropping the audience task.")
+      end
       Guild.remove_task('illusions')
     end
 
