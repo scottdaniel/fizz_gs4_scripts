@@ -21,6 +21,8 @@
       - ;fizzarts ia (interactive): speed tasks and Arcane Master lessons stay automatic;
         teach, learn and audience Illusions tasks wait for you to NOD (keep it and do it
         yourself; fizzarts waits, then turns it in) or SHAKE your head (trade it in).
+        Before taking over movement again (after the guild's wait, or after a task you did
+        yourself) it asks first: NOD to carry on, SHAKE to wait 5 more minutes.
       - from rank 48, before asking for an Illusions task it makes sure your demon is the
         newest type your rank allows (Imp at 53, Verlok at 54, ...), summoning one if not:
         speed tasks stopped appearing at rank 53 while the demon was an Igaesha.
@@ -7253,6 +7255,7 @@ module BlackArts
 
         # No vouchers so we wait
         sleep 5 while Time.now < rest_time
+        Guild.interactive_resume("The guild's wait is over, so it's time to go ask for a new task.")
       end
 
       Guild.new_task(item)
@@ -7374,10 +7377,17 @@ module BlackArts
     end
 
     def self.interactive_choice(skill, task)
-      prompt = lambda {
+      answer = Guild.nod_or_shake(lambda {
         Util.msg("yellow", " Your #{skill} task: #{task}.")
         Util.msg("yellow", " NOD to keep it and do it yourself, or SHAKE your head to trade it in.")
-      }
+      })
+      answer == :nod ? :keep : :trade
+    end
+
+    # Shows the prompt, then waits for your own "You nod." (:nod) or "You shake your head."
+    # (:shake), repeating the prompt every 2 minutes. Anything you did before the prompt is
+    # ignored, so a stray nod around town can't answer it.
+    def self.nod_or_shake(prompt)
       prompt.call
       last_prompt = Time.now
       Script.current.clear
@@ -7391,8 +7401,26 @@ module BlackArts
           end
           next
         end
-        return :keep if line =~ /^You nod(?!\s+(?:to|at)\b)/
-        return :trade if line =~ /^You shake your head(?!\s+(?:to|at)\b)/
+        return :nod if line =~ /^You nod(?!\s+(?:to|at)\b)/
+        return :shake if line =~ /^You shake your head(?!\s+(?:to|at)\b)/
+      end
+    end
+
+    # Interactive mode: before fizzarts takes over movement again after you've had control (the
+    # guild's "come back in N minutes" wait, or a task you did yourself), ask first. NOD carries on;
+    # SHAKE waits 5 more minutes and asks again.
+    def self.interactive_resume(why)
+      return unless BlackArts.data.interactive
+
+      loop do
+        answer = Guild.nod_or_shake(lambda {
+          Util.msg("yellow", " #{why}")
+          Util.msg("yellow", " NOD to let fizzarts carry on (it will move you), or SHAKE your head to wait 5 more minutes.")
+        })
+        return if answer == :nod
+
+        Util.msg("info", " Okay, I'll ask again in 5 minutes.")
+        sleep 300
       end
     end
 
@@ -7419,7 +7447,7 @@ module BlackArts
         done = true if status[:reps].to_i.zero? || status[:task] != task
       end
       DownstreamHook.remove('fizzarts_manual_done')
-      Util.msg("info", " Task done (or changed). Back to it.")
+      Guild.interactive_resume("Your task is done (or changed), so it's time to turn it in and get the next one.")
     end
 
     def self.remove_task(skill)
