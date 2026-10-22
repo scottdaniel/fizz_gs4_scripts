@@ -317,7 +317,8 @@ module Summond
       msg "Drawing the #{rune} rune didn't work: #{line || 'no response'}"
       return nil
     end
-    stone
+    # The drawn runestone is a new item (new id); take it from the hand
+    wait_for_hand { |hand| hand.noun == 'runestone' && hand.id != stone.id } || runestone_in_hand(stone)
   end
 
   # Bank (only if needed), alchemist, draw, deposit what's left. Returns the new stone in hand.
@@ -409,11 +410,19 @@ module Summond
   end
 
   # Returns [demon name or nil, runestone shattered?, all response lines]
+  # Drawing a rune turns the runestone into a new item with a new id (2026-10-22: "cast #<old id>"
+  # got "Cast at what?"), so always cast at the runestone actually in hand
+  def self.runestone_in_hand(stone)
+    hands = [GameObj.right_hand, GameObj.left_hand]
+    hands.find { |hand| stone && hand.id == stone.id } || hands.find { |hand| hand.noun == 'runestone' } || stone
+  end
+
   def self.cast_at(stone)
     wait_for_mana
     fput "release" unless checkprep == "None"
     dothistimeout "prep 725", 5, /Your spell is ready|already have/
-    lines = collect_lines("cast ##{stone.id}", /Roundtime/)
+    @stone = stone = runestone_in_hand(stone)
+    lines = collect_lines("cast ##{stone.id}", /Roundtime|Cast at what\?|What were you referring to/)
     waitcastrt?
     name = lines.map { |line| line[PULL_REGEX, 1] }.compact.first
     [name, lines.any? { |line| line =~ SHATTER_REGEX }, lines]
@@ -540,6 +549,7 @@ module Summond
     next_cast = Time.now
     casts = 0
     refusals = 0
+    missed_target = 0
     while casts < tries
       if @stone.nil?
         msg "Your runestone shattered. Getting another."
@@ -557,6 +567,18 @@ module Summond
 
       name, shattered, lines = cast_at(@stone)
       @stone = nil if shattered
+
+      # The cast never went off (no target): not a failure, so no 10-minute wait. cast_at looks
+      # for the runestone in hand again next time.
+      if lines.any? { |line| line =~ /Cast at what\?|What were you referring to/ }
+        missed_target += 1
+        if missed_target > 2
+          msg "Couldn't cast at your runestone (\"#{lines.first}\"). Stopping."
+          exit
+        end
+        msg "The cast couldn't find your runestone; trying again."
+        next
+      end
 
       # Still on the post-summon cooldown: not a real attempt
       if lines.any? { |line| line =~ TOO_SOON_REGEX }
