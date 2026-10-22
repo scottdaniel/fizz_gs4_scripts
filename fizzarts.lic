@@ -18,6 +18,9 @@
         says it's a Guild Night (doubled training points), and signs leftovers back
         into a pack afterwards. Redeems the whole pack at once: tearing off one voucher
         per trade put a GIVE between every trade, and speed tasks nearly vanished.
+      - ;fizzarts ia (interactive): speed tasks and Arcane Master lessons stay automatic;
+        teach, learn and audience Illusions tasks wait for you to NOD (keep it and do it
+        yourself; fizzarts waits, then turns it in) or SHAKE your head (trade it in).
       - from rank 48, before asking for an Illusions task it makes sure your demon is the
         newest type your rank allows (Imp at 53, Verlok at 54, ...), summoning one if not:
         speed tasks stopped appearing at rank 53 while the demon was an Igaesha.
@@ -3965,6 +3968,7 @@ module BlackArts
     def self.help
       rows = []
       rows << ["#{$lich_char}#{Script.current.name}", "Runs guild tasks based on UI settings"]
+      rows << ["#{$lich_char}#{Script.current.name} ia", "Same, but asks you (NOD/SHAKE) about teach, learn and audience Illusions tasks"]
       rows << [' ', ' ']
       rows << ["#{$lich_char}#{Script.current.name} setup", "UI configuration tool"]
       rows << ["#{$lich_char}#{Script.current.name} load", "Reloads settings from yaml file"]
@@ -5180,7 +5184,7 @@ module BlackArts
                   :note, :note_names, :sea_water_flask, :sea_water_vial, :bundled_herb, :ingredient_count, :correct_herb_count, :put_regex, :get_regex, :herb_doses,
                   :last_alchemy_buy, :alchemy_grind_history, :recipes, :consignment_list, :current_admin, :skin, :skin_number, :creature, :guild_skill, :locations, :ranks,
                   :need_empty_flask, :start_room, :start_town, :current_room, :no_forage, :mortar_check, :cauldron, :note_withdrawal, :note_refresh, :visited_towns,
-                  :west_guilds, :east_guilds, :all_guilds, :cities, :boundaries, :gld_skills, :shadow_container, :shadow_item, :demon_id, :demon_noun, :demon_name
+                  :west_guilds, :east_guilds, :all_guilds, :cities, :boundaries, :gld_skills, :shadow_container, :shadow_item, :demon_id, :demon_noun, :demon_name, :interactive
 
     def initialize(settings)
       @settings = settings
@@ -5204,6 +5208,7 @@ module BlackArts
       @demon_id = nil
       @demon_noun = nil
       @demon_name = nil
+      @interactive = false
       @settings[:no_magic] ||= []
       @settings[:guild_pause] = @settings[:guild_pause].to_i.positive? ? @settings[:guild_pause].to_i : 60
 
@@ -7353,6 +7358,68 @@ module BlackArts
       Inventory.store_item(BlackArts.data.sacks["default"], pack) if pack
     end
 
+    # === Interactive mode (;fizzarts ia) ============================================
+    # Teach, learn and audience Illusions tasks are offered to you instead of being traded or done
+    # automatically: NOD ("You nod.") keeps the task for you to do yourself, SHAKE ("You shake
+    # your head.") trades it in. A nod or shake at someone ("You nod at Bob.", "You nod to the
+    # town guard.") doesn't count.
+    def self.interactive_task(skill, task)
+      if Guild.interactive_choice(skill, task) == :keep
+        Guild.wait_for_manual_task(skill, task)
+      else
+        Guild.remove_task(skill)
+      end
+    end
+
+    def self.interactive_choice(skill, task)
+      prompt = lambda {
+        Util.msg("yellow", " Your #{skill} task: #{task}.")
+        Util.msg("yellow", " NOD to keep it and do it yourself, or SHAKE your head to trade it in.")
+      }
+      prompt.call
+      last_prompt = Time.now
+      Script.current.clear
+      loop do
+        line = get?
+        if line.nil?
+          sleep 0.2
+          if Time.now - last_prompt > 120
+            prompt.call
+            last_prompt = Time.now
+          end
+          next
+        end
+        return :keep if line =~ /^You nod(?!\s+(?:to|at)\b)/
+        return :trade if line =~ /^You shake your head(?!\s+(?:to|at)\b)/
+      end
+    end
+
+    # You do the task; fizzarts stays put (no moving, no casting) until it's done, which shows up as
+    # "[You have completed your training task.]" or, checked once a minute, GLD showing no
+    # repetitions left or a different task (you traded it yourself). Then the normal flow turns it
+    # in and asks for the next one.
+    def self.wait_for_manual_task(skill, task)
+      Util.msg("info", " It's yours. I'll wait until it's done, then turn it in and get the next one.")
+      done = false
+      DownstreamHook.remove('fizzarts_manual_done')
+      DownstreamHook.add('fizzarts_manual_done', proc { |xml|
+        done = true if xml =~ /You have completed your training task/
+        xml
+      })
+      before_dying { DownstreamHook.remove('fizzarts_manual_done') }
+      last_check = Time.now
+      until done
+        sleep 1
+        next if Time.now - last_check < 60
+
+        last_check = Time.now
+        status = Guild.gld[skill]
+        done = true if status[:reps].to_i.zero? || status[:task] != task
+      end
+      DownstreamHook.remove('fizzarts_manual_done')
+      Util.msg("info", " Task done (or changed). Back to it.")
+    end
+
     def self.remove_task(skill)
       Util.travel(BlackArts.data.current_admin)
       result = Util.get_res("ask ##{GameObj.npcs.find { |npc| npc.name =~ /training/i }.id} about trade #{skill}", /^#{GameObj.npcs.last.noun} .*?, "/i)
@@ -7386,7 +7453,10 @@ module BlackArts
         Guild.remove_task(skill)
         Guild.new_task(skill)
       elsif guild_status[skill][:task] =~ /find a fellow guild member to teach Illusions to/i
-        if BlackArts.data.settings[:skill_types].include?("teach")
+        if BlackArts.data.interactive
+          Guild.interactive_task(skill, guild_status[skill][:task])
+          Guild.new_task(skill)
+        elsif BlackArts.data.settings[:skill_types].include?("teach")
           Util.msg('info', " You have been asked to #{guild_status[skill][:task]}")
           Util.msg('info', ' Restart the script when finished')
           Util.msg('info', ' To turn in automatically toggle option in UI')
@@ -7396,7 +7466,10 @@ module BlackArts
           Guild.new_task(skill)
         end
       elsif guild_status[skill][:task] =~ /find a fellow guild member to teach you illusions/i
-        if BlackArts.data.settings[:skill_types].include?("learn")
+        if BlackArts.data.interactive
+          Guild.interactive_task(skill, guild_status[skill][:task])
+          Guild.new_task(skill)
+        elsif BlackArts.data.settings[:skill_types].include?("learn")
           Util.msg('info', " You have been asked to #{guild_status[skill][:task]}")
           Util.msg('info', ' Restart the script when finished')
           Util.msg('info', ' To turn in automatically toggle option in UI')
@@ -7479,7 +7552,9 @@ module BlackArts
 
         Guild.new_task(skill)
       elsif guild_status[skill][:task] =~ /practice your latest Illusion in front of an audience/
-        if BlackArts.data.settings[:no_audience]
+        if BlackArts.data.interactive
+          Guild.interactive_task(skill, guild_status[skill][:task])
+        elsif BlackArts.data.settings[:no_audience]
           Util.msg("info", " Skipping audience illusion task (Skip Audience Illusions is on). Trading it in.")
           Guild.remove_task(skill)
         else
@@ -9620,8 +9695,11 @@ BlackArts::Util.track_room
 # Reset the mortar check in case it's an old style
 BlackArts.data.mortar_check = true
 
-# Default to running guild tasks
-if Script.current.vars[1].nil?
+# Default to running guild tasks; ";fizzarts ia" does the same but asks about teach, learn and
+# audience Illusions tasks (BlackArts.data persists between runs, so set the flag every time)
+BlackArts.data.interactive = Script.current.vars[1].to_s =~ /\A(?:ia|interactive)\z/i ? true : false
+if Script.current.vars[1].nil? || BlackArts.data.interactive
+  BlackArts::Util.msg("info", " Interactive mode: NOD to keep teach/learn/audience Illusions tasks, SHAKE to trade them.") if BlackArts.data.interactive
   BlackArts::Util.set_variables
   BlackArts::Util.set_hooks
 
