@@ -1,4 +1,6 @@
-#unlost.lic
+# quiet
+# unlost.lic  (first line `# quiet`: Lich then skips its own "active"/"has exited" lines, so a no-op run
+# prints nothing in the game window)
 # Self-recovery for "Lich can't tell where I am": when Room.current is nil (the
 # room isn't in the map database, so every ;go2 fails with "your current room was
 # not found in the map database"), walk the exits one step at a time until Lich
@@ -115,9 +117,7 @@ end
 
 $unlost_failed = false
 
-if !lost?
-  echo "unlost: Lich knows where you are (room #{Room.current.id}) -- nothing to do."
-else
+if lost?
   echo "unlost: Lich can't place you (#{where}) -- walking out."
   unless walk_out
     $unlost_failed = true
