@@ -18,8 +18,9 @@
         says it's a Guild Night (doubled training points), and signs leftovers back
         into a pack afterwards. Redeems the whole pack at once: tearing off one voucher
         per trade put a GIVE between every trade, and speed tasks nearly vanished.
-      - demon illusions stop after 5 successes in a row that the guild doesn't credit
-        (no repetition/speed-round message), naming newer demons your rank allows.
+      - after 5 demon illusions in a row that the guild doesn't credit (no repetition or
+        speed-round message), it summons the newest demon type your rank allows with
+        ;summond and only accepts that type from then on.
       - illusion loops stop the script if you walk away from the practice room or the
         Illusions task changes under them (you turned it in or took a new one yourself).
       - voucher safety stop: 10 voucher trades in a row without a usable task stops
@@ -7936,6 +7937,12 @@ module BlackArts
       demon_nouns.find { |_demon_type, pattern| noun.downcase =~ pattern }&.first
     end
 
+    # Allowed at this rank, and, once the guild has stopped crediting an older type (see
+    # handle_uncredited), of the newest type the rank allows
+    def self.demon_usable?(type, allowed)
+      allowed.key?(type) && (!@needs_newest_demon || allowed[type] == allowed.values.max)
+    end
+
     # Before a demon illusion task: if there's no minor demon, or it's a type this rank can't
     # illusion yet, summon the newest type the rank allows with ;summond (Igaesha at 48, Imp at 53,
     # Verlok at 54, ...). A demon that's already usable is left alone.
@@ -7948,7 +7955,7 @@ module BlackArts
         Illusions.read_demon
         type = Illusions.demon_type(BlackArts.data.demon_noun, BlackArts.data.demon_name)
         # A demon we can't identify is let through, same as check_demon_rank
-        return if BlackArts.data.demon_id && (type.nil? || allowed.key?(type))
+        return if BlackArts.data.demon_id && (type.nil? || Illusions.demon_usable?(type, allowed))
       end
 
       wanted = allowed.max_by { |_type, min_rank| min_rank }.first
@@ -7961,7 +7968,7 @@ module BlackArts
 
       Illusions.read_demon
       type = Illusions.demon_type(BlackArts.data.demon_noun, BlackArts.data.demon_name)
-      return if BlackArts.data.demon_id && type && allowed.key?(type)
+      return if BlackArts.data.demon_id && type && Illusions.demon_usable?(type, allowed)
 
       Util.msg("yellow", " ;summond didn't get you a demon you can illusion at rank #{rank}. Summon one and restart the script.")
       exit
@@ -8009,18 +8016,22 @@ module BlackArts
 
     # Five successful demon illusions in a row that the guild didn't credit. Most likely it wants
     # a newer demon type than this one (unverified: at rank 53 nobody had checked whether an
-    # Igaesha still counts), or an audience task's audience isn't big enough.
-    def self.stop_uncredited
+    # Igaesha still counts). Summon the newest type the rank allows and remember that older types
+    # don't count; returns so do_demons can hand back to the task flow, which travels back to the
+    # task's room. Exits if there's nothing newer to try.
+    def self.handle_uncredited
       rank = Guild.gld['illusions'][:rank].to_i
       type = Illusions.demon_type(BlackArts.data.demon_noun, BlackArts.data.demon_name)
-      newer = Illusions.demon_ranks.select { |t, min_rank| min_rank <= rank && (type.nil? || min_rank > Illusions.demon_ranks[type].to_i) }.keys
+      newer = Illusions.demon_ranks.select { |t, min_rank| min_rank <= rank && (type.nil? || min_rank > Illusions.demon_ranks[type].to_i) }
       Util.msg("yellow", " 5 demon illusions in a row on your #{BlackArts.data.demon_noun || 'minor demon'} didn't count toward your task.")
-      if newer.any?
-        Util.msg("yellow", " At rank #{rank} the guild may want a newer demon: #{newer.join(', ')}. Try ;summond #{newer.max_by { |t| Illusions.demon_ranks[t] }} and restart.")
-      else
-        Util.msg("yellow", " Check the game window for why.")
+      if newer.empty?
+        Util.msg("yellow", " No newer demon to try at rank #{rank}. Check the game window for why.")
+        exit
       end
-      exit
+
+      Util.msg("yellow", " The guild may want a newer demon at rank #{rank} (#{newer.keys.join(', ')}), so summoning one.")
+      @needs_newest_demon = true
+      Illusions.ensure_demon
     end
 
     def self.do_demons(place: nil)
@@ -8082,7 +8093,8 @@ module BlackArts
           sleep 0.5 until checkmana > 5
           fput "illusion demon ##{BlackArts.data.demon_id} dispel"
           Util.wait_rt
-          Illusions.stop_uncredited if uncredited >= 5
+          # Summoned a newer demon: let the task flow start over (and travel back to the task room)
+          return Illusions.handle_uncredited if uncredited >= 5
 
           Illusions.audience_wait_next if place == 'audience' && (Guild.gld['illusions'][:reps].to_i.positive? || lines.any?(/is already illusioned/))
         else
