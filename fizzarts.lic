@@ -18,6 +18,9 @@
         says it's a Guild Night (doubled training points), and signs leftovers back
         into a pack afterwards. Redeems the whole pack at once: tearing off one voucher
         per trade put a GIVE between every trade, and speed tasks nearly vanished.
+      - from rank 48, before asking for an Illusions task it makes sure your demon is the
+        newest type your rank allows (Imp at 53, Verlok at 54, ...), summoning one if not:
+        speed tasks stopped appearing at rank 53 while the demon was an Igaesha.
       - after 5 demon illusions in a row that the guild doesn't credit (no repetition or
         speed-round message), it summons the newest demon type your rank allows with
         ;summond and only accepts that type from then on.
@@ -7203,6 +7206,15 @@ module BlackArts
 
       Guild.check_boost(guild_status)
 
+      # Speed tasks were 22-33% of assignments at ranks 35-48, fell to 4-14% at 49-52, and stopped
+      # entirely at rank 53 (0 of 49 overnight on 2026-10-21) while the demon was an Igaesha and
+      # Imp/Shien had just unlocked. Best guess (unconfirmed): the guild only hands out speed tasks
+      # for the newest demon type the rank allows, so have that demon before asking.
+      if item == 'illusions' && guild_status['illusions'] && guild_status['illusions'][:rank].to_i >= 48
+        Illusions.ensure_newest_demon
+        Util.travel(BlackArts.data.current_admin) # ;summond may have gone to a summoning chamber
+      end
+
       lines = Util.get_command("ask ##{GameObj.npcs.find { |npc| npc.name =~ /training/i }.id} to train #{item}", /You ask|Who are you trying to ask/i)
 
       Guild.voucher_safety_reset if lines.any? { |l| l =~ /All done with that task/ } && !Guild.vouchers_paused?
@@ -7937,8 +7949,14 @@ module BlackArts
       demon_nouns.find { |_demon_type, pattern| noun.downcase =~ pattern }&.first
     end
 
+    def self.ensure_newest_demon
+      @needs_newest_demon = true
+      Illusions.ensure_demon
+    end
+
     # Allowed at this rank, and, once the guild has stopped crediting an older type (see
-    # handle_uncredited), of the newest type the rank allows
+    # handle_uncredited) or get_work asks for the newest (ensure_newest_demon), of the newest type
+    # the rank allows
     def self.demon_usable?(type, allowed)
       allowed.key?(type) && (!@needs_newest_demon || allowed[type] == allowed.values.max)
     end
