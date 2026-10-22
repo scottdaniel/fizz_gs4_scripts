@@ -2,6 +2,11 @@
 
 module FizzleworthPrerest
 
+# First, get off any unmapped room (go2 "current room not found"): see unlost.lic.
+# Stops here -- bigshot is stopped too -- if it can't walk out.
+Script.run("unlost")
+exit if $unlost_failed
+
 # Always-on: clears stationary sticky-web hazards during travel before we walk
 # into one (bigshot / go2 only wait webs out). Variant-independent. Restarted
 # here in case it ever dies mid-run.

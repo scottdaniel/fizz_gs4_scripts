@@ -1,0 +1,130 @@
+#unlost.lic
+# Self-recovery for "Lich can't tell where I am": when Room.current is nil (the
+# room isn't in the map database, so every ;go2 fails with "your current room was
+# not found in the map database"), walk the exits one step at a time until Lich
+# recognizes a room again. Does nothing, instantly, when you're on the map.
+#
+# Why: on 10/22 go2 wandered into an unmapped room of the Lower Trollfang forest
+# maze (u9055, the same one on two accounts), and bigshot spent 32 minutes in a
+# loop of rest -> Salvi-prerest -> Salvi-prep -> "Could not reach 4541", 56 times,
+# recasting Voln symbols (~3k favor) with no kills. Called first thing in each
+# prerest, so the loop is broken at the first rest instead.
+#
+#   ;unlost        walk out if lost, otherwise say so and exit
+#
+# If it can't get out within MAX_STEPS moves it gives up: it sets $unlost_failed,
+# stops bigshot (so it can't keep burning favor and silver) and posts a line to
+# exp_check's Discord webhook (data/exp_check.yaml; `stuck: false` there mutes it).
+# The prerests that call it stop right after a failure.
+#
+# The walk is random but never turns straight back on the step it just took (when
+# there is any other exit), which is enough for a maze: every move out of one of
+# these rooms lands somewhere new or "wanders" you, and a mapped room is never far.
+
+require 'json'
+require 'net/http'
+require 'uri'
+require 'yaml'
+
+module Unlost
+
+MAX_STEPS = 120 unless defined?(MAX_STEPS)
+
+OPPOSITE = {
+  "n" => "s", "s" => "n", "e" => "w", "w" => "e",
+  "ne" => "sw", "sw" => "ne", "nw" => "se", "se" => "nw",
+  "up" => "down", "down" => "up"
+}.freeze unless defined?(OPPOSITE)
+
+def self.lost?
+  Room.current.nil?
+end
+
+# Exits worth walking: the compass directions and up/down. "out" is skipped, since in
+# a booth or building it just goes back where you came from.
+def self.usable_exits
+  exits = checkpaths
+  exits = [] unless exits
+  exits.compact.map(&:to_s).select { |d| d =~ /\A(?:n|s|e|w|ne|nw|se|sw|up|down)\z/ }
+end
+
+def self.where
+  "#{XMLData.room_title.to_s.strip} (u#{XMLData.room_id})"
+end
+
+# Webhook line, same webhook exp_check uses. @return [Boolean] sent?
+def self.alert(text)
+  cfg = (YAML.safe_load(File.read(File.join(DATA_DIR, "exp_check.yaml"))) rescue nil)
+  cfg = {} unless cfg.is_a?(Hash)
+  url = cfg["webhook_url"].to_s.strip
+  return false if url.empty? || cfg["stuck"] == false
+  uri = URI(url)
+  return false unless uri.is_a?(URI::HTTPS)
+  res = Net::HTTP.start(uri.host, uri.port, use_ssl: true, open_timeout: 5, read_timeout: 5) do |http|
+    http.post(uri.request_uri, { content: "[#{Char.name}] #{text}" }.to_json, "Content-Type" => "application/json")
+  end
+  res.is_a?(Net::HTTPSuccess)
+rescue StandardError => e
+  echo "unlost: webhook failed (#{e.class}: #{e.message})"
+  false
+end
+
+# Walk until Lich places us. @return [Boolean] true once on the map.
+def self.walk_out
+  start = where
+  last = nil
+  steps = 0
+  failures = 0
+  while lost? && steps < MAX_STEPS
+    fput "stand" unless checkstanding
+    waitrt?
+    options = usable_exits
+    if options.empty?
+      # Nothing to walk through (or the exits haven't printed yet): look and retry.
+      fput "look"
+      sleep 1
+      failures += 1
+      break if failures > 8
+      next
+    end
+    back = OPPOSITE[last]
+    choices = options.reject { |d| d == back }
+    choices = options if choices.empty?
+    dir = choices.sample
+    echo "unlost: step #{steps + 1} -> #{dir} (#{where})" if steps.zero? || ((steps + 1) % 10).zero?
+    if move(dir)
+      last = dir
+      steps += 1
+      failures = 0
+      sleep 0.3 # let the room update before asking the map again
+    else
+      failures += 1
+      last = nil
+      break if failures > 8
+      sleep 1
+    end
+  end
+  if lost?
+    echo "unlost: still lost after #{steps} steps (started in #{start}, now #{where})."
+    false
+  else
+    echo "unlost: back on the map after #{steps} step(s): room #{Room.current.id}."
+    true
+  end
+end
+
+$unlost_failed = false
+
+if !lost?
+  echo "unlost: Lich knows where you are (room #{Room.current.id}) -- nothing to do."
+else
+  echo "unlost: Lich can't place you (#{where}) -- walking out."
+  unless walk_out
+    $unlost_failed = true
+    sent = alert("Stuck: Lich can't place me on the map at #{where}, and walking #{MAX_STEPS} steps didn't help. Stopping bigshot.")
+    Script.kill("bigshot") if Script.running?("bigshot")
+    echo "unlost: stopped bigshot#{sent ? ', webhook sent' : ''}."
+  end
+end
+
+end # module

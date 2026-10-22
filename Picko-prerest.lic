@@ -2,6 +2,11 @@
 
 module PickoPrerest
 
+# First, get off any unmapped room (go2 "current room not found"): see unlost.lic.
+# Stops here -- bigshot is stopped too -- if it can't walk out.
+Script.run("unlost")
+exit if $unlost_failed
+
 Script.run("eherbs")
 # While eloot sells, note every appraisal it asks a shopkeeper for: the line
 # "You ask <npc> to appraise <item>." names the item, and the quote that follows

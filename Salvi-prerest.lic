@@ -2,6 +2,11 @@
 
 module SalviPrerest
 
+# First, get off any unmapped room (go2 "current room not found"): see unlost.lic.
+# Stops here -- bigshot is stopped too -- if it can't walk out.
+Script.run("unlost")
+exit if $unlost_failed
+
 Script.run("eherbs")
 # ;eloot sell under the appraisal recorder, then store anything eloot refused to
 # sell (appraised above your eloot limits) in the locker -- only when encumbered
