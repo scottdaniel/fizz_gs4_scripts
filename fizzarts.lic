@@ -3987,7 +3987,7 @@ module BlackArts
       rows << ["#{$lich_char}#{Script.current.name} suggest", "Lists potential recipes for current tasks"]
       rows << [' ', ' ']
       rows << ["#{$lich_char}#{Script.current.name} --debug=<on|off>", "Turns debug on/off for troubleshooting"]
-      rows << ["#{$lich_char}#{Script.current.name} finish", "Stops after the current task (script running)"]
+      rows << ["#{Script.current.name} finish", "While it's running: stop after the current task (semicolon optional)"]
 
       table = Terminal::Table.new :title => "BlackArts Help v#{BlackArts.get_script_version}", :rows => rows
       table.align_column(1, :right)
@@ -4735,8 +4735,10 @@ module BlackArts
       Guild.voucher_safety_reset
 
       finish = proc { |server_string|
-        # ;fizzarts finish (or an abbreviation like ;fizza finish); upstream matched ;bla...finish
-        if server_string =~ /^(?:<c>)?;fizza\w*\s+finish\b/i
+        # ";fizzarts finish" or plain "fizzarts finish" (the semicolon was confusing, and without it
+        # the game answered "Please rephrase that command."), or an abbreviation like ;fizza finish.
+        # Upstream matched ;bla...finish.
+        if server_string =~ /^(?:<c>)?;?fizza\w*\s+finish\b/i
           BlackArts.data.settings[:once_and_done] = true
           Util.msg("info", " fizzarts will exit after the next task is completed")
           # Swallow the command. Each UpstreamHook's return value is handed to the next one, and
