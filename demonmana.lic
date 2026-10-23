@@ -30,8 +30,24 @@ GONE     = /could not find|what were you referring/i
 # silver verlok'asha held 15 and gave back 7; an igaesha held 28 and gave back 26).
 MIN_STORE = 20
 
+# Your followers are announced after every move as "Your <name> followed." (or "Your a and
+# your b followed.") under whatever illusion the demon is wearing -- 10.23 it was a "gnoll",
+# which no demon-noun list can match, and `send 50 mdemon` isn't accepted. The room list has
+# the same name, so match on that. The animate shows up there too, but under a different name
+# than its GameObj ("animated ..."), so it never matches.
+def follower_names
+  line = reget(3000, /^Your .+ followed\.\s*$/).to_a.last
+  return [] unless line
+  line.scan(/[Yy]our (.+?)(?= and your |\s+followed\.)/).flatten
+rescue StandardError
+  []
+end
+
 def demon
-  GameObj.npcs.find { |n| n && (n.noun.to_s =~ DEMON_NOUN || n.name.to_s =~ /minor demon/i) }
+  npcs = GameObj.npcs
+  npcs.find { |n| n && (n.noun.to_s =~ DEMON_NOUN || n.name.to_s =~ /minor demon/i) } ||
+    (names = follower_names
+     npcs.find { |n| n && n.name.to_s !~ /animate/i && names.include?(n.name.to_s) })
 end
 
 # What the first send to the current demon showed: { id:, points: } -- the points it
@@ -47,8 +63,8 @@ def skip_note(d)
   c[:said] = true
 end
 
-# `send 50 <noun>` needs the demon's noun as the room shows it (it can be disguised, e.g. a
-# "hawk"); fall back to the mdemon keyword when it isn't in the room list.
+# `send 50 <noun>` needs the noun the room shows (the illusion's, when it's disguised);
+# the mdemon keyword is only a last resort -- the game doesn't accept it for SEND.
 def send_mana
   d = demon
   return skip_note(d) if low_capacity?(d)
