@@ -1,0 +1,105 @@
+# Fizzleworth-attack-arena.lic
+# Attack pass for the Ebon Gate Arena of the Abyss. Use it from ;abyssx's "Use bigshot
+# quick" mode: set the bigshot profile's quick_commands to
+#
+#     script Fizzleworth-attack-arena
+#
+# The arena sends one undead at a time and the longer you stay the more lightning
+# strikes, so this is plain damage -- no web / Tether / hold passes like -ultima. Which
+# spell, by live mana (damage per cast is the average from your logs, 10.2x):
+#
+#   mana >= arena_pain_at -> 711 Pain          ~111 (35% of max health, capped at 200), 11 mana
+#   else >= 5             -> 705 Disintegrate  ~87, 5 mana
+#   else >= 2             -> 702 Mana Disruption ~64, 2 mana
+#
+# Below SACRIFICE_AT mana it first tries `sacrifice mana` (~89 mana for one shadow
+# essence, off cooldown). Up to MAX_CASTS casts per launch, so bigshot isn't relaunched
+# after every cast; it stops as soon as the target is dead. Wound-blocked casts ("can't
+# think clearly enough") run ;eherbs --spellcast. Every cast is gated on live mana.
+#
+#   ;vars set arena_pain_at=40      mana at/above which Pain is used (default 40)
+#
+# Everything lives in the module: top-level defs/constants are shared by every Lich
+# script (alive?, SACRIFICE_AT ... already exist in fizzsac / attack-ultima).
+
+module FizzArena
+  MAX_CASTS    = 6
+  SACRIFICE_AT = 40
+  COST_DEFAULT = { 711 => 11, 705 => 5, 702 => 2 }.freeze
+  CANT_CAST    = /can't think clearly enough/i
+  CAST_REPLY   = /Cast Roundtime \d+|Roundtime: \d+ sec|can't think clearly enough|You can't cast|You have no|don't have|^Wait \d+ sec/i
+
+  def self.pain_at
+    v = UserVars.arena_pain_at
+    v.to_s =~ /\A\s*\d+\s*\z/ ? v.to_i : 40
+  end
+
+  def self.spell_cost(n)
+    c = (Spell[n].mana_cost.to_i rescue 0)
+    c.positive? ? c : COST_DEFAULT[n]
+  end
+
+  # Pain while there's mana to spare, then the cheaper ones; nil = can't afford any.
+  def self.pick_spell(mana)
+    return 711 if mana >= [pain_at, spell_cost(711)].max
+    return 705 if mana >= spell_cost(705)
+    return 702 if mana >= spell_cost(702)
+    nil
+  end
+
+  def self.alive?(t)
+    !!(t && t.status.to_s !~ /dead|gone/)
+  end
+
+  # The game's current target if it's alive, else the first living one.
+  def self.current_foe
+    living = GameObj.targets.select { |t| alive?(t) }
+    living.find { |t| t.id.to_i == XMLData.current_target_id.to_i } || living.first
+  end
+
+  def self.sacrifice_on_cooldown?
+    Effects::Cooldowns.to_h.keys.any? { |k| k.to_s =~ /sacrifice\s*\(\s*mana\s*\)/i }
+  rescue StandardError
+    false
+  end
+
+  # Free mana first: one shadow essence is worth ~89.
+  def self.top_up_mana
+    return unless checkmana < SACRIFICE_AT
+    return unless Lich::Resources.shadow_essence.to_i.positive? && !sacrifice_on_cooldown?
+    waitcastrt?
+    waitrt?
+    dothistimeout("sacrifice mana", 4, /mana surge into you|overwhelm you with shadow essence|too depleted/i)
+    waitrt?
+  rescue StandardError
+    nil
+  end
+
+  def self.run_pass
+    foe = current_foe
+    exit unless foe
+    MAX_CASTS.times do
+      break unless foe
+      top_up_mana
+      n = pick_spell(checkmana)
+      if n.nil?
+        echo "[arena] out of mana (#{checkmana}) -- waiting a moment."
+        sleep 3
+        break
+      end
+      fput "target ##{foe.id}" unless XMLData.current_target_id.to_i == foe.id.to_i
+      waitrt?
+      waitcastrt?
+      r = dothistimeout("incant #{n}", 5, CAST_REPLY).to_s
+      if r =~ CANT_CAST
+        Script.run("eherbs", "--spellcast")
+        break
+      end
+      waitcastrt?
+      waitrt?
+      foe = current_foe
+    end
+  end
+end
+
+FizzArena.run_pass
