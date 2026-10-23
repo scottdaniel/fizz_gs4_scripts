@@ -29,6 +29,22 @@ unless Spell[509].active?
 end
 
 fput "ready weapon"
+
+# Still nothing in either hand: the weapon is really gone (disarmed and never
+# recovered, or the STORE weapon setting points at something that isn't
+# there). Don't let bigshot walk back out unarmed -- Brayis died on 10/22 doing
+# exactly that after a death dirge disarmed him. Stop bigshot here, in town,
+# where it's safe, the same way unlost.lic stops it when it's stuck. This runs
+# before any travel (bigshot's hunting_prep_commands happen at the start of
+# pre_hunt). Skips `grip two` too, which just prints its usage with no weapon.
+pause 0.5
+if checkright.nil? && checkleft.nil?
+  echo "Brayis-prep: nothing in hand after READY WEAPON -- stopping bigshot. " \
+       "Check the STORE weapon setting (STORE LIST) and this script's ready/grip commands."
+  Script.kill("bigshot") if Script.running?("bigshot")
+  exit
+end
+
 fput "grip two"
 
 end #End of module

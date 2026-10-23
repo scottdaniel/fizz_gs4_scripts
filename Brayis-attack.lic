@@ -118,6 +118,32 @@
 # instead of burning stamina and a roundtime on a tackle that can't land. A
 # global because bigshot re-invokes this script fresh every pass; it lasts
 # until Lich restarts -- to forget it sooner: ;e $brayis_no_tackle.clear
+#
+# FEATURE 2026-10-23 (don't fight bare-fisted after a disarm): a death dirge
+# knocked the katana away on 10/20 and the Claidhmore on 10/22 ("...shaking
+# your grip until the X falls to the ground and into the shadows!" then
+# "[Use the RECOVER ITEM command while in the appropriate room to regain your
+# item.]"). Nothing noticed: Brayis kept swinging fists (471 times the first
+# time, 244 the second) and the second time died. ecleanse didn't help (its
+# disarm patterns don't include that wording, and its recover_disarmed setting
+# is off unless enabled in ;ecleanse setup) and neither did disarmwatch (its
+# output never reached the log). So now:
+#  - each pass, if BOTH hands are empty (hands_empty?), this script prints a
+#    DISARMED banner, sets $bigshot_should_rest (reason "Disarmed", the same
+#    mechanism Salvi/Picko use) so bigshot retreats to the resting room
+#    instead of fighting on, and exits without attacking. Empty hands rather
+#    than "no weapon-type item" so a weapon noun missing from gameobj-data
+#    can't stop a good hunt.
+#  - Brayis-prep.lic is the other half: if its READY leaves the hands empty
+#    (the weapon is really gone) it stops bigshot there, in town, instead of
+#    letting it walk back out unarmed.
+#  - a persistent DownstreamHook records Room.current the moment any "Use the
+#    RECOVER ITEM command" line goes by -- that line is printed for EVERY kind
+#    of disarm, so one pattern covers them all -- and the banner reports it. A
+#    disarm can land while bigshot is walking, between passes (the 10/22 one
+#    did), so noticing it here is NOT the same as knowing where it happened.
+# It does not try RECOVER ITEM itself, and it can't see a non-weapon held in a
+# hand (a robe in the right hand makes `attack` refuse, 79,500 times on 9/10).
 
 # --- knobs -------------------------------------------------------------------
 
@@ -257,6 +283,59 @@ def tackle_then_maybe_finish(foe)
   end
 end
 
+# --- disarm handling ---------------------------------------------------------
+
+# GS4 prints this for EVERY way of having an item knocked away (a death dirge's
+# voice, a hardened-hide rebound, a curse, ...), so matching it covers all of
+# them without a pattern per wording -- which is exactly where ecleanse fell
+# short. See the 2026-10-23 note above.
+DISARM_MSG = /Use the RECOVER ITEM command/i unless defined?(DISARM_MSG)
+
+# How long a recorded disarm room is still believed when reporting it.
+DISARM_FRESH_SECS = 1800 unless defined?(DISARM_FRESH_SECS)
+
+# Remembers WHERE the disarm line arrived. bigshot re-invokes this script every
+# pass and a disarm can land while bigshot is walking between passes, so the
+# recording has to live in a hook that outlives each pass: persist: true is
+# what stops Lich removing it when this script exits (the default would leave
+# it but warn). Re-adding it each pass just replaces it under the same name.
+# To remove it: ;e DownstreamHook.remove('brayis_disarm_room')
+DownstreamHook.add('brayis_disarm_room', proc { |server_string|
+  begin
+    if server_string =~ DISARM_MSG
+      room = Room.current
+      $brayis_disarm = { room: room&.id, title: Array(room&.title).first, at: Time.now }
+    end
+  rescue StandardError
+    nil
+  end
+  server_string
+}, persist: true)
+
+# Nothing in either hand (checkright/checkleft return nil for an "Empty" hand).
+# Both hands, not just the right, so this doesn't depend on which hand a
+# two-handed grip reports in.
+def hands_empty?
+  checkright.nil? && checkleft.nil?
+end
+
+# Report the disarm loudly and send bigshot to rest rather than fight on with
+# fists. Brayis-prep.lic then stops bigshot if no weapon can be readied.
+def handle_disarmed
+  info  = $brayis_disarm
+  fresh = info && (Time.now - info[:at]) < DISARM_FRESH_SECS
+  here  = Room.current
+  echo "########## DISARMED -- nothing in either hand ##########"
+  if fresh
+    echo "## the RECOVER ITEM line arrived #{(Time.now - info[:at]).round}s ago in room #{info[:room]} (#{info[:title]})"
+  else
+    echo "## disarm room unknown (no recent RECOVER ITEM line seen); noticed in room #{here&.id} (#{Array(here&.title).first})"
+  end
+  echo "## not fighting bare-fisted -- asking bigshot to rest"
+  $bigshot_should_rest = true
+  $rest_reason = "Disarmed"
+end
+
 # --- main ----------------------------------------------------------------
 
 foe = GameObj.targets.find { |t| t.id.to_i == XMLData.current_target_id.to_i } if XMLData.current_target_id
@@ -270,6 +349,13 @@ fput "target ##{foe.id}" unless XMLData.current_target_id.to_i == foe.id.to_i
 waitrt?
 
 exit if target_dead?(foe)
+
+# Empty hands = disarmed. Don't fall back to swinging fists (Brayis died doing
+# that on 10/22) -- see the 2026-10-23 note above.
+if hands_empty?
+  handle_disarmed
+  exit
+end
 
 fput "stance offensive" if stance != "offensive"
 
