@@ -26,8 +26,9 @@ Standard per-character suffixes:
 |---|---|
 | `-attack*` | Bigshot hunting-command routine (see [Bigshot integration](#bigshot-integration)) |
 | `-duskattack` | Duskruin arena attack routine, loaded by `fizzdusk` as `#{Char.name}-duskattack` (the name is required) |
-| `-prep` | Gear up before a hunt (clear hands, rub items, scroll buffs, ready weapon) |
-| `-prerest` | Chores chained before resting (herbs, sell loot, bounty, shopping, waggle, quit-on-schedule) |
+| `-prep` | Gear up before a hunt: stop the town music (`playsongs`), clear hands, rub items (any whose spell is already up is skipped, and the 3 s pause only follows a rub that actually ran), scroll buffs, ready weapon |
+| `-prerest` | Chores chained before resting (unmapped-room check, herbs, sell loot, bounty, shopping, waggle, quit-on-schedule), then `playsongs` if you're at the keyboard |
+| `-disarmguard` | Always-on watcher that goes after a weapon knocked out of your hand mid-hunt (see [Fizzlestiks](#fizzlestiks-bard)) |
 | `-rest` | Position weapons for resting |
 
 ## 1. Character-specific scripts
@@ -39,9 +40,9 @@ pauses/steers bigshot, **config** = reads bigshot's profile settings, **-** = no
 
 | Script | What it does | Bigshot |
 |---|---|---|
-| `Brayis-attack.lic` | Stamina-gated `cman tackle`, then a plain attack; falls back to plain attack when stamina is low or the creature can't be knocked down. One decision per call. | cmd |
+| `Brayis-attack.lic` | Stamina-gated `cman tackle`, then a plain attack; falls back to plain attack when stamina is low or the creature can't be knocked down. One decision per call. Won't fight bare-fisted: with both hands empty (disarmed) it prints a DISARMED banner and sets bigshot's rest flag. | cmd |
 | `tackle-bot.lic` | Standalone group-hunt loop: tackles any living, un-prone NPC in the room while someone else's bigshot runs the hunt. Same stamina gate as `Brayis-attack`. Start/stop by hand. | reads resting room |
-| `Brayis-prep.lic` | Warrior version of `Fizzleworth-prep`: clear hands, rub items, ready the katana two-handed. | - |
+| `Brayis-prep.lic` | Warrior version of `Fizzleworth-prep`: clear hands, rub items, ready the katana two-handed. If `ready weapon` leaves both hands empty it stops bigshot rather than let him walk out unarmed. | - |
 | `Brayis-prerest.lic` | Warrior version of `Salvi-prerest`: eherbs, eloot sell, buyitems, timequit. | - |
 
 ### Felixopedes (Empath)
@@ -86,6 +87,7 @@ Other Fizzleworth scripts:
 | Script | What it does | Bigshot |
 |---|---|---|
 | `Fizzleworth-duskattack.lic` | Duskruin arena routine; optional boost redemption at "must rest" (`UserVars.fizzdusk[:boost_lte]`, `[:boost_absorb]`). | - |
+| `Fizzleworth-attack-arena.lic` | One attack pass for the Ebon Gate Arena of the Abyss, run by `fizzabyss` (not a bigshot command): Pain / Disintegrate / Mana Disruption by live mana, topping up mana from the demon, then Symbol of Mana, then sacrifice. | - |
 | `orb_check.lic` | Finds orb (pure) gems by casting Phase (704) at each gem, handles gem jars, moves orbs to another container. See [Gems](#gems). | - |
 
 The Sorcerer toolkit (`reanim`, `fizzsac`, `sac4mana`, `mdemon_refresh`, `demonmana`, `summond`) is
@@ -93,10 +95,21 @@ class-specific rather than character-specific, so it is listed under [Hunting](#
 
 ### Fizzlestiks (Bard)
 
+He plays the one-handed **tambourine** while hunting (an instrument in hand strengthens some of his monster-directed
+songs, and the mace stays in the right hand) and the two-handed **drum** in town. The hand-off happens at the
+`-prerest` / `-prep` boundaries, not by `playsongs` guessing where he is.
+
 | Script | What it does | Bigshot |
 |---|---|---|
+| `Fizzlestiks-attack.lic` | Replaces the old `feint (s9), attack (xx)` commands. Feints (CMAN) when Lich says it's usable (known, 9 stamina, off cooldown), otherwise a plain attack. Refuses to punch with an empty right hand (the left holds the tambourine) and defers to the disarm guard. One decision per call. | cmd |
+| `Fizzlestiks-prep.lic` | Pre-hunt: stops the town drum, clears hands, rubs gold coin / small statue / moonstone cube / white crystal / black crystal (skipping any whose spell is up), readies the mace, starts the disarm guard, then starts `playsongs tambourine` if you're at the keyboard and the weapon is actually in hand. | starts companion |
+| `Fizzlestiks-prerest.lic` | Pre-rest: `unlost`, stops the hunting tambourine, `store weapon`, eherbs, eloot sell, `undead_bounty` for death dirges, ewaggle, then `playsongs drum` if you're at the keyboard. | - |
+| `Fizzlestiks-disarmguard.lic` | Always-on. When the game prints `[Use the RECOVER ITEM command ...]` (every kind of disarm, including a death dirge's song) it pauses bigshot and the music, goes back to that room, kneels and searches up to 10 times like `ecleanse` does, then re-runs `-prep`. Retreats (rest flag) if health drops under 40% mid-search; stops bigshot if the weapon is never found. Leave `ecleanse`'s own `recover_disarmed` off so they don't both try. | companion |
 | `bard-bot.lic` | Standalone group-hunt loop: alternates Feint (CMAN) and Stunning Shout (1008), falling back to Holding Song (1001) when both stamina and mana are low. Keeps a mana reserve. Start/stop by hand. | reads resting room |
-| `playsongs.lic` | Keeps an instrument playing and tracks Play skill rank-ups. Shared with the other characters; see [Utility](#utility). | opt-in pause |
+| `playsongs.lic` | Keeps an instrument playing and tracks Play skill. Shared with the other characters; see [Utility](#utility). | opt-in pause |
+
+All seven Fizzlestiks bigshot profiles use `resting_commands: script Fizzlestiks-prerest`,
+`hunting_prep_commands: script Fizzlestiks-prep` and `hunting_commands: script Fizzlestiks-attack`.
 
 ### Picko (Wizard)
 
@@ -132,7 +145,9 @@ Scripts here are not tied to one character's name, though some need a particular
 | `fizzsac.lic` | Sorcerer: harvests shadow essence from creatures in the room by sacrifice. Pauses bigshot/go2 while it works, or takes a bigshot-supplied target and spell (`script fizzsac target 719`). | callable with a target |
 | `sac4mana.lic` | Sorcerer: watches mana and does `sacrifice mana` when low. When shadow essence runs short it pauses bigshot, wanders to a fresh room and runs `fizzsac` to rebuild it, then backs off and lets bigshot's rest carry on if essence bottoms out. Meant to run alongside `fizzsac` during a hunt. | companion (pauses bigshot) |
 | `undead_bounty.lic` | **Published.** Rerolls Adventurer's Guild bounties until the creature is undead (for Voln favor), then stops so you can take over. Chained from the `-prerest` scripts with a creature filter, e.g. `;undead_bounty kill moaning spirit`; it suits a bigshot hunt/rest loop calling it. | called from the rest chain |
-| `deadexit.lic` | Unattended-death safety net: if you die while bigshot is (or just was) running, quits the game instead of leaving a decaying, rezzable corpse. Gated by `UserVars.afk_now` (default on). Autostart it for every character. | companion |
+| `deadexit.lic` | Unattended-death safety net: if you die while bigshot is (or just was) running, quits the game instead of leaving a decaying, rezzable corpse. Gated by `UserVars.afk_now` (default on; flip it with `;afk`). Autostart it for every character. | companion |
+| `unlost.lic` | First line of every `-prerest`: if Lich can't tell which room you're in (an unmapped room makes every `;go2` fail), walks exits until it recognises one. If it can't, stops bigshot and posts to the Discord webhook. Silent when you're on the map. | called from the rest chain |
+| `stow_the_shiny.lic` | Called from the `-prerest` scripts right after `;eloot sell` (`;stow_the_shiny sell` does both): puts valuables eloot refused to sell (appraised above your limits) in the locker, but only while you're over bigshot's encumbrance limit. | called from the rest chain |
 
 ### Gems
 
@@ -140,7 +155,7 @@ Scripts here are not tied to one character's name, though some need a particular
 |---|---|
 | `orb_check.lic` | Sorcerer: finds orb (pure) gems in a container with Phase (704), including gems in jars, and moves them to another container (orbs feed Charge Item 517 and Holy Receptacle 325). |
 | `sellgem.lic` | Workaround for gems that won't sell with `;eloot sell`: goes to the gemshop, sells, deposits everything at the bank, returns to town. |
-| `lockerstow.lic` | Manual test of the appraise-and-locker logic `fizzdusk` runs when you get encumbered: appraises lootsack contents (jewelry at the gemshop, the rest at the pawnshop) and lockers anything above eloot's per-character sell limit. |
+| `dusk_locker.lic` | Manual test of the appraise-and-locker logic `fizzdusk` runs when you get encumbered: appraises lootsack contents (jewelry at the gemshop, the rest at the pawnshop) and lockers anything above eloot's per-character sell limit. |
 
 ### Utility
 
@@ -150,10 +165,37 @@ Scripts here are not tied to one character's name, though some need a particular
 | `timequit.lic` | Called at the end of the `-prerest` scripts: quits the game if the current hour is the hard-coded quit hour (edit the script to change it), otherwise sits, rests and meditates. | - |
 | `4hourquit.lic` | Exits the game N minutes after starting (default 240). `;4hourquit 90`. | - |
 | `meditate.lic` | Stores the weapon and meditates. | - |
-| `playsongs.lic` | Keeps an instrument playing in the background and tracks Play skill rank-ups. Opt-in bigshot pause: `;vars set playsongs_pause_for_bigshot=true` pauses it only while bigshot is hunting. | opt-in |
+| `playsongs.lic` | Keeps an instrument playing in the background (default tambourine, soft; style soft/fast/slow). See [playsongs](#playsongs) below. | opt-in |
+| `afk.lic` | `;afk off` = you're at the keyboard (music plays, `deadexit` won't quit on death), `;afk on` = away, `;afk` = show the setting. Sets `UserVars.afk_now` so you don't have to remember its name on every character, and flips `voicemail`'s AFK auto-reply and Discord relay to match (those are in-memory flags that reset to off when `voicemail` restarts; left alone if `voicemail` isn't running). | - |
 | `exp_check.lic` | Posts to a Discord webhook when Lumnis / Fash'lo'nae's Tutelage starts, changes tier or ends, and when the session ends. `;exp_check setup` saves the webhook. | - |
 | `raffle_watch.lic` | Posts to the same Discord webhook when a raffle you'd want appears (RAFFLE LIST every half hour plus the Town Crier thoughts stream). | - |
 | `fizzlevel.lic` | Fork of the auto-leveler: takes a new character to level 20 (13 outside Icemule) via shops, sprite quest, Thrak intro and messages. | - |
+
+#### playsongs
+
+Background script that keeps an instrument going and tracks Play skill. Use `;playsongs [instrument] [soft|fast|slow]`.
+It picks the instrument in this order: the command line, then `;vars set instrument=<name>`, then tambourine.
+
+- **Hands.** The instrument lives in the **left** hand so the right stays free for a weapon. It re-checks before every
+  song (other scripts stow things), swaps it over if it landed in the right hand, and stows whatever else is blocking the
+  left hand before fetching it. If the game says an instrument "requires two hands" (drum, lute, piccolo), it stows the
+  right hand and retries. When the script dies for any reason, `before_dying` stows the instrument.
+- **Songs and stats.** Each song is timed from "you lift your ..." to any of the five known end messages, counting the
+  "sense of accomplishment" rank-up line. A song that ends under 285 s (300 s target minus a 15 s grace) counts as
+  aborted: it's skipped in the totals. Stats per instrument (songs, rank-ups, time played, last played) live in
+  `data/GSIV/<Char>/playsongs_stats.yaml`. Every 5 songs it runs `PLAY SKILL` and saves the real tier per instrument
+  family. The rank-up line fires once per rank (20 ranks total, exponentially longer each), so a low count over a few
+  hours is expected. `playsongs stats` also prints a for-fun estimate of rank from tracked time alone, using the
+  checkpoints on <https://gswiki.play.net/Instrument_learning>.
+- **Commands** (type them with no leading semicolon while it runs; `stats` and `help` also work as `;playsongs stats`):
+  `playsongs stats`, `pause` (stow the instrument after the current song and wait), `resume`, `help`. Abbreviations of
+  three or more letters work.
+- **Auto-pause.** It pauses and stows the instrument for as long as `;eloot sell` runs. For casters that need a hand
+  free while hunting, `;vars set playsongs_pause_for_bigshot=true` also pauses it while bigshot is hunting
+  (`$bigshot_status` other than ready / resting / rest_stop), but not while bigshot is resting in town.
+- **Who starts it.** The `-prerest` scripts start it, and the `-prep` scripts always kill it first (which stows the
+  instrument), but it only starts when `afk_now` is `false`. An unset `afk_now` counts as away, so a character with no `afk_now` saved gets no music.
+  Use `;afk off`.
 
 ### Magic
 
@@ -186,9 +228,10 @@ Scripts here are not tied to one character's name, though some need a particular
 
 | Script | What it does | Bigshot |
 |---|---|---|
+| `fizzabyss.lic` | Ebon Gate Arena of the Abyss runner: fork of Hexbane's `abyssx`, but runs `Fizzleworth-attack-arena` directly each round instead of `;bigshot quick` (which re-ran the whole hunting setup every call and cost a minute mid-fight). Own settings file `fizzabyss.yaml`. | no bigshot |
 | `fizzdusk.lic` | Duskruin arena runner: fork of Tysong's / Nylis' `tdusk`. Fights waves, loots, recovers from death, runs waggle / prep / rest between runs, appraises and lockers valuables. Setup: `;fizzdusk help`. Loads the per-character `*-duskattack.lic`. Shared by all characters. | can coexist (`using_bigshot`) |
 | `*-duskattack.lic` | Per-character arena attack routines: `Fizzleworth-`, `Salvi-`, `Picko-`, `Felixopedes-` (see the character sections). | - |
-| `lockerstow.lic` | The locker logic `fizzdusk` uses, as a manual command. See [Gems](#gems). | - |
+| `dusk_locker.lic` | The locker logic `fizzdusk` uses, as a manual command. See [Gems](#gems). | - |
 | `raffle_watch.lic` | Raffle alerts. See [Utility](#utility). | - |
 | `brayquest.lic` | Inquisition event opening quest. See [Quest](#quest). | - |
 
@@ -207,6 +250,7 @@ re-invokes it every pass while the target is up. Death is read from `GameObj` st
 | Script | Character |
 |---|---|
 | `Brayis-attack` | Brayis (Warrior) |
+| `Fizzlestiks-attack` | Fizzlestiks (Bard) |
 | `Fizzleworth-attack-base`, `-cat`, `-ultima` | Fizzleworth (Sorcerer); pick one per profile |
 | `Picko-attack`, `Picko-attack-fire` | Picko (Wizard) |
 | `Salvi-attack`, `Salvi-attack-web` | Salvi (Cleric) |
@@ -231,7 +275,8 @@ they act, or set bigshot's rest flag.
 | `Fizzleworth-anim-cleanup` | Fires the moment bigshot's status says "hunt over, heading to rest"; freezes bigshot/go2 while it dismisses the animate. |
 | `Fizzleworth-webward` | Pauses bigshot/go2 to clear a web hazard. |
 | `sac4mana`, `mdemon_refresh` | Pause bigshot while they refill mana or refresh the demon. |
-| `playsongs` | Optional (`playsongs_pause_for_bigshot`): pauses only while bigshot is hunting. |
+| `playsongs` | Optional (`playsongs_pause_for_bigshot`): pauses only while bigshot is hunting (reads bigshot's `$bigshot_status`). |
+| `Fizzlestiks-disarmguard` | On a disarm, pauses bigshot while it searches for the weapon, then resumes, sets the rest flag, or stops bigshot. |
 | `fizzarts` | Drives a bigshot-based workflow; requires bigshot. |
 
 ### 4. Read bigshot's profile settings
@@ -256,8 +301,9 @@ tracks `using_bigshot` only so the two don't fight over targets).
 
 | Setting | Used by |
 |---|---|
-| `UserVars.fizzdusk` (hash) | `fizzdusk` and every `*-duskattack`, plus `lockerstow`. Persisted per character; don't rename keys without a migration (see the `resting_script` / `fizzprep_script` migrations in `fizzdusk.lic`). |
-| `afk_now` | `deadexit` and the `-prerest` scripts' `playsongs` gate. Unset counts as AFK (music off, `deadexit` armed). |
+| `UserVars.fizzdusk` (hash) | `fizzdusk` and every `*-duskattack`, plus `dusk_locker`. Persisted per character; don't rename keys without a migration (see the `resting_script` / `fizzprep_script` migrations in `fizzdusk.lic`). |
+| `afk_now` | `deadexit` and the `-prerest` / `-prep` scripts' `playsongs` gate. Unset counts as AFK (music off, `deadexit` armed). Set it with `;afk off` / `;afk on`. (A stray `afk_on` is read by nothing.) |
+| `instrument`, `playsongs_pause_for_bigshot` | `playsongs`: default instrument (`;vars set instrument=lute`) and the opt-in bigshot pause. |
 | `items_to_buy` | `buyitems`. |
 | `scroll_buff_spells`, `scrollsack`, `vibrantscrollsack` | `scrollbuff3`, `scrollinv`, `fizzfuse`, the `-prep` scripts. |
 | `lifeguard` | `;vars set lifeguard=off` disables `Fizzleworth-lifeguard`. |

@@ -1,0 +1,96 @@
+=begin
+  afk -- one place to flip the afk_now UserVar so you don't have to remember its
+  name on every character.
+
+  afk_now is read by:
+    - deadexit.lic: when ON (away) and you die while bigshot is hunting, it quits
+      the game. OFF (at the keyboard) leaves dying to you.
+    - the *-prerest / *-prep scripts: music (playsongs) only starts when it's OFF.
+
+    - voicemail.lic: ;afk also flips its in-game AFK auto-reply and Discord relay to
+      match (afk on -> both on, afk off -> both off). Those are in-memory flags that
+      reset to off whenever voicemail restarts, so they follow whatever you last
+      told ;afk this session. If voicemail is not running they are left alone.
+
+  An unset afk_now counts as ON (away) everywhere, so a character that never had
+  it set gets no music and an armed deadexit.
+
+  Usage:  ;afk off      at the keyboard: music plays, deadexit won't quit on death,
+                        voicemail AFK reply + relay off
+          ;afk on       walking away: no music, deadexit armed, voicemail AFK reply +
+                        relay on
+          ;afk          show the current setting (and voicemail's) for this character
+
+  Also accepted: here/back/no/false/0 for "off", away/yes/true/1 for "on".
+=end
+
+module Afk
+  AT_KEYBOARD = /\A(?:off|here|back|no|false|0)\z/i
+  AWAY        = /\A(?:on|away|yes|true|1)\z/i
+
+  # Same rule deadexit and the prerest/prep scripts use: unset counts as ON.
+  def self.afk_now?
+    value = UserVars.afk_now
+    return true if value.nil?
+    return value if value == true || value == false
+
+    value.to_s !~ /\A\s*(?:0|false|off|no)\s*\z/i
+  end
+
+  # voicemail.lic keeps AFK / relay as plain globals ($vm_afk, $vm_relay): its own
+  # ";voicemail afk on" just sets them (and clears the per-sender reply cooldowns on
+  # off), so do the same rather than launching a second voicemail instance.
+  def self.voicemail_running?
+    Script.running?("voicemail") && defined?($vm_afk) && !$vm_afk.nil?
+  end
+
+  def self.set_voicemail(on)
+    unless voicemail_running?
+      echo "  voicemail isn't running, so its AFK reply / relay were not changed (start it with ;voicemail)"
+      return
+    end
+
+    $vm_afk   = on
+    $vm_relay = on
+    $vm_afk_sent.clear if !on && $vm_afk_sent.respond_to?(:clear)
+  end
+
+  def self.show_voicemail
+    return echo("  voicemail: not running") unless voicemail_running?
+
+    echo "  voicemail: AFK auto-reply #{$vm_afk ? 'ON' : 'off'}, Discord relay #{$vm_relay ? 'ON' : 'off'}"
+    webhook = defined?($vm_settings) && $vm_settings.respond_to?(:[]) ? $vm_settings["webhook_url"].to_s.strip : nil
+    return unless webhook && webhook.empty?
+
+    echo "    (no Discord webhook set -- run ;voicemail setup; the in-game auto-reply still works, forwarding can't)"
+  end
+
+  def self.show
+    state = afk_now? ? "ON (away)" : "OFF (at the keyboard)"
+    set   = UserVars.afk_now.nil? ? " -- not set, so it defaults ON" : ""
+    echo "#{Char.name}: afk_now is #{state}#{set}"
+    echo "  music in prerest/prep: #{afk_now? ? 'skipped' : 'plays'}; deadexit auto-quit on death: #{afk_now? ? 'armed' : 'off'}"
+    show_voicemail
+    return if UserVars.afk_on.nil?
+
+    echo "  note: a stray afk_on=#{UserVars.afk_on.inspect} is saved too -- nothing reads that name. " \
+         "Remove it with: ;vars delete afk_on"
+  end
+
+  arg = Script.current.vars[1].to_s.strip
+
+  case arg
+  when ""
+    show
+  when AT_KEYBOARD
+    UserVars.afk_now = false
+    set_voicemail(false)
+    show
+  when AWAY
+    UserVars.afk_now = true
+    set_voicemail(true)
+    show
+  else
+    echo "Unknown option '#{arg}'. Use ;afk on, ;afk off, or ;afk to see the current setting."
+  end
+end #End of module
