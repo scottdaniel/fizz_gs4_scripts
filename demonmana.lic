@@ -11,6 +11,9 @@
     ;demonmana send    send it all the mana it can hold   (mdemon_refresh does this while you rest)
     ;demonmana get     ask it for all of it back          (attack-ultima / sac4mana, once a hunt, when low)
 
+  Which demon, and under what noun, comes from a silent TELL MDEMON RETURN (it also calls
+  the demon back to the room first if it had wandered off).
+
   The first send to a demon shows how much it accepts (its capacity). If that's under
   MIN_STORE (20) the demon is skipped from then on -- no more sends, and no get --
   until it's replaced by a new one, which is measured afresh.
@@ -18,10 +21,6 @@
   Silver can be held too; not done here.
 =end
 
-# Noun shapes (summond.lic ARCHETYPE_NOUNS): verlok'ar, abyran'a, grik'..., aishan,
-# arashan, imp, darkling/shadowling (shien), and an igaesha is a haze/rouk/brume/
-# haar/murk/nyle/mist/smoke/vapor/fog.
-DEMON_NOUN = /\A(?:verlok|abyran|grantris|grik|aishan|arashan|darkling|shadowling|imp\z|haze\z|rouk\z|brume\z|haar\z|murk\z|nyle\z|mist\z|smoke\z|vapor\z|fog\z)/i
 SEND_OK  = /(\d+) points were succes+fully transferred to your .+? while only draining (\d+) mana points/i
 GOT_MANA = /You gain (\d+) mana points/i
 GONE     = /could not find|what were you referring/i
@@ -30,61 +29,71 @@ GONE     = /could not find|what were you referring/i
 # silver verlok'asha held 15 and gave back 7; an igaesha held 28 and gave back 26).
 MIN_STORE = 20
 
-# Your followers are announced after every move as "Your <name> followed." (or "Your a and
-# your b followed.") under whatever illusion the demon is wearing -- 10.23 it was a "gnoll",
-# which no demon-noun list can match, and `send 50 mdemon` isn't accepted. The room list has
-# the same name, so match on that. The animate shows up there too, but under a different name
-# than its GameObj ("animated ..."), so it never matches.
-def follower_names
-  line = reget(3000, /^Your .+ followed\.\s*$/).to_a.last
-  return [] unless line
-  line.scan(/[Yy]our (.+?)(?= and your |\s+followed\.)/).flatten
-rescue StandardError
-  []
+# TELL MDEMON RETURN answers with the demon's id, noun and current name -- whatever illusion
+# it wears (10.23: an imp as a "gnoll", "wizened gnoll" in the reply, "stooped and wizened
+# gnoll" in the room) -- and calls it back if it had wandered off. SEND needs that noun:
+# `send 50 gnoll` works, `send 50 mdemon` never does. Replies (all carry the link):
+#   But your <a>X</a> is already here!  You're not playing games on it, are you?
+#   Your <a>X</a> acknowledges your order and begins to travel to your location.
+#   The magic in your location is interfering with your <a>X</a> returning to you.
+RETURN_REPLY = /already here!|acknowledges your order|interfering with your|You have no minor demon at this time/i
+DEMON_LINK   = %r{(?:[Bb]ut your|Your|your) <pushBold/><a exist="(\d+)" noun="([\w,'-]+)">([\w\-' ]+)</a><popBold/>}
+ARRIVE_WAIT  = 60   # secs to wait for a called-back demon while resting; GET_WAIT in the middle of a hunt
+GET_WAIT     = 10
+
+def here?(id)
+  (GameObj.npcs.to_a + GameObj.loot.to_a + GameObj.room_desc.to_a).any? { |o| o.id.to_s == id.to_s }
 end
 
-def demon
-  npcs = GameObj.npcs
-  npcs.find { |n| n && (n.noun.to_s =~ DEMON_NOUN || n.name.to_s =~ /minor demon/i) } ||
-    (names = follower_names
-     npcs.find { |n| n && n.name.to_s !~ /animate/i && names.include?(n.name.to_s) })
+# => { id:, noun:, name:, here: } for your minor demon, or nil (said why). Asked silently.
+def demon(wait = ARRIVE_WAIT)
+  text = Lich::Util.quiet_command_xml("tell mdemon return", RETURN_REPLY).to_a.join("\n")
+  unless text =~ DEMON_LINK
+    echo(text =~ /no minor demon/i ? "you have no minor demon." : "no answer to TELL MDEMON RETURN.")
+    return nil
+  end
+  d = { id: $1, noun: $2, name: $3, here: text.include?("already here!") }
+  if text.include?("begins to travel")
+    echo "your #{d[:name]} wasn't here -- waiting for it to arrive."
+    wait.times { break if (d[:here] = here?(d[:id])); sleep 1 }
+  end
+  d
 end
 
 # What the first send to the current demon showed: { id:, points: } -- the points it
 # accepted are its capacity. A new demon (new id) gets one send to find out.
 def low_capacity?(d)
   c = $demonmana_cap
-  !!(d && c && c[:id] == d.id && c[:points] < MIN_STORE)
+  !!(c && c[:id] == d[:id] && c[:points] < MIN_STORE)
 end
 
 def skip_note(d)
   c = $demonmana_cap
-  echo "your #{d.noun} holds only #{c[:points]} mana (under #{MIN_STORE}) -- not worth it, skipping." unless c[:said]
+  echo "your #{d[:name]} holds only #{c[:points]} mana (under #{MIN_STORE}) -- not worth it, skipping." unless c[:said]
   c[:said] = true
 end
 
-# `send 50 <noun>` needs the noun the room shows (the illusion's, when it's disguised);
-# the mdemon keyword is only a last resort -- the game doesn't accept it for SEND.
 def send_mana
   d = demon
+  return unless d
+  return echo("your #{d[:name]} isn't here -- not sending.") unless d[:here]
   return skip_note(d) if low_capacity?(d)
   waitrt?
-  [d&.noun, "mdemon"].compact.uniq.each do |who|
-    r = dothistimeout("send 50 #{who}", 4, Regexp.union(SEND_OK, GONE, /cannot|can't|unable|already|too much/i)).to_s
-    if r =~ SEND_OK
-      $demonmana_cap = { id: d&.id, points: $1.to_i }
-      echo "demon holds #{$1} mana now (#{$2} drained)."
-      return
-    end
-    next if r =~ GONE
+  r = dothistimeout("send 50 #{d[:noun]}", 4, Regexp.union(SEND_OK, GONE, /cannot|can't|unable|already|too much/i)).to_s
+  if r =~ SEND_OK
+    $demonmana_cap = { id: d[:id], points: $1.to_i }
+    echo "demon holds #{$1} mana now (#{$2} drained)."
+  elsif r =~ GONE
+    echo "couldn't find your #{d[:noun]} to send mana to."
+  else
     echo "send said: #{r.strip[0, 120].empty? ? 'nothing' : r.strip[0, 120]}"
-    return
   end
-  echo "no minor demon here to send mana to."
 end
 
 def get_mana
-  d = demon
+  d = demon(GET_WAIT)
+  return unless d
+  return echo("your #{d[:name]} isn't here -- can't ask it for mana.") unless d[:here]
   return skip_note(d) if low_capacity?(d)
   waitrt?
   r = dothistimeout("tell mdemon send 50", 4, Regexp.union(GOT_MANA, GONE, /has no mana|any mana|nothing to send/i)).to_s

@@ -15,8 +15,8 @@
 # Below RECOVER_AT mana it first tops up, cheapest first:
 #   1. the minor demon's stored mana (;demonmana get -- free; at most once per DEMON_GAP,
 #      since the store only refills while you rest)
-#   2. `sacrifice mana` (~89 mana for one shadow essence, off cooldown)
-#   3. Symbol of Mana (Voln, off cooldown)
+#   2. Symbol of Mana (Voln, off cooldown, 4+ deeds; skipped if it can't be performed)
+#   3. `sacrifice mana` (~89 mana for one shadow essence, off cooldown)
 # Up to MAX_CASTS casts per launch, so it isn't relaunched after every cast; it stops
 # as soon as the target is dead. Wound-blocked casts ("can't think clearly enough") run
 # ;eherbs --spellcast. Every cast is gated on live mana.
@@ -32,6 +32,7 @@ module FizzArena
   DEMON_GAP    = 600   # secs between asks of the demon
   SYMBOL_GAP   = 30    # secs between Symbol of Mana tries, in case the cooldown lags
   COST_DEFAULT = { 711 => 11, 705 => 5, 702 => 2 }.freeze
+  SYMBOL_REPLY = /special blessing from Koar|surge of mana|unable to call forth enough power|already at your maximum mana|must CONFIRM/i
   CANT_CAST    = /can't think clearly enough/i
   CAST_REPLY   = /Cast Roundtime \d+|Roundtime: \d+ sec|can't think clearly enough|You can't cast|You have no|don't have|^Wait \d+ sec/i
 
@@ -95,16 +96,16 @@ module FizzArena
     return false if Effects::Cooldowns.active?("Symbol of Mana") || Experience.deeds.to_i <= 3
     $arena_symbol_at = Time.now
     waitrt?
-    fput "symbol of mana"
+    r = dothistimeout("symbol of mana", 4, SYMBOL_REPLY).to_s
     waitrt?
-    true
+    r =~ /special blessing from Koar|surge of mana/i ? true : false
   rescue StandardError
     false
   end
 
   def self.top_up_mana
     return unless checkmana < RECOVER_AT
-    demon_mana || sacrifice_mana || symbol_of_mana
+    demon_mana || symbol_of_mana || sacrifice_mana
   end
 
   def self.run_pass

@@ -15,7 +15,7 @@
 # Attack modes (set in setup):
 #   script   -- runs ;<script> each combat round until all targets are dead (default
 #               Fizzleworth-attack-arena: Pain / Disintegrate / Mana Disruption by mana,
-#               mana top-ups from the demon, sacrifice and Symbol of Mana)
+#               mana top-ups from the demon, Symbol of Mana and sacrifice, in that order)
 #   spell    -- spams a single incant <number> until all targets are dead;
 #               waits if mana drops below the configured minimum
 #
