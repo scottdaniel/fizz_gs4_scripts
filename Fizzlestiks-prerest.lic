@@ -27,6 +27,7 @@ fput "store weapon"
 
 Script.run("eherbs")
 Script.run("eloot", "sell")
+Script.run("undead_bounty", "kill death dirge")
 Script.run("ewaggle")
 
 # playsongs only when you're actually at the keyboard. Same afk_now UserVar that
