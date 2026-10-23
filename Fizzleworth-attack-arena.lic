@@ -1,8 +1,8 @@
 # Fizzleworth-attack-arena.lic
-# Attack pass for the Ebon Gate Arena of the Abyss. Use it from ;abyssx's "Use bigshot
-# quick" mode: set the bigshot profile's quick_commands to
-#
-#     script Fizzleworth-attack-arena
+# Attack pass for the Ebon Gate Arena of the Abyss. ;fizzabyss runs it once per pass until
+# the fiend is dead (no bigshot: ;bigshot quick re-runs the whole hunting startup each
+# call, and the arena's lightning grows with the time spent). Run by hand it does one
+# pass too.
 #
 # The arena sends one undead at a time and the longer you stay the more lightning
 # strikes, so this is plain damage -- no web / Tether / hold passes like -ultima. Which
@@ -17,7 +17,7 @@
 #      since the store only refills while you rest)
 #   2. `sacrifice mana` (~89 mana for one shadow essence, off cooldown)
 #   3. Symbol of Mana (Voln, off cooldown)
-# Up to MAX_CASTS casts per launch, so bigshot isn't relaunched after every cast; it stops
+# Up to MAX_CASTS casts per launch, so it isn't relaunched after every cast; it stops
 # as soon as the target is dead. Wound-blocked casts ("can't think clearly enough") run
 # ;eherbs --spellcast. Every cast is gated on live mana.
 #
