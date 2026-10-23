@@ -12,10 +12,14 @@
 #   else >= 5             -> 705 Disintegrate  ~87, 5 mana
 #   else >= 2             -> 702 Mana Disruption ~64, 2 mana
 #
-# Below SACRIFICE_AT mana it first tries `sacrifice mana` (~89 mana for one shadow
-# essence, off cooldown). Up to MAX_CASTS casts per launch, so bigshot isn't relaunched
-# after every cast; it stops as soon as the target is dead. Wound-blocked casts ("can't
-# think clearly enough") run ;eherbs --spellcast. Every cast is gated on live mana.
+# Below RECOVER_AT mana it first tops up, cheapest first:
+#   1. the minor demon's stored mana (;demonmana get -- free; at most once per DEMON_GAP,
+#      since the store only refills while you rest)
+#   2. `sacrifice mana` (~89 mana for one shadow essence, off cooldown)
+#   3. Symbol of Mana (Voln, off cooldown)
+# Up to MAX_CASTS casts per launch, so bigshot isn't relaunched after every cast; it stops
+# as soon as the target is dead. Wound-blocked casts ("can't think clearly enough") run
+# ;eherbs --spellcast. Every cast is gated on live mana.
 #
 #   ;vars set arena_pain_at=40      mana at/above which Pain is used (default 40)
 #
@@ -24,7 +28,9 @@
 
 module FizzArena
   MAX_CASTS    = 6
-  SACRIFICE_AT = 40
+  RECOVER_AT   = 40
+  DEMON_GAP    = 600   # secs between asks of the demon
+  SYMBOL_GAP   = 30    # secs between Symbol of Mana tries, in case the cooldown lags
   COST_DEFAULT = { 711 => 11, 705 => 5, 702 => 2 }.freeze
   CANT_CAST    = /can't think clearly enough/i
   CAST_REPLY   = /Cast Roundtime \d+|Roundtime: \d+ sec|can't think clearly enough|You can't cast|You have no|don't have|^Wait \d+ sec/i
@@ -63,16 +69,42 @@ module FizzArena
     false
   end
 
-  # Free mana first: one shadow essence is worth ~89.
-  def self.top_up_mana
-    return unless checkmana < SACRIFICE_AT
-    return unless Lich::Resources.shadow_essence.to_i.positive? && !sacrifice_on_cooldown?
+  # Each returns true if mana actually came back.
+  def self.demon_mana
+    return false if $arena_demon_at && Time.now - $arena_demon_at < DEMON_GAP
+    $arena_demon_at = Time.now
+    before = checkmana
+    Script.run("demonmana", "get")
+    checkmana > before
+  end
+
+  def self.sacrifice_mana
+    return false unless Lich::Resources.shadow_essence.to_i.positive? && !sacrifice_on_cooldown?
+    before = checkmana
     waitcastrt?
     waitrt?
     dothistimeout("sacrifice mana", 4, /mana surge into you|overwhelm you with shadow essence|too depleted/i)
     waitrt?
+    checkmana > before
   rescue StandardError
-    nil
+    false
+  end
+
+  def self.symbol_of_mana
+    return false if $arena_symbol_at && Time.now - $arena_symbol_at < SYMBOL_GAP
+    return false if Effects::Cooldowns.active?("Symbol of Mana") || Experience.deeds.to_i <= 3
+    $arena_symbol_at = Time.now
+    waitrt?
+    fput "symbol of mana"
+    waitrt?
+    true
+  rescue StandardError
+    false
+  end
+
+  def self.top_up_mana
+    return unless checkmana < RECOVER_AT
+    demon_mana || sacrifice_mana || symbol_of_mana
   end
 
   def self.run_pass
