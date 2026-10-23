@@ -1,0 +1,50 @@
+#Fizzlestiks-prerest.lic
+#Bard version of Brayis-prerest.lic (Fizzlestiks) -- no wands, so no fresh-wand
+#sweep. Same chores his bigshot profiles used to list as resting_scripts (eherbs,
+#eloot sell, ewaggle), plus the unlost check every prerest starts with, plus the
+#town instrument: the two-handed drum, since nothing needs a free hand while
+#he's safe (hunting uses the one-handed tambourine, see Fizzlestiks-prep.lic).
+
+module FizzlestiksPrerest
+
+# First, get off any unmapped room (go2 "current room not found"): see unlost.lic.
+# Stops here -- bigshot is stopped too -- if it can't walk out.
+Script.run("unlost")
+exit if $unlost_failed
+
+# Hunting is over: stop the hunting tambourine (playsongs.lic's before_dying
+# stows it). Kill is async, so wait for it to actually finish before anything
+# below sends its own fput commands, to avoid the two scripts racing on the
+# same hands.
+if Script.running?("playsongs")
+  Script.kill("playsongs")
+  wait_while { Script.running?("playsongs") }
+end
+
+# What the profile's resting_commands used to do on its own ("store weapon"
+# routes the mace to its sheath per the in-game STORE config).
+fput "store weapon"
+
+Script.run("eherbs")
+Script.run("eloot", "sell")
+Script.run("ewaggle")
+
+# playsongs only when you're actually at the keyboard. Same afk_now UserVar that
+# gates deadexit (unset counts as ON, i.e. AFK -> no music):
+#   ;vars set afk_now=false   # at the keyboard: music plays during rest
+#   ;vars set afk_now=true    # walking away: no music (and deadexit stays armed)
+def self.afk_now?
+  value = UserVars.afk_now
+  return true if value.nil?
+  return value if value == true || value == false
+
+  value.to_s !~ /\A\s*(?:0|false|off|no)\s*\z/i
+end
+
+# Music while safe/resting -- Fizzlestiks-prep.lic kills this again before combat
+# resumes (which also stows the drum, see playsongs.lic's before_dying) and
+# starts the tambourine for the hunt. The drum is two-handed; playsongs' own
+# "requires two hands" retry handles the right hand if anything is in it.
+Script.start("playsongs", "drum") unless afk_now? || Script.running?("playsongs")
+
+end #End of module
