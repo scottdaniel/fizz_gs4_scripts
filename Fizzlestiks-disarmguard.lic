@@ -1,0 +1,142 @@
+#Fizzlestiks-disarmguard.lic
+#Protects Fizzlestiks's custom weapon: when something knocks it out of his hand
+#mid-hunt (a death dirge's song, a rebound, a curse...), stop fighting, search
+#the room for it, and only then carry on -- instead of swinging fists with the
+#weapon lying on the floor. Started by Fizzlestiks-prep.lic and left running
+#for the rest of the session.
+#
+#Why a separate watcher: bigshot has no idea it's been disarmed, and ecleanse's
+#own disarm recovery is off by default and doesn't recognise the death dirge
+#wording (see Brayis-attack.lic for the log evidence -- Brayis fought bare-
+#fisted for ~27 minutes and died). GS4 prints "[Use the RECOVER ITEM command
+#while in the appropriate room to regain your item.]" for EVERY kind of disarm,
+#so matching that one line covers them all without a pattern per wording.
+#
+#What it does on a disarm:
+# 1. pauses bigshot and kills the music (the tambourine would otherwise fill a
+#    hand, and RECOVER ITEM needs both empty),
+# 2. goes back to the room it happened in if bigshot walked on,
+# 3. kneels and searches (RECOVER ITEM, up to MAX_SEARCHES times -- same flow
+#    as ecleanse's verified recovery),
+# 4. on success re-runs Fizzlestiks-prep (stow, ready weapon, tambourine) and
+#    unpauses bigshot,
+# 5. gives up SAFELY otherwise: if his health drops below RETREAT_PERCENT while
+#    searching, he stands and bigshot is told to rest (the room is remembered
+#    in UserVars.last_disarm_room for a manual RECOVER ITEM); if the weapon is
+#    never found, bigshot is stopped rather than sent back out unarmed.
+#
+#Caveat: a disarm can land while bigshot is walking, and the line may print
+#before the new room's header, so the room it records can be the one he just
+#left. If the first room has nothing, the banner says where it searched.
+
+module FizzlestiksDisarmguard
+
+DISARM_MSG    = /Use the RECOVER ITEM command/i
+RECOVERED_MSG = /You spy (?:an|a) .* and recover it!/
+SEARCH_END    = /You spy|You continue to intently search the area|In order to recover something|You find nothing recoverable|not in any condition to be searching/
+NEEDS_EMPTY   = /In order to recover something/
+CANT_SEARCH   = /not in any condition to be searching/
+
+MAX_SEARCHES   = 10
+RETREAT_PERCENT = 40 # stop searching and let bigshot retreat below this much health
+
+def self.say(msg)
+  # Lich::Messaging.msg goes through _respond (echo would HTML-escape the bold tags).
+  Lich::Messaging.msg("bold", "[Fizzlestiks-disarmguard] #{msg}")
+end
+
+def self.stop_music
+  return unless Script.running?("playsongs")
+
+  Script.kill("playsongs")
+  wait_while { Script.running?("playsongs") }
+end
+
+def self.pause_bigshot
+  Script.pause("bigshot") if Script.running?("bigshot") && !Script.paused?("bigshot")
+end
+
+def self.resume_bigshot
+  Script.unpause("bigshot") if Script.running?("bigshot") && Script.paused?("bigshot")
+end
+
+def self.stand_up
+  5.times do
+    break if standing?
+
+    fput "stand"
+    waitrt?
+  end
+end
+
+def self.kneel_down
+  5.times do
+    break if kneeling?
+
+    dothistimeout("kneel", 2, /You kneel|You are already/i)
+    waitrt?
+  end
+end
+
+# @return [Symbol] :recovered, :hurt (retreated), or :not_found
+def self.search(room_id)
+  MAX_SEARCHES.times do
+    return :hurt if Char.percent_health < RETREAT_PERCENT
+
+    Script.run("go2", room_id.to_s) unless Room.current&.id == room_id
+    kneel_down
+    waitrt?
+
+    lines = Lich::Util.issue_command("recover item", SEARCH_END, /<prompt/, include_end: false)
+    return :recovered if lines.grep(RECOVERED_MSG).any?
+
+    if lines.grep(CANT_SEARCH).any?
+      say("Can't search right now (#{lines.grep(CANT_SEARCH).first.strip}) -- retrying.")
+      sleep 2
+    end
+    empty_hands if lines.grep(NEEDS_EMPTY).any?
+  end
+  :not_found
+end
+
+def self.handle_disarm(room)
+  room_id = room&.id
+  UserVars.last_disarm_room = room_id
+  say("########## DISARMED ##########")
+  say("## Room #{room_id} (#{Array(room&.title).first}) -- searching for it before anything else")
+
+  pause_bigshot
+  stop_music
+  fput "stance defensive"
+  waitrt?
+  empty_hands
+
+  result = room_id ? search(room_id) : :not_found
+  stand_up
+  waitrt?
+
+  case result
+  when :recovered
+    say("Recovered it. Re-readying and resuming the hunt.")
+    Script.run("Fizzlestiks-prep")
+    resume_bigshot
+  when :hurt
+    say("Health under #{RETREAT_PERCENT}% -- stopped searching. Retreating to rest; weapon is in room #{room_id} (UserVars.last_disarm_room).")
+    $bigshot_should_rest = true
+    $rest_reason = "Disarmed"
+    resume_bigshot
+  else
+    say("Could NOT recover it after #{MAX_SEARCHES} searches in room #{room_id}. Stopping bigshot -- go RECOVER ITEM there (UserVars.last_disarm_room).")
+    Script.kill("bigshot") if Script.running?("bigshot")
+  end
+end
+
+# Don't die with bigshot paused if we get killed mid-recovery.
+before_dying { resume_bigshot }
+
+loop do
+  line = get
+  handle_disarm(Room.current) if line =~ DISARM_MSG
+end
+
+end #End of module

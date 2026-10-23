@@ -22,6 +22,12 @@ fput "stow all"
 
 fput "ready weapon"
 
+# Protects the custom weapon for the rest of the session: if anything knocks it
+# out of his hand mid-hunt, this stops bigshot and goes looking for it instead
+# of letting him swing fists. Restarted here in case it ever dies; it re-runs
+# this script after a successful recovery, so keep this a no-op when running.
+Script.start("Fizzlestiks-disarmguard") unless Script.running?("Fizzlestiks-disarmguard")
+
 # playsongs only when you're actually at the keyboard. Same afk_now UserVar that
 # gates deadexit (unset counts as ON, i.e. AFK -> no music):
 #   ;vars set afk_now=false   # at the keyboard: music plays during the hunt
