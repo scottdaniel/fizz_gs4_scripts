@@ -19,6 +19,11 @@
 #   spell    -- spams a single incant <number> until all targets are dead;
 #               waits if mana drops below the configured minimum
 #
+# Voln symbols:
+#   Courage, Protection and Supremacy (9805, 9806, 9816) are kept up -- cast before the
+#   entry fee is paid (so it costs no arena time) and topped up before every attack pass.
+#   Change the list in setup ("Symbols"); blank = none.
+#
 # Mind rest:
 #   If your mind hits the configured pause threshold, the script navigates
 #   to the rest location via ;go2 and waits until mind falls to the resume
@@ -29,7 +34,7 @@
 #   ;fizzabyss        -- run the arena loop using saved settings
 #   ;fizzabyss setup  -- open the GTK setup GUI to configure options:
 #                          Loot container, Attack mode, Attack script, Spell number,
-#                          Min mana, Pause at mind %, Resume at mind %,
+#                          Min mana, Symbols, Pause at mind %, Resume at mind %,
 #                          Rest location (node / supernode / room number)
 
 require 'yaml'
@@ -45,6 +50,8 @@ module FizzAbyss
   MIND_RESUME_DEFAULT = 75
   REST_LOC_DEFAULT    = 'node'
   SCRIPT_DEFAULT      = 'Fizzleworth-attack-arena'
+  SYMBOLS_DEFAULT     = '9805, 9806, 9816'   # Courage, Protection, Supremacy
+  SYMBOL_GAP          = 60                   # secs before a symbol that didn't take is tried again
 
   def self.settings_path(name = 'fizzabyss.yaml')
     File.join(DATA_DIR, XMLData.game, Char.name, name)
@@ -133,6 +140,8 @@ module FizzAbyss
         @entry_script = row.call('Attack script:', saved.fetch('attack_script', SCRIPT_DEFAULT))
         @entry_spell  = row.call('Spell number:', saved.fetch('spell_number', '').to_s)
         @entry_mana   = row.call('Min mana (spell mode):', saved.fetch('min_mana', MANA_WAIT_DEFAULT))
+        @entry_symbols = row.call('Symbols (spell #s):', saved.fetch('symbols', SYMBOLS_DEFAULT),
+                                  '(9805 Courage, 9806 Protection, 9816 Supremacy; blank = none)')
         @entry_mind_pause  = row.call('Pause at mind %:', saved.fetch('mind_pause', MIND_PAUSE_DEFAULT))
         @entry_mind_resume = row.call('Resume at mind %:', saved.fetch('mind_resume', MIND_RESUME_DEFAULT))
         @entry_rest_loc    = row.call('Rest location:', saved.fetch('rest_loc', REST_LOC_DEFAULT), '(node, supernode, or room #)')
@@ -151,6 +160,7 @@ module FizzAbyss
             'attack_script' => @entry_script.text.strip,
             'spell_number'  => @entry_spell.text.strip.to_i,
             'min_mana'      => @entry_mana.text.strip.to_i,
+            'symbols'       => @entry_symbols.text.strip,
             'mind_pause'    => @entry_mind_pause.text.strip.to_i,
             'mind_resume'   => @entry_mind_resume.text.strip.to_i,
             'rest_loc'      => @entry_rest_loc.text.strip,
@@ -191,10 +201,12 @@ module FizzAbyss
       @script      = settings.fetch('attack_script', SCRIPT_DEFAULT).to_s.strip
       @spell_num   = settings.fetch('spell_number', 0).to_i
       @min_mana    = settings.fetch('min_mana',    MANA_WAIT_DEFAULT).to_i
+      @symbols     = settings.fetch('symbols',     SYMBOLS_DEFAULT).to_s.scan(/\d+/).map(&:to_i)
       @mind_pause  = settings.fetch('mind_pause',  MIND_PAUSE_DEFAULT).to_i
       @mind_resume = settings.fetch('mind_resume', MIND_RESUME_DEFAULT).to_i
       @rest_loc    = settings.fetch('rest_loc',    REST_LOC_DEFAULT).to_s.strip
 
+      @symbol_tried   = {}
       @entrance_count = 0
       @fight_count    = 0
       @run_start      = nil
@@ -284,6 +296,7 @@ module FizzAbyss
       end
 
       echo "  [Abyss] Ebon Gate entries remaining: #{entries}"
+      keep_symbols
       Lich::Messaging.stream_window(
         "Entry: #{@entrance_count + 1} (#{entries} left)\r\n", 'familiar')
 
@@ -296,6 +309,23 @@ module FizzAbyss
       else
         echo "  [Abyss] Could not enter arena: #{result.inspect}"
         exit
+      end
+    end
+
+    # ------------------------------------------------------------------
+    # Voln symbols
+    # ------------------------------------------------------------------
+    # Casts each configured symbol that isn't running. One that doesn't take (not enough
+    # favor: "You strain to perform the symbol...") is left alone for SYMBOL_GAP seconds.
+    def keep_symbols
+      @symbols.each do |n|
+        sym = Spell[n]
+        next unless sym.known? && !sym.active?
+        next if @symbol_tried[n] && Time.now - @symbol_tried[n] < SYMBOL_GAP
+        @symbol_tried[n] = Time.now
+        sym.cast
+        sleep 0.3
+        echo "  [FizzAbyss] #{sym.name} didn't take (Voln favor?)." unless sym.active?
       end
     end
 
@@ -327,6 +357,7 @@ module FizzAbyss
 
     def attack_sequence
       while GameObj.targets.any? { |t| t.status !~ /dead|gone/ }
+        keep_symbols
         if script_mode?
           run_attack_script
         else
