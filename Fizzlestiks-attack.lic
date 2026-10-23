@@ -1,0 +1,84 @@
+# Fizzlestiks-attack.lic
+# Bigshot custom attack routine for Fizzlestiks (Bard). Drop it into a bigshot
+# hunting-commands list as a single command, replacing "feint (s9), attack (xx)":
+#
+#   script Fizzlestiks-attack
+#
+# bigshot pauses itself, runs this once against the target it already has
+# locked, then resumes to loot / wander / retarget -- so this does exactly ONE
+# attack decision per call and returns; bigshot re-invokes it every pass while
+# the target is still up. Same shape as Brayis-attack.lic, minus the tackle.
+#
+# Decision each pass (what "feint (s9), attack (xx)" did):
+#
+#   Feint (CMAN, 9 stamina) if it's available -- Lich's own CMan.available?
+#   already folds in "known", enough stamina, off cooldown, and not
+#   overexerted, so there's no hardcoded stamina number here to drift out of
+#   date. Otherwise (or if the feint couldn't be sent at all) a plain attack
+#   with his current weapon, instead of sitting idle waiting on stamina.
+#
+# Deliberately does NOT switch back to stance defensive -- bigshot's own
+# hunting/wander stance settings take over once this returns.
+#
+# Disarm: nothing in the RIGHT hand means the weapon is gone (the left holds
+# the hunting tambourine, so "both hands empty" would never be true). Don't
+# fall back to punching -- Brayis died doing that. Fizzlestiks-disarmguard.lic
+# is what actually goes after the weapon; this just refuses to fight bare-
+# fisted in the meantime, and if the guard isn't running, sends bigshot to rest
+# the same way Salvi/Picko's attack routines do.
+
+# --- helpers -----------------------------------------------------------------
+
+# Monster-agnostic death check: bigshot itself never text-matches kill messages
+# (they vary per creature) -- it reads GameObj status, which Lich core keeps
+# current from the room/combat XML. A dead creature reads "dead" while the
+# corpse lingers, then "gone" once it decays or is looted.
+def target_dead?(foe)
+  return true if foe.nil?
+  return true if foe.status.to_s =~ /dead|gone/
+  !GameObj.targets.any? { |t| t.id.to_i == foe.id.to_i && t.status.to_s !~ /dead|gone/ }
+end
+
+# Plain attack with whatever weapon is in hand. No-ops if the target is already
+# dead.
+def plain_attack(foe)
+  return if target_dead?(foe)
+  fput "attack"
+  waitrt?
+end
+
+# Feint if Lich says it's usable right now. CMan.use waits out roundtime first
+# and returns the answering line, or nil if it never sent anything.
+# @return [Boolean] true if a feint was actually sent
+def try_feint(foe)
+  return false unless CMan.available?("feint", target: foe)
+  !CMan.use("feint", foe).nil?
+end
+
+# --- main ----------------------------------------------------------------
+
+foe = GameObj.targets.find { |t| t.id.to_i == XMLData.current_target_id.to_i } if XMLData.current_target_id
+foe ||= GameObj.targets.find { |t| t.status.to_s !~ /dead|gone/ }
+
+# nothing (live) to hit -- hand control straight back to bigshot, which loots
+exit if target_dead?(foe)
+
+fput "target ##{foe.id}" unless XMLData.current_target_id.to_i == foe.id.to_i
+
+waitrt?
+
+exit if target_dead?(foe)
+
+if checkright.nil?
+  echo "########## NO WEAPON IN RIGHT HAND -- not fighting bare-fisted ##########"
+  unless Script.running?("Fizzlestiks-disarmguard")
+    echo "## Fizzlestiks-disarmguard isn't running -- asking bigshot to rest"
+    $bigshot_should_rest = true
+    $rest_reason = "Disarmed"
+  end
+  exit
+end
+
+fput "stance offensive" if stance != "offensive"
+
+plain_attack(foe) unless try_feint(foe)
