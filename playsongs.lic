@@ -111,7 +111,7 @@ module Playsongs
   end
   STYLE = requested_style
 
-  START_REGEX = /You lift your \S+ and begin to tap out a beat\./
+  START_REGEX = /You lift your .+? and begin to tap out a beat\./
 
   # Per https://gswiki.play.net/Instrument_learning, this message fires once
   # per rank (not per skill tick), and there are only 20 ranks total, with
@@ -121,7 +121,7 @@ module Playsongs
   # it just won't fire often. Kept in sync with the periodic PLAY SKILL
   # check (SKILL_LEVEL_REGEX/maybe_check_skill) as a second confirmation of
   # the same authoritative tier, shown in playsongs stats.
-  RANKUP_REGEX = /You feel a sense of accomplishment as you continue practicing your \S+!/
+  RANKUP_REGEX = /You feel a sense of accomplishment as you continue practicing your .+?!/
 
   SKILL_LEVEL_REGEX = /Your current skill level in (.+?) instruments is (\w+)\.?/i
 
@@ -132,20 +132,31 @@ module Playsongs
   # instruments are two-handed.
   TWO_HANDED_REGEX = /requires two hands to play, try emptying your right hand\./
 
-  # "your \S+" instead of the instrument name so this still matches regardless
-  # of what's being played; "you"/"You" scopes it to your own performance so
-  # it won't trigger off other bards finishing theirs.
+  # "your .+?" instead of the instrument name so this still matches regardless
+  # of what is being played -- including multi-word names ("rosewood drum", "modwir
+  # piccolo"), which a single-word \S+ silently failed to match. "you"/"You"
+  # scopes it to your own performance so it won't trigger off other bards
+  # finishing theirs. Each new instrument can bring its own ending line.
   STOP_REGEX = Regexp.union(
-    /As the last whispered note fades from the stilled air, you slowly smile and put your hand over your \S+, bowing with a flourish\./,
-    /The music moves slower and slower until finally, with a last hovering beat, it fades away\. You look up from your \S+ and smile\./,
-    /The air suddenly stills as you halt your whirling rhythm as suddenly as you began, silencing your \S+\./,
-    /You complete the last beat with a flourish, lowering your \S+\./,
-    /With quiet grace, you allow your \S+'s melody to drop off, ever softer, until there is nothing but the intense silence left in its wake\./,
+    /As the last whispered note fades from the stilled air, you slowly smile and put your hand over your .+?, bowing with a flourish\./,
+    /The music moves slower and slower until finally, with a last hovering beat, it fades away\. You look up from your .+? and smile\./,
+    /The air suddenly stills as you halt your whirling rhythm as suddenly as you began, silencing your .+?\./,
+    /You complete the last beat with a flourish, lowering your .+?\./,
+    /With quiet grace, you allow your .+?'s melody to drop off, ever softer, until there is nothing but the intense silence left in its wake\./,
     # Confirmed live: without this, play_and_track's read loop never sees a
     # STOP_REGEX match and just hangs forever after a song actually ended --
     # playsongs looked "running" but never played again.
-    /You bring your quiet performance to a close with three descending harmonics; these last notes ring on, barely heard, as you let your arms fall to your sides\./
+    /You bring your quiet performance to a close with three descending harmonics; these last notes ring on, barely heard, as you let your arms fall to your sides\./,
+    # Drum, played soft. The adjective is the style ("soft beats"), so match any
+    # rather than only soft -- fast/slow drum songs presumably say their own.
+    /You let the .+? beats on your .+? trail away into silence\./
   )
+
+  # Backstop for the next ending message nobody has seen yet: a song is 5-5.5
+  # minutes, so if neither a known ending nor a new START line shows up for this
+  # long, stop waiting instead of sitting in hand doing nothing until something
+  # else kills the script (that is how the drum stalled for 11 minutes).
+  SONG_TIMEOUT_SECONDS = 420
 
   RESTART_PAUSE_SECONDS = 3
   PAUSE_POLL_SECONDS = 1
@@ -478,8 +489,28 @@ module Playsongs
 
     fput "play my #{INSTRUMENT} #{STYLE}"
 
+    give_up_at = Time.now + SONG_TIMEOUT_SECONDS
+    recent = []
+
     loop do
-      line = get
+      line = get?
+      if line.nil?
+        if Time.now > give_up_at
+          Lich::Messaging.msg("bold", "[Playsongs] No song-ending message for #{SONG_TIMEOUT_SECONDS}s -- assuming it ended and playing again. " \
+                                      "If this keeps happening, the ending text is new: add it to STOP_REGEX. Last lines seen: #{recent.join(' | ')}")
+          record_rank_ups_only(rank_ups)
+          return
+        end
+        sleep 0.1
+        next
+      end
+
+      stripped = line.strip
+      unless stripped.empty? || stripped =~ /\A[<>]/
+        recent << stripped[0, 120]
+        recent.shift while recent.length > 5
+      end
+
       if line =~ TWO_HANDED_REGEX
         echo "#{INSTRUMENT} needs both hands -- putting the right hand away and retrying."
         # STORE (not STOW): routes a readied weapon to its sheath per the
@@ -489,10 +520,14 @@ module Playsongs
         fput "store right"
         fput "stow right" if checkright
         started_at = Time.now
+        give_up_at = started_at + SONG_TIMEOUT_SECONDS
         fput "play my #{INSTRUMENT} #{STYLE}"
         next
       end
-      started_at = Time.now if line =~ START_REGEX
+      if line =~ START_REGEX
+        started_at = Time.now
+        give_up_at = started_at + SONG_TIMEOUT_SECONDS
+      end
       if line =~ RANKUP_REGEX
         rank_ups += 1
         Lich::Messaging.msg("bold", "[Playsongs] Rank up! #{line.strip}")
