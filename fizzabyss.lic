@@ -26,6 +26,15 @@
 #   trip. Spells that are still up are skipped, so it's quick when nothing has run out.
 #   Blank = no prep.
 #
+# Waggle (setup: "Waggle script", default `ewaggle`):
+#   Your own spell-up from ewaggle's profile (Spirit/Elemental Defenses, Phase, Cloak of
+#   Shadows ...), run at the start of each mind rest, right after arriving at the rest
+#   location, so the mana it costs comes back during the rest. Those spells last two hours or
+#   more, so it mostly just checks; after a relog or a death it recasts them (~145 mana). If
+#   there's no rest before an entry (the first one, or a low mind) it runs right after the
+#   prep instead. Before paying the fee it waits for mana to get back to 90% (up to 10
+#   minutes) so a spell-up never starts a run short. Blank = no waggle.
+#
 # Voln symbols:
 #   Courage, Protection and Supremacy (9805, 9806, 9816) are kept up -- cast before the
 #   entry fee is paid (so it costs no arena time) and topped up before every attack pass.
@@ -41,7 +50,7 @@
 #   ;fizzabyss        -- run the arena loop using saved settings
 #   ;fizzabyss setup  -- open the GTK setup GUI to configure options:
 #                          Loot container, Attack mode, Attack script, Spell number,
-#                          Min mana, Prep script, Symbols, Pause at mind %, Resume at mind %,
+#                          Min mana, Prep script, Waggle script, Symbols, Pause at mind %, Resume at mind %,
 #                          Rest location (node / supernode / room number)
 
 require 'yaml'
@@ -58,6 +67,9 @@ module FizzAbyss
   REST_LOC_DEFAULT    = 'node'
   SCRIPT_DEFAULT      = 'Fizzleworth-attack-arena'
   PREP_DEFAULT        = 'Fizzleworth-prep arena'
+  WAGGLE_DEFAULT      = 'ewaggle'
+  MANA_READY          = 0.9    # fraction of max mana wanted before paying the entry fee
+  MANA_WAIT_MAX       = 600    # secs to wait for it
   SYMBOLS_DEFAULT     = '9805, 9806, 9816'   # Courage, Protection, Supremacy
   # "You put X in your ..." -- a cloak says "You slip X beneath your spidersilk cloak and into
   # one of several concealed pockets." (10.23 that read as a failed stow)
@@ -153,6 +165,8 @@ module FizzAbyss
         @entry_mana   = row.call('Min mana (spell mode):', saved.fetch('min_mana', MANA_WAIT_DEFAULT))
         @entry_prep    = row.call('Prep script:', saved.fetch('prep', PREP_DEFAULT),
                                   '(script + args, run before each entry; blank = none)')
+        @entry_waggle  = row.call('Waggle script:', saved.fetch('waggle', WAGGLE_DEFAULT),
+                                  '(your own spell-up, run at the start of each rest; blank = none)')
         @entry_symbols = row.call('Symbols (spell #s):', saved.fetch('symbols', SYMBOLS_DEFAULT),
                                   '(9805 Courage, 9806 Protection, 9816 Supremacy; blank = none)')
         @entry_mind_pause  = row.call('Pause at mind %:', saved.fetch('mind_pause', MIND_PAUSE_DEFAULT))
@@ -174,6 +188,7 @@ module FizzAbyss
             'spell_number'  => @entry_spell.text.strip.to_i,
             'min_mana'      => @entry_mana.text.strip.to_i,
             'prep'          => @entry_prep.text.strip,
+            'waggle'        => @entry_waggle.text.strip,
             'symbols'       => @entry_symbols.text.strip,
             'mind_pause'    => @entry_mind_pause.text.strip.to_i,
             'mind_resume'   => @entry_mind_resume.text.strip.to_i,
@@ -216,6 +231,7 @@ module FizzAbyss
       @spell_num   = settings.fetch('spell_number', 0).to_i
       @min_mana    = settings.fetch('min_mana',    MANA_WAIT_DEFAULT).to_i
       @prep        = settings.fetch('prep',        PREP_DEFAULT).to_s.strip
+      @waggle      = settings.fetch('waggle',      WAGGLE_DEFAULT).to_s.strip
       @symbols     = settings.fetch('symbols',     SYMBOLS_DEFAULT).to_s.scan(/\d+/).map(&:to_i)
       @mind_pause  = settings.fetch('mind_pause',  MIND_PAUSE_DEFAULT).to_i
       @mind_resume = settings.fetch('mind_resume', MIND_RESUME_DEFAULT).to_i
@@ -274,6 +290,7 @@ module FizzAbyss
            "Heading to #{@rest_loc} to rest..."
       Script.run('go2', @rest_loc)
       wait_while { running?('go2') }
+      run_step(@waggle)   # the spell-up's mana comes back over the rest
       loop do
         break if percentmind <= @mind_resume
         sleep 5
@@ -303,7 +320,8 @@ module FizzAbyss
     # Enter
     # ------------------------------------------------------------------
     def enter_arena
-      rest_until_clear if mind_rest_needed?
+      rested = mind_rest_needed?
+      rest_until_clear if rested
 
       entries = remaining_entries
       if entries == 0
@@ -312,7 +330,9 @@ module FizzAbyss
       end
 
       echo "  [Abyss] Ebon Gate entries remaining: #{entries}"
-      run_prep
+      run_step(@prep)
+      run_step(@waggle) unless rested   # no rest this time (first entry, or mind was low)
+      wait_for_mana
       keep_symbols
       Lich::Messaging.stream_window(
         "Entry: #{@entrance_count + 1} (#{entries} left)\r\n", 'familiar')
@@ -331,16 +351,26 @@ module FizzAbyss
     end
 
     # ------------------------------------------------------------------
-    # Prep (rubs, scroll spell-up, weapon, lifeguard)
+    # Prep (rubs, scroll spell-up, weapon, lifeguard) and waggle (own spell-up)
     # ------------------------------------------------------------------
-    def run_prep
-      return if @prep.empty?
-      name, *args = @prep.split
+    # spec is "script args"; blank = nothing to run.
+    def run_step(spec)
+      return if spec.empty?
+      name, *args = spec.split
       unless Script.exists?(name)
-        echo "  [FizzAbyss] prep script '#{name}' not found -- skipping prep."
+        echo "  [FizzAbyss] script '#{name}' not found -- skipping it."
         return
       end
       args.empty? ? Script.run(name) : Script.run(name, args.join(' '))
+    end
+
+    # The spell-up can take a good part of the mana; the run shouldn't start short.
+    def wait_for_mana
+      want = (maxmana * MANA_READY).to_i
+      return if checkmana >= want
+      echo "  [FizzAbyss] mana #{checkmana}/#{maxmana} -- waiting for #{want} before paying."
+      deadline = Time.now + MANA_WAIT_MAX
+      sleep 5 while checkmana < want && Time.now < deadline
     end
 
     # ------------------------------------------------------------------
