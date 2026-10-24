@@ -2,6 +2,10 @@
 
 module FizzleworthPrep
 
+# `;Fizzleworth-prep arena` (run by ;fizzabyss before each arena entry): everything below
+# except the buyweapon trip to Icemule -- the rubs, the scroll spell-up, weapon, lifeguard.
+arena = Script.current.vars[1].to_s.downcase == 'arena'
+
 # Arrangement: scepter (weapon) lives in the sling, runestaff (secondary
 # weapon) is stowed in the cloak. IMPORTANT (10.12): `store weapon` and
 # `store 2weap` don't pick an item -- they store WHATEVER is in hand using that
@@ -128,7 +132,7 @@ sleep 0.3
 
 # If verlok lost the spare weapon (a botched teardown last hunt), buy a new
 # one now so ;reanim has something to arm the animate with. No-op otherwise.
-Script.run("Fizzleworth-buyweapon")
+Script.run("Fizzleworth-buyweapon") unless arena   # it walks to Icemule's weapon shop
 
 # Log mind saturation ("Field Exp: N/1220") right before the hunt starts, so
 # every hunt has a recorded starting mind for the wings-compare analysis
