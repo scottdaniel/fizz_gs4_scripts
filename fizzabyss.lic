@@ -225,6 +225,7 @@ module FizzAbyss
       @entrance_count = 0
       @fight_count    = 0
       @run_start      = nil
+      @mind_start     = nil
     end
 
     def run
@@ -322,6 +323,7 @@ module FizzAbyss
       if result =~ /You raise a barrel key/
         @entrance_count += 1
         @run_start = Time.now
+        @mind_start = [Experience.fxp_current, Experience.exp]
       else
         echo "  [Abyss] Could not enter arena: #{result.inspect}"
         exit
@@ -395,6 +397,17 @@ module FizzAbyss
       end
     end
 
+    # The mind pool when the run started and now, to the familiar window (and so the log).
+    # 10.23: a run took the pool from ~700 to ~1500 of 1218 -- it goes well past 100%, up to
+    # about 1700 -- so this shows how close the next resume threshold lets a run get to that.
+    def log_mind
+      return unless @mind_start
+      pool, max, total = Experience.fxp_current, Experience.fxp_max, Experience.exp
+      pct = max.to_i.positive? ? " (#{(pool * 100.0 / max).round}%)" : ''
+      Lich::Messaging.stream_window(
+        "Mind: #{@mind_start[0]} -> #{pool}/#{max}#{pct}, Total Exp +#{total - @mind_start[1]}\r\n", 'familiar')
+    end
+
     # ------------------------------------------------------------------
     # Arena event loop
     # ------------------------------------------------------------------
@@ -413,6 +426,7 @@ module FizzAbyss
           elapsed = Time.now - @run_start
           Lich::Messaging.stream_window(
             "Total Time: #{Time.at(elapsed).strftime('%M:%S')}\r\n", 'familiar')
+          log_mind
           @fight_count = 0
 
         elsif line =~ /A massive tenebrous oculoth floats in and regurgitates (.*) into your (right|left) hand\./
