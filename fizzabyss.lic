@@ -51,6 +51,9 @@ module FizzAbyss
   REST_LOC_DEFAULT    = 'node'
   SCRIPT_DEFAULT      = 'Fizzleworth-attack-arena'
   SYMBOLS_DEFAULT     = '9805, 9806, 9816'   # Courage, Protection, Supremacy
+  # "You put X in your ..." -- a cloak says "You slip X beneath your spidersilk cloak and into
+  # one of several concealed pockets." (10.23 that read as a failed stow)
+  STOW_OK             = /You (?:put|slip|tuck|place)|concealed pockets?/i
   SYMBOL_GAP          = 60                   # secs before a symbol that didn't take is tried again
 
   def self.settings_path(name = 'fizzabyss.yaml')
@@ -390,8 +393,8 @@ module FizzAbyss
           prize = $1
           hand  = $2
           Lich::Messaging.stream_window("Prize: #{prize}\r\n", 'familiar')
-          result = dothistimeout("put #{hand} in my #{@lootsack}", 5, /You put/)
-          if result =~ /You put/
+          result = dothistimeout("put #{hand} in my #{@lootsack}", 5, STOW_OK)
+          if result =~ STOW_OK
             echo "  [Abyss] Looted: #{prize} (#{hand} hand -> #{@lootsack})"
           else
             echo "  [Abyss] Warning: could not stow #{prize} from #{hand} hand " \
