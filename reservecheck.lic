@@ -14,6 +14,12 @@
 # read -- never a guess that wrongly rules a spell out. The scripts that use a scroll
 # also drop a number from it the moment the game says it's gone.
 #
+# WHERE: RESERVE only answers in some places. 10/25: from the shop eloot leaves Picko in,
+# `reserve list` gets "You can't do that." (13:31, 13:43, 14:03, 14:21, 15:00, 15:34), but
+# in the resting room (Thirsty Penguin, 3428) it works (10/20 09:15, 22:22). So this walks
+# to bigshot's resting room first (UserVars.op["resting_room_id"]), checks there, and walks
+# back to where it started. A "can't do that" reply is "unknown" (nil), never "empty".
+#
 # How: `reserve list` for the slots, then `read #id` on each reserved scroll (the same
 # approach as scrollinv.lic, which prints this table for you). Each spell on a scroll is
 # one "(number) Name" line; a used-up spell disappears from the list (10/20: the light
@@ -39,11 +45,17 @@ def self.reserve_slots
     "reserve list", RESERVE_START, /<prompt/,
     include_end: false, timeout: 5, usexml: true, quiet: true
   )
-  lines.filter_map do |line|
+  slots = lines.to_a.filter_map do |line|
     clean = plain(line)
     next unless clean =~ /^\s*Slot\s+(\d+):\s*(.+?)\s*$/i
     [Regexp.last_match(1).to_i, Regexp.last_match(2).strip]
   end
+  # No slots is only "nothing reserved" if the game actually answered the question
+  # ("You have no items reserved for combat"); a refusal ("You can't do that.") or silence
+  # means we couldn't ask -- unknown (nil), never "empty", which would switch every scroll off.
+  return nil if slots.empty? && Array(reget(40)).none? { |l| plain(l.to_s) =~ RESERVE_START }
+
+  slots
 end
 
 # Spell numbers on one scroll, from its "read" response; [] if it shows none.
@@ -59,6 +71,7 @@ end
 
 def self.check
   slots = reserve_slots
+  return nil if slots.nil?
   return [] if slots.empty?
 
   # "reserve list" also refreshes GameObj.reserve; wait for it, then read each object.
@@ -79,7 +92,18 @@ def self.check
 end
 
 before = $reserve_spells
-after = check
+
+# Ask from the resting room (see WHERE above), then go back.
+home = Room.current.id
+op = (defined?(UserVars) && UserVars.op.is_a?(Hash)) ? UserVars.op : {}
+rest_room = op["resting_room_id"].to_i
+moved = rest_room.positive? && home != rest_room
+begin
+  Script.run("go2", rest_room.to_s) if moved
+  after = check
+ensure
+  Script.run("go2", home.to_s) if moved && home && Room.current.id != home
+end
 $reserve_spells = after
 $reserve_checked_at = Time.now.to_f
 
