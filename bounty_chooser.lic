@@ -1,0 +1,901 @@
+=begin
+      author: Fizzleworth (fork of undead_bounty.lic)
+    co-writer: Claude (Anthropic)
+        name: bounty_chooser
+        game: gemstone
+        tags: bounty, adventurer's guild
+    requires: Lich > 5.4.0
+     version: 1.2
+
+  undead_bounty.lic with the "must be undead" test replaced by an allowed list, and
+  with heirloom and rescue-child tasks accepted by AREA.
+
+  Automates the "reroll until it's one I'm hunting" bounty loop:
+    1. Go to the Adventurer's Guild and ask the bounty master for a task. With a
+       Bounty Boost it asks for a specific type (`ask taskmaster for bounty kill`);
+       WITHOUT one (out of boosts) it asks generically and takes whatever is offered,
+       and the offer is judged on every type below, not just the one you named.
+    2. A creature problem, a lost heirloom or a missing child is followed to the town
+       guard, who says which creature and which area; a gem order is followed to that
+       town's gem dealer. (Herb/skin/escort/bandit tasks are removed.)
+    3. Keep it if it qualifies, otherwise `ask taskmaster for removal` and loop:
+         kill ("suppress X activity") and dangerous-creature tasks: the creature's name
+           contains anything on your creature list
+         heirloom and rescue-child tasks: the task's AREA contains anything on your
+           areas list (the attacking creature can be anything)
+         gem orders: any gem (they drop while hunting anywhere); optionally only from
+           certain towns' dealers (`gem_towns:` in the yaml, empty = any town)
+
+  usage:
+    ;bounty_chooser help
+    ;bounty_chooser kill skeletal ice troll, cold guardian, frost giant --areas=Ice Plains, Icemule Trail
+    ;bounty_chooser dangerous frost giant
+    ;bounty_chooser kill            (creatures and areas from data/GSIV/<char>/bounty_chooser.yaml)
+
+  Everything else is inherited: turning in a completed bounty first, leaving an
+  acceptable in-progress bounty alone (and any task that is already mid-way, like a
+  found heirloom or a made contact with the child), the zero-boost path (exits cleanly
+  on the taskmaster's cooldown), the 25-reroll cap, and walking back to the room you
+  started in. See undead_bounty.lic for those details.
+
+  changelog:
+    1.2
+      - accept gem orders (:gem_assignment -> the town's gem dealer -> :gem), optionally
+        limited to certain towns with gem_towns
+      - the allowed lists travel as one Rules struct (creatures, areas, gem_towns)
+    1.1
+      - accept :heirloom and :rescue tasks (followed via their assignments) when their
+        area is on the areas list; follow heirloom/rescue assignments to the guard
+      - mid-task states (found heirloom, child contact, spawned dangerous creature) are
+        never tossed for a reroll
+    1.0
+      - fork of undead_bounty 1.11: creature filter (single partial name, must be
+        undead) replaced by a comma-separated allowed list of any creatures
+
+=end
+
+module BountyChooser
+  BOUNTY_TYPES = %w[kill dangerous].freeze
+  BOUNTY_MASTER_NAME = 'taskmaster'.freeze
+  GUARD_NAME_PATTERN = /(?:guard|sergeant|guardsman|sentry|tavernkeeper|alchemist|purser)/i.freeze
+  GUARD_NOT_READY_PATTERN = /is in no condition to talk to you/i.freeze
+
+  # debug aid: print every bounty the script received this run, on exit.
+  # on for now while we're still shaking bugs out.
+  LOG_BOUNTY_HISTORY = true
+
+  def self.bounty_history
+    @bounty_history ||= []
+  end
+
+  # How many of the creature the bounty wants, or nil when the task doesn't
+  # carry a count (e.g. a single named dangerous creature, rescue, heirloom).
+  # Bounty::Task has no real #number method -- it only answers through
+  # method_missing when requirements has a :number key, and RAISES
+  # NoMethodError otherwise, so a plain `task.number || '?'` can never reach
+  # its '?' fallback. That crashed the script right after a guard assignment
+  # with no count (Picko, 2026-10-20 01:34: "undefined method 'number' for an
+  # instance of Lich::Gemstone::Bounty::Task"). Read the hash directly.
+  def self.task_number(task)
+    task.requirements&.[](:number)
+  end
+
+  def self.record_bounty(creature:, number:, type:, location:, verdict:)
+    bounty_history << {
+      creature: creature,
+      number: number,
+      type: type,
+      location: location,
+      verdict: verdict
+    }
+  end
+
+  def self.print_bounty_history
+    return unless LOG_BOUNTY_HISTORY
+    return if bounty_history.empty?
+
+    respond ''
+    respond "BountyChooser: bounty history for this run (#{bounty_history.length}):"
+    bounty_history.each_with_index do |entry, i|
+      respond format(
+        '  %<n>2d. %<count>3s x %<creature>-24s [%<type>s] near %<location>-20s - %<verdict>s',
+        n: i + 1,
+        count: entry[:number] || '?',
+        creature: entry[:creature] || 'unknown',
+        type: entry[:type] || '?',
+        location: entry[:location] || '?',
+        verdict: entry[:verdict]
+      )
+    end
+  end
+
+  def self.find_npc(pattern)
+    (GameObj.npcs.to_a + GameObj.room_desc.to_a).find { |n| n.status != 'dead' && n.name =~ pattern }
+  end
+
+  # tries the current room only; returns nil (does not exit) if not found,
+  # so callers can move on and try another room
+  def self.find_npc_in_room(pattern, retries: 6, delay: 0.25)
+    retries.times do
+      npc = find_npc(pattern)
+      return npc if npc
+
+      sleep delay
+    end
+    nil
+  end
+
+  def self.wait_for_npc(pattern, label)
+    npc = find_npc_in_room(pattern, retries: 10)
+    if npc.nil?
+      respond "BountyChooser: couldn't find #{label} in this room, stopping."
+      exit
+    end
+    npc
+  end
+
+  def self.wait_for_bounty
+    30.times do |i|
+      task = Bounty.current
+      return task if task && yield(task)
+
+      sleep 0.25
+    end
+    nil
+  end
+
+  # explicitly asks the game for current bounty status instead of trusting
+  # whatever XMLData.bounty_task was last left at (could be stale/unset at
+  # the start of a fresh script run)
+  def self.refresh_bounty_status
+    fput 'bounty'
+    waitrt?
+    wait_for_bounty { true }
+  end
+
+  # matches both "...eligible for new task assignment in about 43 minutes"
+  # (from `bounty` status) and "...come back in about 37 minutes if you
+  # want another task" (from asking the taskmaster while on cooldown)
+  MINUTES_PATTERN = /in about (\d+) minutes?/i.freeze
+
+  def self.minutes_until_eligible(text)
+    m = MINUTES_PATTERN.match(text.to_s)
+    m && m[1].to_i
+  end
+
+  # sends a command once (no auto-resend) and watches incoming lines for up
+  # to `timeout` seconds for any of the given patterns; returns the matching
+  # pattern, or nil if none showed up in time
+  # returns the matching pattern (not the line) to keep existing `matched
+  # == SOME_PATTERN` call sites simple; the actual matched line is stashed
+  # in @last_matched_line for the rare caller (e.g. minute-count parsing)
+  # that needs the real text.
+  def self.fput_and_check(command, patterns, timeout: 5)
+    Script.current.clear
+    fput command
+    end_time = Time.now + timeout
+    while Time.now < end_time
+      line = get?
+      if line.nil?
+        sleep 0.1
+      elsif (pattern = patterns.find { |p| line =~ p })
+        @last_matched_line = line
+        return pattern
+      end
+    end
+    nil
+  end
+
+  # polls npc.status (mutated in place by Lich as server updates arrive)
+  # until it's no longer sleeping, or timeout is hit
+  def self.wait_for_npc_awake(npc, timeout: 120)
+    return unless npc.status.to_s =~ /sleep/i
+
+    respond 'BountyChooser: guard is sleeping, waiting for them to wake up...'
+    end_time = Time.now + timeout
+    while Time.now < end_time && npc.status.to_s =~ /sleep/i
+      sleep 1
+    end
+  end
+
+  # find the town's guard room(s) generically: any room tagged 'advguard' (or
+  # 'advguard2') whose nearest 'town'-tagged room matches the given town
+  # name, sorted closest-to-current-position first. Some towns have more
+  # than one (e.g. Wehnimer's Landing has the gate guard AND a guard inside
+  # Helga's Tavern), so callers should try each in turn.
+  def self.resolve_guard_rooms(town_name)
+    return [] if town_name.to_s.empty?
+
+    town_room = Room.list.find { |r| r.tags.include?('town') && r.location.to_s.include?(town_name) }
+    return [] unless town_room
+
+    candidates = Room.list.find_all do |r|
+      r.tags.any? { |t| t =~ /^advguard/ } && r.find_nearest_by_tag('town') == town_room.id
+    end
+    return [] if candidates.empty?
+
+    candidates.map(&:id).sort_by { |id| Room.current.path_to(id)&.length || Float::INFINITY }
+  end
+
+  # Rooms in the given town tagged 'gemshop', closest first -- where the gem dealer is.
+  def self.resolve_gemshop_rooms(town_name)
+    return [] if town_name.to_s.empty?
+
+    town_room = Room.list.find { |r| r.tags.include?('town') && r.location.to_s.include?(town_name) }
+    return [] unless town_room
+
+    candidates = Room.list.find_all do |r|
+      r.tags.include?('gemshop') && r.find_nearest_by_tag('town') == town_room.id
+    end
+    candidates.map(&:id).sort_by { |id| Room.current.path_to(id)&.length || Float::INFINITY }
+  end
+
+  # A gem assignment names the town and the dealer ("The local gem dealer, Zirconia, has
+  # an order to fill ..."): walk to that town's gem shop, find the dealer, and ASK about
+  # bounties to get the actual order (:gem task: gem, number, town).
+  def self.ask_dealer_for_bounty(assignment)
+    town = assignment.town
+    name_hint = assignment.requirements[:npc_name].to_s.split.first
+    pattern = Regexp.union(*[name_hint, 'gem dealer', 'gemcutter'].compact.reject(&:empty?).map { |n| /#{Regexp.escape(n)}/i })
+
+    npc = nil
+    resolve_gemshop_rooms(town).each do |room_id|
+      Script.run('go2', room_id.to_s)
+      waitrt?
+      npc = find_npc_in_room(pattern)
+      break if npc
+
+      respond "BountyChooser: no gem dealer at room #{room_id}, trying the next location..."
+    end
+    unless npc
+      respond "BountyChooser: couldn't find the gem dealer in '#{town}', stopping."
+      exit
+    end
+
+    task = nil
+    6.times do
+      fput "ask #{npc.noun} about bounty"
+      waitrt?
+      task = wait_for_bounty(&:ready?)
+      break if task
+    end
+    unless task
+      respond 'BountyChooser: the gem dealer never gave a gem order, stopping.'
+      exit
+    end
+    task
+  end
+
+  def self.go_to_advguild
+    Script.run('go2', 'advguild')
+    waitrt?
+  end
+
+  # returns true if a Bounty Boost is active (already was, or "boost bounty"
+  # just activated one); false if there are none to redeem - in that case
+  # we still go ahead and ask the taskmaster, since F2P accounts sometimes
+  # have a free task available even with zero boosts (it's the "eligible
+  # for new task assignment in about N minutes" cooldown that gates that,
+  # not the boost itself).
+  def self.boost_bounty
+    if Effects::Buffs.active?('Bounty Boost')
+      respond 'BountyChooser: Bounty Boost already active, skipping "boost bounty".'
+      return true
+    end
+
+    result = dothistimeout('boost bounty', 5, /You do not have any Bounty Boosts to redeem\.|You have activated a Bounty Boost\./)
+    waitrt?
+
+    if result =~ /You do not have any Bounty Boosts to redeem/
+      respond "BountyChooser: #{result} Trying the taskmaster anyway in case a free task is available."
+      return false
+    end
+
+    # the Buffs dialog data lags a bit behind the chat confirmation, so give
+    # it a few seconds to catch up before treating it as a real failure
+    active = false
+    12.times do
+      active = Effects::Buffs.active?('Bounty Boost')
+      break if active
+
+      sleep 0.5
+    end
+
+    unless active
+      respond 'BountyChooser: Bounty Boost does not appear to be active after "boost bounty", stopping.'
+      exit
+    end
+
+    true
+  end
+
+  ALREADY_ASSIGNED_PATTERN = /already been assigned a task/i.freeze
+  TASKMASTER_BUSY_PATTERN = /kind of busy right now/i.freeze
+  NO_SUITABLE_TASK_PATTERN = /don't seem to have any tasks that are suitable for you/i.freeze
+  # this reuses the same opening line as TASKMASTER_BUSY_PATTERN, but with a
+  # real multi-minute cooldown attached - only seen (so far) when asking
+  # without a Bounty Boost active
+  TASKMASTER_COOLDOWN_PATTERN = /come back in about .+ if you want another task/i.freeze
+
+  # Task#assigned? matches ANY "...assignment" type - herb_assignment,
+  # gem_assignment, skin_assignment, heirloom_assignment, rescue_assignment,
+  # bandit_assignment, creature_assignment. This script only knows how to
+  # follow the creature_assignment ("It appears they have a creature
+  # problem they'd like you to solve") track through the town guard to a
+  # cull/dangerous task. Any other assignment type sent to ask_guard_for_bounty
+  # just has the guard saying "I don't have any tasks for you right now" in
+  # an endless-looking loop, since that quest was never routed through them.
+  def self.creature_assignment?(task)
+    task&.type == :creature_assignment
+  end
+
+  # What this fork follows: a creature problem (-> :cull / :dangerous), a lost heirloom
+  # (-> :heirloom) or a missing child (-> :rescue) via the town guard, and a gem order
+  # (-> :gem) via the town's gem dealer. The latter two
+  # carry the attacking creature and an area, like the cull tasks do. Everything
+  # else (herb/gem/skin/escort/bandit) is still removed.
+  FOLLOWED_ASSIGNMENTS = %i[creature_assignment heirloom_assignment rescue_assignment gem_assignment].freeze
+
+  def self.follow_assignment?(task)
+    FOLLOWED_ASSIGNMENTS.include?(task&.type)
+  end
+
+  # Task types worth taking when the AREA is right, whatever the creature (heirloom
+  # and rescue tasks send you after one specific attacker in a specific area).
+  AREA_TASK_TYPES = %i[heirloom rescue].freeze
+  # Mid-task states with too little data to judge (no creature/area in the text): never
+  # tossed for a reroll.
+  IN_PROGRESS_STATES = %i[dangerous_spawned heirloom_found rescue_spawned].freeze
+
+  # What counts as a good task. creatures/areas/gem_towns are lowercase lists.
+  Rules = Struct.new(:creatures, :areas, :gem_towns)
+
+  def self.ask_master_for_bounty(bounty_type, max_attempts: 10)
+    go_to_advguild
+
+    # asking for a SPECIFIC bounty type requires an active Bounty Boost -
+    # without one, the game doesn't support it at all, so don't even try
+    return ask_master_for_free_bounty unless boost_bounty
+
+    max_attempts.times do
+      matched = fput_and_check(
+        "ask #{BOUNTY_MASTER_NAME} for bounty #{bounty_type}",
+        [ALREADY_ASSIGNED_PATTERN, TASKMASTER_BUSY_PATTERN, NO_SUITABLE_TASK_PATTERN]
+      )
+      waitrt?
+
+      if matched == NO_SUITABLE_TASK_PATTERN
+        respond "BountyChooser: taskmaster has no #{bounty_type} tasks suitable for you here - this hunting"
+        respond 'ground has probably become too easy for your level. Try another town, or a different'
+        respond 'bounty type, stopping.'
+        exit
+      elsif matched == ALREADY_ASSIGNED_PATTERN
+        respond 'BountyChooser: taskmaster says a task is already assigned, requesting removal...'
+        ask_master_for_removal
+        next
+      elsif matched == TASKMASTER_BUSY_PATTERN
+        respond 'BountyChooser: taskmaster is busy, retrying in 3 seconds...'
+        sleep 3
+        next
+      end
+
+      # Task#assigned? only matches types ending in "assignment" - but some
+      # types (e.g. :escort) get handed out directly in their final "ready"
+      # form, skipping that intermediate stage entirely, so they'd go
+      # unrecognized here and only get cleaned up later (if at all) via the
+      # "already assigned" text fallback above. any? (anything but :none)
+      # catches both shapes.
+      task = wait_for_bounty(&:any?)
+      next unless task
+
+      if follow_assignment?(task)
+        return task
+      end
+
+      respond "BountyChooser: taskmaster assigned a #{task.type} task (not a creature, heirloom or rescue problem), " \
+              'requesting removal and retrying...'
+      ask_master_for_removal
+    end
+
+    respond 'BountyChooser: never got a new creature-problem assignment from the bounty master, stopping.'
+    exit
+  end
+
+  # no Bounty Boost active: can't request a specific type, so just ask
+  # generically and take whatever's offered. Unlike the boosted path, there's
+  # no point retrying here if it's not a creature problem - without a boost
+  # a fresh assignment is a real cooldown away, so just remove it and stop.
+  def self.ask_master_for_free_bounty
+    2.times do
+      matched = fput_and_check(
+        "ask #{BOUNTY_MASTER_NAME} about bounty",
+        [ALREADY_ASSIGNED_PATTERN, TASKMASTER_COOLDOWN_PATTERN]
+      )
+      waitrt?
+
+      if matched == ALREADY_ASSIGNED_PATTERN
+        respond 'BountyChooser: taskmaster says a task is already assigned, requesting removal...'
+        ask_master_for_removal
+        next
+      elsif matched == TASKMASTER_COOLDOWN_PATTERN
+        @eligible_in_minutes = minutes_until_eligible(@last_matched_line) || @eligible_in_minutes
+        wait_note = @eligible_in_minutes ? " (eligible again in about #{@eligible_in_minutes} minutes)" : ''
+        respond "BountyChooser: no Bounty Boost available and no free task assignment right now#{wait_note}."
+        respond 'BountyChooser: nothing to do - stopping so the hunt/rest cycle can just try again later.'
+        exit
+      end
+
+      # Task#assigned? only matches types ending in "assignment" - but some
+      # types (e.g. :escort) get handed out directly in their final "ready"
+      # form, skipping that intermediate stage entirely, so they'd go
+      # unrecognized here and only get cleaned up later (if at all) via the
+      # "already assigned" text fallback above. any? (anything but :none)
+      # catches both shapes.
+      task = wait_for_bounty(&:any?)
+      next unless task
+
+      return task if follow_assignment?(task)
+
+      respond "BountyChooser: no Bounty Boost, and the free task offered was a #{task.type} task, not a " \
+              "creature, heirloom or rescue problem. Removing it and stopping so the hunt/rest cycle can try again later."
+      ask_master_for_removal
+      exit
+    end
+
+    respond 'BountyChooser: no Bounty Boost, and the taskmaster never confirmed a task or a cooldown - stopping.'
+    exit
+  end
+
+  def self.ask_master_for_removal
+    go_to_advguild
+    2.times do
+      fput "ask #{BOUNTY_MASTER_NAME} for removal"
+      waitrt?
+    end
+  end
+
+  GUARD_TASK_COMPLETE_PATTERN = /successfully completed your task/i.freeze
+  TASKMASTER_TURN_IN_PATTERN = /Good job/i.freeze
+
+  # if a previous run already finished killing/gathering/etc. and just never
+  # got turned in, `bounty` reports "You succeeded in your task and should
+  # report back to..." (Bounty.current.type == :guard). Handle that before
+  # starting a new reroll loop: report to the guard, then the taskmaster,
+  # then bank the reward.
+  def self.turn_in_bounty(task)
+    respond 'BountyChooser: found a completed bounty waiting to be turned in, handling that first...'
+
+    npc = locate_guard(task.town)
+    confirmed = false
+    5.times do
+      wait_for_npc_awake(npc)
+      matched = fput_and_check("ask #{npc.noun} about bounty", [GUARD_TASK_COMPLETE_PATTERN, GUARD_NOT_READY_PATTERN])
+      waitrt?
+
+      if matched == GUARD_NOT_READY_PATTERN
+        respond "BountyChooser: #{npc.noun} isn't able to talk right now, waiting and retrying..."
+        sleep 5
+        next
+      end
+
+      confirmed = !matched.nil?
+      break
+    end
+
+    unless confirmed
+      respond "BountyChooser: #{npc.noun} didn't confirm the completed task, stopping so you can check manually."
+      exit
+    end
+
+    go_to_advguild
+    confirmed = false
+    5.times do
+      matched = fput_and_check("ask #{BOUNTY_MASTER_NAME} about bounty", [TASKMASTER_TURN_IN_PATTERN, TASKMASTER_BUSY_PATTERN])
+      waitrt?
+
+      if matched == TASKMASTER_BUSY_PATTERN
+        respond 'BountyChooser: taskmaster is busy, retrying in 3 seconds...'
+        sleep 3
+        next
+      end
+
+      confirmed = !matched.nil?
+      break
+    end
+
+    unless confirmed
+      respond 'BountyChooser: taskmaster never confirmed the turn-in, stopping so you can check manually.'
+      exit
+    end
+
+    respond 'BountyChooser: bounty turned in, depositing at the bank...'
+    Script.run('go2', 'bank')
+    waitrt?
+    fput 'deposit all'
+    waitrt?
+  end
+
+  # checks status ONCE before touching anything, and handles whatever's
+  # already there:
+  #   - a completed task waiting on a guard report -> turn it in
+  #   - an in-progress task that already qualifies (its creature is on the
+  #     allowed list) -> leave it alone, don't burn it on a reroll
+  #   - anything else (:none, or an in-progress task that doesn't qualify)
+  #     -> nothing to do here, let the normal reroll loop handle it
+  # returns :already_matching if the in-progress bounty already qualifies,
+  # so run() knows to stop instead of starting the reroll loop.
+  def self.handle_existing_bounty(rules)
+    task = refresh_bounty_status
+    return unless task
+
+    if task.type == :guard
+      turn_in_bounty(task)
+      return
+    end
+
+    # :none can still carry a "You will be eligible for new task assignment
+    # in about N minutes" cooldown notice - stash it so a later "couldn't
+    # get a task" exit message can mention it instead of just failing blind.
+    # NOTE: Task#description is never actually populated by the parser, so
+    # we have to go back to the raw bounty stream text via checkbounty.
+    @eligible_in_minutes = minutes_until_eligible(checkbounty) if task.type == :none
+
+    if IN_PROGRESS_STATES.include?(task.type)
+      record_bounty(creature: task.creature, number: task_number(task), type: task.type, location: task.location,
+                    verdict: 'mid-task - left as-is')
+      respond "BountyChooser: you're partway through a #{task.type} task - leaving it alone."
+      return :already_matching
+    end
+
+    return unless task.creature || task.type == :gem
+    return unless task_acceptable?(task, rules)
+
+    creature = task.creature
+    record_bounty(creature: creature, number: task_number(task), type: task.type, location: task.location,
+                  verdict: 'ALLOWED - already in progress, left as-is')
+    respond "BountyChooser: current bounty is already #{describe_task(task)} - acceptable, leaving it alone."
+    :already_matching
+  end
+
+  # remembers which guard room actually had the guard, per town, so later
+  # loop iterations don't have to re-check every candidate room every time
+  def self.guard_room_cache
+    @guard_room_cache ||= {}
+  end
+
+  # travels to the given town's guard room(s) (using the cache, then the
+  # generic tag-based search, same as before) and returns the guard npc.
+  # exits if no guard can be found anywhere.
+  def self.locate_guard(town)
+    npc = nil
+    found_room = nil
+    cached_room = guard_room_cache[town]
+
+    if cached_room
+      Script.run('go2', cached_room.to_s)
+      waitrt?
+      npc = find_npc_in_room(GUARD_NAME_PATTERN)
+      found_room = cached_room if npc
+    end
+
+    unless npc
+      room_ids = resolve_guard_rooms(town)
+      if room_ids.empty?
+        respond "BountyChooser: couldn't find a guard room for '#{town}', falling back to the nearest advguard tag."
+        room_ids = ['advguard']
+      end
+
+      room_ids.each do |room_id|
+        next if room_id == cached_room # already tried above
+
+        Script.run('go2', room_id.to_s)
+        waitrt?
+        npc = find_npc_in_room(GUARD_NAME_PATTERN)
+        if npc
+          found_room = room_id
+          break
+        end
+
+        respond "BountyChooser: no guard found at room #{room_id}, trying the next location..."
+      end
+    end
+
+    unless npc
+      respond "BountyChooser: couldn't find the town guard at any known location for '#{town}', stopping."
+      exit
+    end
+
+    # only cache real room ids, not the 'advguard' tag fallback
+    guard_room_cache[town] = found_room if found_room.is_a?(Integer)
+    npc
+  end
+
+  def self.ask_guard_for_bounty(assignment)
+    npc = locate_guard(assignment.town)
+
+    task = nil
+    10.times do
+      wait_for_npc_awake(npc)
+
+      matched = fput_and_check("ask #{npc.noun} for bounty", [GUARD_NOT_READY_PATTERN])
+      waitrt?
+
+      if matched
+        respond "BountyChooser: #{npc.noun} isn't able to talk right now, waiting and retrying..."
+        sleep 5
+        next
+      end
+
+      task = wait_for_bounty(&:ready?)
+      break if task
+    end
+
+    unless task
+      respond "BountyChooser: guard never gave a creature assignment, stopping."
+      exit
+    end
+    task
+  end
+
+  # each type's 'name' pattern is one big regex: ^(?:adjective prefixes)?(name1|name2|...)$
+  # pull the literal creature names out of the middle group so we can search
+  # them, rather than matching against it directly.
+  def self.creature_names_from_pattern(pattern)
+    source = pattern&.source.to_s
+    return [] if source.empty?
+
+    boundary = source.index(')?(')
+    body = boundary ? source[(boundary + 3)..-1] : source
+    body = body.sub(/\)\$\z/, '')
+
+    body.split('|').map { |n| n.delete('\\') }.reject(&:empty?)
+  end
+
+  # every creature name gameobj-data.xml knows about, across every type - used only
+  # to catch typos in the allowed list before a Bounty Boost gets spent.
+  def self.known_creatures
+    return @known_creatures if defined?(@known_creatures)
+
+    GameObj.load_data if GameObj.type_data.nil? || GameObj.type_data.empty?
+    names = []
+    GameObj.type_data.each_value { |fields| names.concat(creature_names_from_pattern(fields[:name])) }
+    @known_creatures = names.uniq
+  end
+
+  # partial, case-insensitive search against every known creature name
+  def self.find_creature_matches(query)
+    return [] if query.to_s.strip.empty?
+
+    q = query.strip.downcase
+    known_creatures.select { |name| name.downcase.include?(q) }
+  end
+
+  # The allowed list: a task's creature qualifies if its name contains any entry
+  # (case-insensitive), e.g. "skeletal ice troll" for a "skeletal ice troll" bounty.
+  def self.creature_allowed?(creature_name, creatures)
+    name = creature_name.to_s.downcase
+    return false if name.empty?
+
+    creatures.any? { |entry| !entry.empty? && name.include?(entry.downcase) }
+  end
+
+  # The area of a task ("Ice Plains", "Icemule Trail"), matched like creatures are.
+  def self.area_allowed?(area, areas)
+    name = area.to_s.downcase
+    return false if name.empty?
+
+    areas.any? { |entry| !entry.empty? && name.include?(entry.downcase) }
+  end
+
+  # Gem orders: any gem is fine (they drop while hunting anywhere); only the TOWN of the
+  # dealer matters, because that's where it has to be turned in. No gem_towns = any town.
+  def self.gem_town_allowed?(town, gem_towns)
+    return true if gem_towns.empty?
+
+    name = town.to_s.downcase
+    !name.empty? && gem_towns.any? { |entry| !entry.empty? && name.include?(entry.downcase) }
+  end
+
+  # Is this task one to keep?
+  #   kill / dangerous-creature tasks (:cull, :dangerous): the creature is on the list
+  #   heirloom / rescue-child tasks: the AREA is on the areas list (the creature can be
+  #     anything -- these are about being in the right place)
+  #   gem orders (:gem): any gem; the dealer's town must be allowed (if gem_towns is set)
+  def self.task_acceptable?(task, rules)
+    case task.type
+    when :cull, :dangerous
+      creature_allowed?(task.creature, rules.creatures)
+    when *AREA_TASK_TYPES
+      area_allowed?(task.location, rules.areas)
+    when :gem
+      gem_town_allowed?(task.town, rules.gem_towns)
+    else
+      false
+    end
+  end
+
+  def self.describe_task(task)
+    case task.type
+    when *AREA_TASK_TYPES
+      "#{task.type} task (attacker: #{task.creature || '?'}) in/near #{task.location}"
+    when :gem
+      "gem order: #{task_number(task) || '?'} x #{task.requirements[:gem] || 'gems'} for #{task.requirements[:npc_name] || 'the dealer'} in #{task.town || '?'}"
+    else
+      "#{task_number(task) || '?'} x #{task.creature} [#{task.type}] in/near #{task.location}"
+    end
+  end
+
+  # max rerolls before giving up - guards against an endless loop if the
+  # creature name has a typo, or it's a bounty that just can't be assigned
+  # (e.g. wrong level range)
+  MAX_ATTEMPTS = 25
+
+  def self.run(bounty_type, rules)
+    # module-level state survives across separate script runs in the same
+    # Lich session, so reset it at the start of each run
+    @bounty_history = []
+    @eligible_in_minutes = nil
+    start_room = Room.current.id
+
+    return if handle_existing_bounty(rules) == :already_matching
+
+    attempt = 0
+
+    loop do
+      attempt += 1
+      if attempt > MAX_ATTEMPTS
+        respond "BountyChooser: hit the #{MAX_ATTEMPTS}-attempt limit without landing on a match, stopping."
+        respond 'BountyChooser: double check the creature names/spelling, or these bounties may not be assignable at your level.'
+        return
+      end
+
+      assignment = ask_master_for_bounty(bounty_type)
+
+      # A gem order in a town you don't want is removed before walking there.
+      if assignment.type == :gem_assignment && !gem_town_allowed?(assignment.town, rules.gem_towns)
+        record_bounty(creature: nil, number: nil, type: assignment.type, location: assignment.town,
+                      verdict: 'gem order in an unwanted town - rerolled')
+        respond "BountyChooser: gem order in #{assignment.town}, not one of #{rules.gem_towns.join(', ')} - requesting removal and rerolling..."
+        ask_master_for_removal
+        next
+      end
+
+      task = assignment.type == :gem_assignment ? ask_dealer_for_bounty(assignment) : ask_guard_for_bounty(assignment)
+
+      unless task.creature || task.type == :gem
+        record_bounty(creature: nil, number: task_number(task), type: task.type, location: task.location,
+                       verdict: "couldn't parse creature from guard response")
+        respond "BountyChooser: could not determine the bounty creature from the guard's response, stopping."
+        return
+      end
+
+      creature = task.creature
+      respond "BountyChooser: assigned #{describe_task(task)}."
+
+      if task_acceptable?(task, rules)
+        record_bounty(creature: creature, number: task_number(task), type: task.type, location: task.location,
+                       verdict: 'ALLOWED - stopped here')
+        respond "BountyChooser: that one qualifies - stopping, take it from here."
+        return
+      end
+
+      record_bounty(creature: creature, number: task_number(task), type: task.type, location: task.location,
+                    verdict: 'not on the allowed list - rerolled')
+
+      respond "BountyChooser: that one doesn't qualify, requesting removal and rerolling..."
+      ask_master_for_removal
+    end
+  ensure
+    print_bounty_history
+    return_to_room(start_room)
+  end
+
+  def self.return_to_room(room_id)
+    return if room_id.nil? || Room.current.id == room_id
+
+    respond "BountyChooser: heading back to your starting room (#{room_id})..."
+    Script.run('go2', room_id.to_s)
+    waitrt?
+  end
+
+  def self.show_help
+    n = Script.current.name
+    respond 'usage:'
+    respond "    ;#{n} help"
+    respond "    ;#{n} kill skeletal ice troll, cold guardian, frost giant --areas=Ice Plains, Icemule Trail"
+    respond "    ;#{n} dangerous frost giant"
+    respond "    ;#{n} kill            - no list given: use data/GSIV/<char>/bounty_chooser.yaml"
+    respond ''
+    respond 'Kill ("suppress X activity") and dangerous-creature bounties are kept when the'
+    respond 'creature name CONTAINS any entry of the (comma-separated) creature list, case-'
+    respond 'insensitive. The creature does NOT have to be undead. Heirloom and rescue-child'
+    respond 'bounties are kept when their AREA contains any entry of --areas= (the attacker can'
+    respond 'be anything); with no areas listed they are removed. Gem orders are kept too (any'
+    respond 'gem; optionally only for certain towns -- see gem_towns below).'
+    respond ''
+    respond 'The yaml file looks like:'
+    respond '    creatures:'
+    respond '      - skeletal ice troll'
+    respond '      - cold guardian'
+    respond '      - frost giant'
+    respond '    areas:'
+    respond '      - Ice Plains'
+    respond '      - Icemule Trail'
+    respond '    gem_towns:            # optional; leave out for gem orders from any town'
+    respond '      - Icemule Trace'
+    respond ''
+    respond 'Creature names are checked against the known creatures before the script leaves'
+    respond 'the guild -- a list where nothing matches is rejected instead of burning a boost.'
+    respond ''
+    respond 'With a Bounty Boost it asks the taskmaster for the bounty type you name. WITHOUT one'
+    respond '(out of boosts) it asks generically and judges whatever it is offered on all of the'
+    respond 'rules above; if that is not acceptable it removes it, and the next ask normally hits'
+    respond "the taskmaster's cooldown, which ends the run cleanly (try again at the next rest)."
+    respond ''
+    respond 'Also: a completed bounty is turned in first (guard, taskmaster, bank); an acceptable'
+    respond 'in-progress bounty, or one that is partway done, is left alone; rerolls are capped at'
+    respond "#{BountyChooser::MAX_ATTEMPTS}; and it walks you back to the room you started in when it ends."
+  end
+end
+
+## script.vars[0] is the entire raw argument string; the individual
+## space-split tokens start at script.vars[1].
+if script.vars[1].to_s.strip =~ /^help$/i
+  BountyChooser.show_help
+  exit
+end
+
+bounty_type = (script.vars[1] || 'kill').downcase
+unless BountyChooser::BOUNTY_TYPES.include?(bounty_type)
+  respond "BountyChooser: unknown bounty type '#{bounty_type}', expected one of: #{BountyChooser::BOUNTY_TYPES.join(', ')}"
+  exit
+end
+
+# Allowed creatures and areas: from the command line, else the yaml file.
+#   ;bounty_chooser kill skeletal ice troll, cold guardian --areas=Ice Plains, Icemule Trail
+rest = script.vars[2..-1].to_a.join(' ')
+areas_arg = rest[/--areas=(.*)\z/i, 1]
+creature_arg = rest.sub(/--areas=.*\z/i, '')
+split_list = ->(text) { text.to_s.split(',').map { |c| c.strip.downcase }.reject(&:empty?) }
+creatures = split_list.call(creature_arg)
+areas = split_list.call(areas_arg)
+
+path = File.join(DATA_DIR, XMLData.game, Char.name, 'bounty_chooser.yaml')
+require 'yaml'
+saved = (YAML.load_file(path, permitted_classes: [Symbol]) rescue nil)
+saved = {} unless saved.is_a?(Hash)
+# Towns whose gem dealer you'll take an order from; empty = any town.
+gem_towns = Array(saved['gem_towns'] || saved[:gem_towns]).map { |c| c.to_s.strip.downcase }.reject(&:empty?)
+if creatures.empty? || areas.empty?
+  if creatures.empty?
+    creatures = Array(saved['creatures'] || saved[:creatures]).map { |c| c.to_s.strip.downcase }.reject(&:empty?)
+    respond "BountyChooser: using the creature list from #{File.basename(path)}." unless creatures.empty?
+  end
+  if areas.empty?
+    areas = Array(saved['areas'] || saved[:areas]).map { |c| c.to_s.strip.downcase }.reject(&:empty?)
+  end
+end
+
+if creatures.empty?
+  respond "BountyChooser: no creature list given and none in #{path} -- try ;#{Script.current.name} help"
+  exit
+end
+
+# Typo guard, before a Bounty Boost can be spent: every entry that matches no known
+# creature is called out, and a list where NOTHING matches is rejected outright.
+unknown = creatures.reject { |c| BountyChooser.find_creature_matches(c).any? }
+if unknown.length == creatures.length
+  respond "BountyChooser: none of #{creatures.map { |c| "'#{c}'" }.join(', ')} match a known creature name -- check the spelling, stopping."
+  exit
+end
+respond "BountyChooser: unrecognised name#{'s' if unknown.length > 1} #{unknown.map { |c| "'#{c}'" }.join(', ')} (will still match by name)." unless unknown.empty?
+respond "BountyChooser: accepting kill / dangerous-creature bounties for: #{creatures.join(', ')}"
+if areas.empty?
+  respond 'BountyChooser: no areas set, so heirloom and rescue-child tasks will be removed (add `areas:` to the yaml to allow them).'
+else
+  respond "BountyChooser: and heirloom / rescue-child tasks in: #{areas.join(', ')}"
+end
+
+respond "BountyChooser: and gem orders#{gem_towns.empty? ? ' in any town' : " from the gem dealers in: #{gem_towns.join(', ')}"}."
+
+BountyChooser.run(bounty_type, BountyChooser::Rules.new(creatures, areas, gem_towns))

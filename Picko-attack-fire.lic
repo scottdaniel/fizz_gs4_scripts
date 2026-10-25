@@ -95,6 +95,13 @@ SPELL_908_MANA = (Spell[908].mana_cost.to_i.positive? ? Spell[908].mana_cost.to_
 # a hair over what mana_cost reports, and casting short overextends you.
 MANA_FLOOR = SPELL_908_MANA + 1 unless defined?(MANA_FLOOR)
 
+# NOTE on the lists below (wand patterns/nouns, reserve scrolls, undead names): they are
+# METHODS, not constants. A script's constants live in Lich::Common and survive between
+# runs, and `CONST = ... unless defined?(CONST)` then keeps the OLD value until Lich is
+# restarted -- 10/25: the Fire Spirit scroll (111) was added to the list but never
+# invoked, because the running Lich still held the old two-entry constant. Methods are
+# redefined every time the script starts, so an edit takes effect on the next pass.
+
 # Wand types per https://gswiki.play.net/Wand -- deliberately NOT read from the
 # bigshot profile's "wand" field (unlike Picko-attack.lic): this script picks
 # its own, in two tiers (see the header). *_PATTERN confirms one is actually in
@@ -107,25 +114,33 @@ MANA_FLOOR = SPELL_908_MANA + 1 unless defined?(MANA_FLOOR)
 # The patterns are anchored on the article ("a"/"an") so a multi-adjective
 # wand that merely ENDS the same way ("a wavy grey crystal wand", a utility
 # wand) can't pass for the plain one ("a crystal wand", Major Acid).
-FIRE_WAND_PATTERN   = /\b(?:an?|the)\s+(?:golden|drake|electrum|grooved ebony)\s+wand\b/i unless defined?(FIRE_WAND_PATTERN)
-FIRE_WAND_GET_NOUNS = ["golden wand", "drake wand", "electrum wand", "ebony wand"].freeze unless defined?(FIRE_WAND_GET_NOUNS)
-
+def fire_wand_pattern
+  /\b(?:an?|the)\s+(?:golden|drake|electrum|grooved ebony)\s+wand\b/i
+end
+def fire_wand_get_nouns
+  ["golden wand", "drake wand", "electrum wand", "ebony wand"].freeze
+end
 # Fallback allow-list once there are no fire wands left: damage wands that are
 # neither water nor ice/cold (see the header). Strongest first; steam (green
 # coral) last because it's the borderline one. Add a type here only after
 # checking its spell on the wiki -- an unlisted wand is never waved.
-FALLBACK_WAND_PATTERN   = /\b(?:an?|the)\s+(?:crystal|(?:slender\s+)?mithril|bronze|faceted topaz|silver|iron|smooth crystalline|green coral|nacre-inlaid alabaster|whorled quartz|white starstone|black walnut|fluted black stone|copper|lapis lazuli)\s+wand\b/i unless defined?(FALLBACK_WAND_PATTERN)
+def fallback_wand_pattern
+  /\b(?:an?|the)\s+(?:crystal|(?:slender\s+)?mithril|bronze|faceted topaz|silver|iron|smooth crystalline|green coral|nacre-inlaid alabaster|whorled quartz|white starstone|black walnut|fluted black stone|copper|lapis lazuli)\s+wand\b/i
+end
 # GET nouns confirmed in game: "walnut wand" = black walnut wand, "black wand" = fluted
 # black stone wand (Scott, 10/25). "black wand" could also hand back a look-alike black
 # wand (e.g. the plain, necromantic black stone one); the vetting in draw_wand puts
-# anything that isn't on FALLBACK_WAND_PATTERN straight back.
-FALLBACK_WAND_GET_NOUNS = ["crystal wand", "mithril wand", "bronze wand", "topaz wand", "silver wand", "iron wand", "crystalline wand", "copper wand", "starstone wand", "alabaster wand", "quartz wand", "walnut wand", "black wand", "lazuli wand", "coral wand"].freeze unless defined?(FALLBACK_WAND_GET_NOUNS)
-
+# anything that isn't on fallback_wand_pattern straight back.
+def fallback_wand_get_nouns
+  ["crystal wand", "mithril wand", "bronze wand", "topaz wand", "silver wand", "iron wand", "crystalline wand", "copper wand", "starstone wand", "alabaster wand", "quartz wand", "walnut wand", "black wand", "lazuli wand", "coral wand"].freeze
+end
 # Tiers in the order they're tried: [label, pattern, GET nouns].
-WAND_TIERS = [
-  ["fire",     FIRE_WAND_PATTERN,     FIRE_WAND_GET_NOUNS].freeze,
-  ["fallback", FALLBACK_WAND_PATTERN, FALLBACK_WAND_GET_NOUNS].freeze,
-].freeze unless defined?(WAND_TIERS)
+def wand_tiers
+  [
+    ["fire",     fire_wand_pattern,     fire_wand_get_nouns].freeze,
+    ["fallback", fallback_wand_pattern, fallback_wand_get_nouns].freeze,
+  ].freeze
+end
 
 # Fresh/Dead wand containers still come from bigshot's own loaded settings
 # (UserVars.op) -- those are just storage locations, not wand types, so no
@@ -235,7 +250,7 @@ end
 # @return [Boolean] true if a wanted wand is now in hand.
 def draw_wand
   text = fresh_wand_text
-  WAND_TIERS.each do |label, pattern, nouns|
+  wand_tiers.each do |label, pattern, nouns|
     next unless text =~ pattern
     nouns.each do |noun|
       r = dothistimeout("get #{noun} from my #{FRESH_WAND_CONTAINER}", 3,
@@ -263,7 +278,7 @@ def wand_in_hand?
     # the short GET form ("coral wand") -- match either, or a held coral wand
     # looks empty-handed and the script tries to draw a second one (10.19: "You
     # need a free hand" -> bogus "no usable wands" with 2 coral wands in the sack).
-    WAND_TIERS.any? do |_, pattern, nouns|
+    wand_tiers.any? do |_, pattern, nouns|
       n =~ pattern || nouns.any? { |noun| o.name.to_s =~ /\b#{Regexp.escape(noun)}\b/i }
     end
   end
@@ -316,7 +331,7 @@ end
 
 # Combat-reserve scrolls (RESERVE LIST: "a sheaf of light paper" holds Major
 # Fire 908, "a pure white scroll" holds Holy Bolt 306, "a glittering scroll"
-# holds Fire Spirit 111 -- tried in the order of RESERVE_SCROLLS below). INVOKE <number> readies
+# holds Fire Spirit 111 -- tried in the order of reserve_scrolls below). INVOKE <number> readies
 # the spell from the reserved scroll, then it's cast at the target like any
 # prepared spell (confirmed by Scott: no mana cost, just `cast <target>` after
 # `invoke <number>`). Used after Symbol of Mana and BEFORE any wand -- they cost
@@ -324,12 +339,15 @@ end
 # undead. Each entry: [spell number, spell name, undead only?]. A scroll whose
 # INVOKE doesn't leave a prepared spell (used up, not reserved, ...) is skipped
 # for SCROLL_RETRY_SECS so the pass moves on to the next source.
-RESERVE_SCROLLS = [[908, "Major Fire", false], [111, "Fire Spirit", false], [306, "Holy Bolt", true]].freeze unless defined?(RESERVE_SCROLLS)
+def reserve_scrolls
+  [[908, "Major Fire", false], [111, "Fire Spirit", false], [306, "Holy Bolt", true]].freeze
+end
 SCROLL_RETRY_SECS = 600 unless defined?(SCROLL_RETRY_SECS)
-UNDEAD_NAME = /skelet|zombie|wraith|ghoul|ghost|spirit|lich\b|vampire|banshee|revenant|mummy|ghast|shade|phantom|wight|apparition|spectre|specter|lost soul/i unless defined?(UNDEAD_NAME)
-
+def undead_name_regex
+  /skelet|zombie|wraith|ghoul|ghost|spirit|lich\b|vampire|banshee|revenant|mummy|ghast|shade|phantom|wight|apparition|spectre|specter|lost soul/i
+end
 def undead_foe?(foe)
-  foe.type.to_s =~ /undead/i || foe.name.to_s =~ UNDEAD_NAME ? true : false
+  foe.type.to_s =~ /undead/i || foe.name.to_s =~ undead_name_regex ? true : false
 end
 
 # INVOKE one reserved scroll's spell and cast it at foe.
@@ -375,7 +393,7 @@ end
 # First reserve scroll that applies to foe and works. @return [Boolean]
 def cast_reserve_scroll(foe)
   $picko_scroll_retry_at ||= {}
-  RESERVE_SCROLLS.each do |number, name, undead_only|
+  reserve_scrolls.each do |number, name, undead_only|
     next if undead_only && !undead_foe?(foe)
     # $reserve_spells (reservecheck.lic, run at each rest) lists the spells still on the
     # reserved scrolls; nil = not checked yet, so try everything like before.

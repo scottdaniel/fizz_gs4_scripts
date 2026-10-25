@@ -46,7 +46,11 @@ end
 Script.run("stow_the_shiny")
 Script.run("unburden")  # a box eloot left in hand (10/24: crashed pool count) -> sell again
 Script.run("reservecheck")  # which reserve-scroll spells are still fresh ($reserve_spells)
-Script.run("undead_bounty", "kill Skeletal ice troll")
+# Picks a bounty for what he is hunting (skeletal ice troll / cold guardian / frost giant,
+# plus heirloom and rescue-child tasks in the Ice Plains / Icemule Trail areas); lists live in
+# data/GSIV/Picko/bounty_chooser.yaml. Works without Bounty Boosts. (Was: undead_bounty kill
+# Skeletal ice troll.)
+Script.run("bounty_chooser", "kill")
 Script.run("buyitems")
 
 # Sweep every wand out of the default stow container into the active bigshot
