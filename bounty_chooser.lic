@@ -156,11 +156,12 @@ module BountyChooser
   # matches both "...eligible for new task assignment in about 43 minutes"
   # (from `bounty` status) and "...come back in about 37 minutes if you
   # want another task" (from asking the taskmaster while on cooldown)
-  MINUTES_PATTERN = /in about (\d+) minutes?/i.freeze
+  # ("in about 10 minutes", but also "in about a minute" -- 10/25 14:47)
+  MINUTES_PATTERN = /in about (?:(\d+)|an?) minutes?/i.freeze
 
   def self.minutes_until_eligible(text)
     m = MINUTES_PATTERN.match(text.to_s)
-    m && m[1].to_i
+    m && (m[1] ? m[1].to_i : 1)
   end
 
   # sends a command once (no auto-resend) and watches incoming lines for up
