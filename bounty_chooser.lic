@@ -30,7 +30,7 @@
     ;bounty_chooser help
     ;bounty_chooser kill skeletal ice troll, cold guardian, frost giant --areas=Ice Plains, Icemule Trail
     ;bounty_chooser dangerous frost giant
-    ;bounty_chooser kill            (creatures and areas from data/GSIV/<char>/bounty_chooser.yaml)
+    ;bounty_chooser                 (no arguments: everything from data/GSIV/<char>/bounty_chooser.yaml)
 
   Everything else is inherited: turning in a completed bounty first, leaving an
   acceptable in-progress bounty alone (and any task that is already mid-way, like a
@@ -804,7 +804,7 @@ module BountyChooser
     respond "    ;#{n} help"
     respond "    ;#{n} kill skeletal ice troll, cold guardian, frost giant --areas=Ice Plains, Icemule Trail"
     respond "    ;#{n} dangerous frost giant"
-    respond "    ;#{n} kill            - no list given: use data/GSIV/<char>/bounty_chooser.yaml"
+    respond "    ;#{n}                 - no arguments: everything comes from data/GSIV/<char>/bounty_chooser.yaml"
     respond ''
     respond 'Kill ("suppress X activity") and dangerous-creature bounties are kept when the'
     respond 'creature name CONTAINS any entry of the (comma-separated) creature list, case-'
@@ -814,6 +814,7 @@ module BountyChooser
     respond 'gem; optionally only for certain towns -- see gem_towns below).'
     respond ''
     respond 'The yaml file looks like:'
+    respond '    bounty_type: kill      # optional: kill (default) or dangerous -- only used with a Bounty Boost'
     respond '    creatures:'
     respond '      - skeletal ice troll'
     respond '      - cold guardian'
@@ -845,15 +846,11 @@ if script.vars[1].to_s.strip =~ /^help$/i
   exit
 end
 
-bounty_type = (script.vars[1] || 'kill').downcase
-unless BountyChooser::BOUNTY_TYPES.include?(bounty_type)
-  respond "BountyChooser: unknown bounty type '#{bounty_type}', expected one of: #{BountyChooser::BOUNTY_TYPES.join(', ')}"
-  exit
-end
-
 # Allowed creatures and areas: from the command line, else the yaml file.
 #   ;bounty_chooser kill skeletal ice troll, cold guardian --areas=Ice Plains, Icemule Trail
-rest = script.vars[2..-1].to_a.join(' ')
+args = script.vars[1..-1].to_a
+args = args.drop(1) if BountyChooser::BOUNTY_TYPES.include?(args.first.to_s.strip.downcase)
+rest = args.join(' ')
 areas_arg = rest[/--areas=(.*)\z/i, 1]
 creature_arg = rest.sub(/--areas=.*\z/i, '')
 split_list = ->(text) { text.to_s.split(',').map { |c| c.strip.downcase }.reject(&:empty?) }
@@ -864,6 +861,16 @@ path = File.join(DATA_DIR, XMLData.game, Char.name, 'bounty_chooser.yaml')
 require 'yaml'
 saved = (YAML.load_file(path, permitted_classes: [Symbol]) rescue nil)
 saved = {} unless saved.is_a?(Hash)
+
+# The bounty type (the one a Bounty Boost asks the taskmaster for): the first word on the
+# command line if it is one, else `bounty_type:` in the yaml, else kill. Everything can
+# live in the yaml -- run it with no arguments.
+first = script.vars[1].to_s.strip.downcase
+bounty_type = BountyChooser::BOUNTY_TYPES.include?(first) ? first : (saved['bounty_type'] || saved[:bounty_type] || 'kill').to_s.downcase
+unless BountyChooser::BOUNTY_TYPES.include?(bounty_type)
+  respond "BountyChooser: unknown bounty type '#{bounty_type}', expected one of: #{BountyChooser::BOUNTY_TYPES.join(', ')}"
+  exit
+end
 # Towns whose gem dealer you'll take an order from; empty = any town.
 gem_towns = Array(saved['gem_towns'] || saved[:gem_towns]).map { |c| c.to_s.strip.downcase }.reject(&:empty?)
 if creatures.empty? || areas.empty?
