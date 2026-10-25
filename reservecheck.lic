@@ -1,0 +1,98 @@
+# quiet
+# reservecheck.lic  (first line `# quiet`: Lich skips its "active"/"has exited" lines)
+#
+# Reads the scrolls in your combat reserve slots and records which spells are still
+# on them in $reserve_spells (an Array of spell numbers, e.g. [111, 504, 306]).
+# Picko-attack-fire.lic reads that variable so it only INVOKEs spells that are still
+# there instead of sending an `invoke` that answers "That spell is not on the light
+# paper." Run it while resting (Picko-prerest.lic does):
+#
+#   ;reservecheck            update $reserve_spells and say what changed
+#
+# $reserve_spells is nil until the first check (= unknown, so callers try everything),
+# [] when nothing usable is reserved, and nil again if a reserved scroll couldn't be
+# read -- never a guess that wrongly rules a spell out. The scripts that use a scroll
+# also drop a number from it the moment the game says it's gone.
+#
+# How: `reserve list` for the slots, then `read #id` on each reserved scroll (the same
+# approach as scrollinv.lic, which prints this table for you). Each spell on a scroll is
+# one "(number) Name" line; a used-up spell disappears from the list (10/20: the light
+# paper showed "504 Slow, 908 Major Fire" at 09:15 and "504 Slow" after ~20 invokes).
+
+module ReserveCheck
+
+READ_TIMEOUT = 5 unless defined?(READ_TIMEOUT)
+RESERVE_START = /^You have (?:the following items reserved for combat|no items reserved for combat)/i unless defined?(RESERVE_START)
+READ_START = /^(?:It takes you a moment to focus on|You continue to read|On the .* you see|You (?:don't|do not) see|There isn't any|nothing (?:scrawled|written|inscribed))/i unless defined?(READ_START)
+
+def self.plain(line)
+  line.gsub(/<\/?[^>]*>/, '')
+end
+
+def self.normalize(name)
+  name.to_s.strip.sub(/\A(?:a|an|some)\s+/i, '').downcase
+end
+
+# [[slot, "a pure white scroll"], ...]
+def self.reserve_slots
+  lines = Lich::Util.issue_command(
+    "reserve list", RESERVE_START, /<prompt/,
+    include_end: false, timeout: 5, usexml: true, quiet: true
+  )
+  lines.filter_map do |line|
+    clean = plain(line)
+    next unless clean =~ /^\s*Slot\s+(\d+):\s*(.+?)\s*$/i
+    [Regexp.last_match(1).to_i, Regexp.last_match(2).strip]
+  end
+end
+
+# Spell numbers on one scroll, from its "read" response; [] if it shows none.
+def self.read_numbers(command)
+  waitrt?
+  lines = Lich::Util.issue_command(
+    command, READ_START, /<prompt/,
+    include_end: false, timeout: READ_TIMEOUT, silent: true, usexml: true, quiet: true
+  )
+  waitrt?
+  lines.filter_map { |line| plain(line) =~ /\((\d+)\)\s+(.*?)\s*$/ ? Regexp.last_match(1).to_i : nil }
+end
+
+def self.check
+  slots = reserve_slots
+  return [] if slots.empty?
+
+  # "reserve list" also refreshes GameObj.reserve; wait for it, then read each object.
+  30.times { break unless GameObj.reserve.nil?; sleep 0.1 }
+  objs = GameObj.reserve.to_a.dup
+  numbers = []
+  slots.each do |_slot, item_name|
+    key = normalize(item_name)
+    obj = objs.find { |o| normalize(o.name) == key }
+    objs.delete(obj) if obj
+    nums = []
+    nums = read_numbers("read ##{obj.id}") if obj
+    nums = read_numbers("read #{key.split.last}") if nums.empty? && !key.empty?
+    return nil if nums.empty? && obj.nil? # couldn't even find it: unknown, not "gone"
+    numbers.concat(nums)
+  end
+  numbers.uniq
+end
+
+before = $reserve_spells
+after = check
+$reserve_spells = after
+$reserve_checked_at = Time.now.to_f
+
+if after.nil?
+  echo "reservecheck: couldn't read every reserved scroll -- treating the reserve as unknown." unless before.nil?
+elsif before.is_a?(Array) && before == after
+  # nothing changed -- stay quiet
+elsif before.is_a?(Array)
+  gone = before - after
+  added = after - before
+  echo "reservecheck: reserve now has #{after.empty? ? 'no spells' : after.sort.join(', ')}#{gone.empty? ? '' : "; gone: #{gone.sort.join(', ')}"}#{added.empty? ? '' : "; new: #{added.sort.join(', ')}"}."
+else
+  echo "reservecheck: reserve has #{after.empty? ? 'no spells' : after.sort.join(', ')}."
+end
+
+end # module

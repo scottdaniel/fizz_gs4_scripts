@@ -339,7 +339,16 @@ def cast_scroll(number, name, foe)
   fput "release" if checkprep != "None"
   waitrt?
   waitcastrt?
-  put "invoke #{number}"
+  r = dothistimeout("invoke #{number}", 4, /That spell is not on|raise the .+? and gesture to invoke/i).to_s
+  if r =~ /That spell is not on/i
+    # Used up. Drop it from the list reservecheck.lic keeps ($reserve_spells), so the
+    # next pass doesn't even send the invoke; the timer is the fallback if that list
+    # is unknown (nil).
+    $reserve_spells.delete(number) if $reserve_spells.is_a?(Array)
+    $picko_scroll_retry_at[number] = Time.now.to_f + SCROLL_RETRY_SECS
+    echo "invoke #{number} (#{name}): #{r.strip} -- that spell is gone from the reserve."
+    return false
+  end
   deadline = Time.now.to_f + 3
   sleep 0.2 until checkprep != "None" || Time.now.to_f >= deadline
   if checkprep == "None"
@@ -368,6 +377,9 @@ def cast_reserve_scroll(foe)
   $picko_scroll_retry_at ||= {}
   RESERVE_SCROLLS.each do |number, name, undead_only|
     next if undead_only && !undead_foe?(foe)
+    # $reserve_spells (reservecheck.lic, run at each rest) lists the spells still on the
+    # reserved scrolls; nil = not checked yet, so try everything like before.
+    next if $reserve_spells.is_a?(Array) && !$reserve_spells.include?(number)
     next if Time.now.to_f < $picko_scroll_retry_at[number].to_f
     return true if cast_scroll(number, name, foe)
   end
