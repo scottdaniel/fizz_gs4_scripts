@@ -1,0 +1,78 @@
+=begin
+  dreavening_weapon.lic
+
+  During a Dreavening, keeps your weapon in your right (main) hand so it gets blessed.
+
+  Why: Dreaven's blessing goes to the weapon in your main hand ("Your weapon has been
+  blessed. If you have another weapon you want blessed be sure to move it to your main
+  hand now."). The ;dreavening script's eat_that_bread routine does `stow right` to free
+  the hand for the manna bread / tart, `get`s the food and `gob`s it -- and never puts the
+  weapon back (10/25: `[dreavening]>stow right` at 15:09:14 stowed the runestaff, then
+  `get tart` / `gob my tart`). So after eating, your hands are empty when the blessing
+  comes round.
+
+  What it does: only while a Dreavening is on (it saw Dreaven speak or post a [Dreavening]
+  thought in the last 10 minutes, and not after "THIS DREAVENING IS FINISHED"), if your
+  right hand has been empty for 3 seconds in a row -- long enough that ;dreavening has
+  finished eating, since it is holding food the whole time it's eating -- it does `ready
+  weapon`. If the weapon is in your LEFT hand and the right is empty, it does `swap`.
+  Outside a Dreavening it does nothing at all, so it won't interfere with scrolls, wands,
+  instruments or anything else that has your hands.
+
+  Usage:
+    ;dreavening_weapon            start it (stays running; ;kill dreavening_weapon stops it)
+    ;autostart add --global dreavening_weapon     to start it with every character, like
+                                                  ;dreavening itself
+
+  It never touches dreavening.lic. Tunables (below) are methods, so an edit applies the
+  next time the script starts.
+=end
+
+# seconds the right hand must stay empty before the weapon comes back out
+def hold_secs; 3; end
+# a Dreavening counts as "on" for this long after the last Dreaven line
+def active_window; 600; end
+
+$dreavening_weapon_active_until = 0
+
+DownstreamHook.add("dreavening_weapon", proc { |line|
+  text = line.to_s.gsub(/<[^>]+>/, '')
+  if text =~ /THIS DREAVENING IS FINISHED/i
+    $dreavening_weapon_active_until = 0
+  elsif text =~ /Dreaven (?:says|exclaims|yells)|\[Dreavening\]-GSIV:Dreaven/
+    $dreavening_weapon_active_until = Time.now.to_f + active_window
+  end
+  line
+})
+before_dying { DownstreamHook.remove("dreavening_weapon") }
+
+echo "dreavening_weapon: watching for a Dreavening; will keep your weapon in your main hand during one."
+
+empty_since = nil
+loop do
+  sleep 1
+
+  if Time.now.to_f >= $dreavening_weapon_active_until || dead?
+    empty_since = nil
+    next
+  end
+
+  if checkright
+    empty_since = nil
+    next
+  end
+
+  empty_since ||= Time.now.to_f
+  next if Time.now.to_f - empty_since < hold_secs
+
+  waitrt?
+  if checkleft && GameObj.left_hand.type.to_s =~ /weapon/
+    echo "dreavening_weapon: weapon is in your left hand -- swapping it to the main hand."
+    fput "swap"
+  else
+    echo "dreavening_weapon: right hand is empty during the Dreavening -- readying your weapon."
+    fput "ready weapon"
+  end
+  empty_since = nil
+  sleep 5 # give it time to land before looking again
+end
