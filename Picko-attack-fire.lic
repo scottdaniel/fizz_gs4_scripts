@@ -27,7 +27,8 @@
 #   otherwise:           cast Symbol of Mana if it's known and off cooldown
 #                        (cooldown-only check -- never spends deeds); THEN the
 #                        combat-reserve scrolls (INVOKE 908 Major Fire, and
-#                        INVOKE 306 Holy Bolt at undead only); THEN, if
+#                        INVOKE 111 Fire Spirit, and INVOKE 306 Holy Bolt at
+#                        undead only); THEN, if
 #                        none of that is available either, wave a wand at the
 #                        target, in two tiers -- never a random one:
 #                          1. FIRE wands first, since this script is fire-
@@ -114,7 +115,11 @@ FIRE_WAND_GET_NOUNS = ["golden wand", "drake wand", "electrum wand", "ebony wand
 # coral) last because it's the borderline one. Add a type here only after
 # checking its spell on the wiki -- an unlisted wand is never waved.
 FALLBACK_WAND_PATTERN   = /\b(?:an?|the)\s+(?:crystal|(?:slender\s+)?mithril|bronze|faceted topaz|silver|iron|smooth crystalline|green coral|nacre-inlaid alabaster|whorled quartz|white starstone|black walnut|fluted black stone|copper|lapis lazuli)\s+wand\b/i unless defined?(FALLBACK_WAND_PATTERN)
-FALLBACK_WAND_GET_NOUNS = ["crystal wand", "mithril wand", "bronze wand", "topaz wand", "silver wand", "iron wand", "crystalline wand", "copper wand", "starstone wand", "alabaster wand", "quartz wand", "walnut wand", "stone wand", "lazuli wand", "coral wand"].freeze unless defined?(FALLBACK_WAND_GET_NOUNS)
+# GET nouns confirmed in game: "walnut wand" = black walnut wand, "black wand" = fluted
+# black stone wand (Scott, 10/25). "black wand" could also hand back a look-alike black
+# wand (e.g. the plain, necromantic black stone one); the vetting in draw_wand puts
+# anything that isn't on FALLBACK_WAND_PATTERN straight back.
+FALLBACK_WAND_GET_NOUNS = ["crystal wand", "mithril wand", "bronze wand", "topaz wand", "silver wand", "iron wand", "crystalline wand", "copper wand", "starstone wand", "alabaster wand", "quartz wand", "walnut wand", "black wand", "lazuli wand", "coral wand"].freeze unless defined?(FALLBACK_WAND_GET_NOUNS)
 
 # Tiers in the order they're tried: [label, pattern, GET nouns].
 WAND_TIERS = [
@@ -310,7 +315,8 @@ def try_symbol_of_mana
 end
 
 # Combat-reserve scrolls (RESERVE LIST: "a sheaf of light paper" holds Major
-# Fire 908, "a pure white scroll" holds Holy Bolt 306). INVOKE <number> readies
+# Fire 908, "a pure white scroll" holds Holy Bolt 306, "a glittering scroll"
+# holds Fire Spirit 111 -- tried in the order of RESERVE_SCROLLS below). INVOKE <number> readies
 # the spell from the reserved scroll, then it's cast at the target like any
 # prepared spell (confirmed by Scott: no mana cost, just `cast <target>` after
 # `invoke <number>`). Used after Symbol of Mana and BEFORE any wand -- they cost
@@ -318,7 +324,7 @@ end
 # undead. Each entry: [spell number, spell name, undead only?]. A scroll whose
 # INVOKE doesn't leave a prepared spell (used up, not reserved, ...) is skipped
 # for SCROLL_RETRY_SECS so the pass moves on to the next source.
-RESERVE_SCROLLS = [[908, "Major Fire", false], [306, "Holy Bolt", true]].freeze unless defined?(RESERVE_SCROLLS)
+RESERVE_SCROLLS = [[908, "Major Fire", false], [111, "Fire Spirit", false], [306, "Holy Bolt", true]].freeze unless defined?(RESERVE_SCROLLS)
 SCROLL_RETRY_SECS = 600 unless defined?(SCROLL_RETRY_SECS)
 UNDEAD_NAME = /skelet|zombie|wraith|ghoul|ghost|spirit|lich\b|vampire|banshee|revenant|mummy|ghast|shade|phantom|wight|apparition|spectre|specter|lost soul/i unless defined?(UNDEAD_NAME)
 
