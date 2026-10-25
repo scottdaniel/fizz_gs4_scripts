@@ -12,6 +12,7 @@ Script.run("eherbs")
 # sell (appraised above your eloot limits) in the locker -- only when encumbered
 # past bigshot's limit. See stow_the_shiny.lic.
 Script.run("stow_the_shiny", "sell")
+Script.run("unburden")  # a box eloot left in hand (10/24: crashed pool count) -> sell again
 Script.run("undead_bounty", "kill ghostly pooka")
 Script.run("buyitems")
 

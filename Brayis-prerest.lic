@@ -12,6 +12,7 @@ exit if $unlost_failed
 
 Script.run("eherbs")
 Script.run("eloot", "sell")
+Script.run("unburden")  # a box eloot left in hand -> sell again
 #Script.run("undead_bounty", "kill greater ghoul")
 Script.run("buyitems")
 #Script.run("timequit")

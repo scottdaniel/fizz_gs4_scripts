@@ -44,6 +44,7 @@ end
 # No-op, with no walking, unless Picko is over bigshot's encumbrance limit AND
 # eloot left a too-valuable item in the cloak.
 Script.run("stow_the_shiny")
+Script.run("unburden")  # a box eloot left in hand (10/24: crashed pool count) -> sell again
 Script.run("undead_bounty", "kill Skeletal ice troll")
 Script.run("buyitems")
 

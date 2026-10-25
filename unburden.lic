@@ -1,0 +1,72 @@
+# quiet
+# unburden.lic  (first line `# quiet`: Lich skips its "active"/"has exited" lines, so a
+# run with nothing to do prints nothing in the game window)
+#
+# Run in a prerest right after ;eloot sell. If a locksmith-pool box is still in your
+# hand, eloot didn't finish with it -- sell again so its own "box in hand" step deals
+# with it, up to ATTEMPTS times. If you're still holding it afterwards, say so on the
+# Discord webhook, because bigshot will sit in the inn all night otherwise.
+#
+# Why: 10/24, 21:52. eloot crashed in Sell.locksmith_pool_count ("coerce must return
+# [x, y]", eloot 2.14.1: start_index was nil because the "here's the list of boxes"
+# line had already left the buffer) just after `ask #28305 for return`. The pool
+# handed back a maple chest a few seconds later and nothing opened it. Picko-prerest
+# then ran `store right` ("Could not figure out how to store your maple chest" --
+# STORE is for weapons), so he went to the inn holding a chest, 40% encumbered, and
+# bigshot's "isn't hunting because: encumbered" lasted 11 hours. stow_the_shiny
+# couldn't help: the chest is not a too-valuable item eloot appraised, and the 10%
+# it read at 21:52:57 was from before the chest arrived.
+#
+#   ;unburden        sell again while a box is in hand, then alert if one still is
+
+require 'json'
+require 'net/http'
+require 'uri'
+require 'yaml'
+
+module Unburden
+
+ATTEMPTS = 2 unless defined?(ATTEMPTS)
+
+# A box in either hand, judged the same way eloot's Sell.box_in_hand does.
+def self.boxes_in_hand
+  [GameObj.right_hand, GameObj.left_hand].compact.select { |o| o.type.to_s =~ /\bbox\b/ }
+end
+
+# Webhook line, same webhook exp_check uses (`stuck: false` in exp_check.yaml mutes it).
+def self.alert(text)
+  cfg = (YAML.safe_load(File.read(File.join(DATA_DIR, "exp_check.yaml"))) rescue nil)
+  cfg = {} unless cfg.is_a?(Hash)
+  url = cfg["webhook_url"].to_s.strip
+  return false if url.empty? || cfg["stuck"] == false
+  uri = URI(url)
+  return false unless uri.is_a?(URI::HTTPS)
+  res = Net::HTTP.start(uri.host, uri.port, use_ssl: true, open_timeout: 5, read_timeout: 5) do |http|
+    http.post(uri.request_uri, { content: "[#{Char.name}] #{text}" }.to_json, "Content-Type" => "application/json")
+  end
+  res.is_a?(Net::HTTPSuccess)
+rescue StandardError => e
+  echo "unburden: webhook failed (#{e.class}: #{e.message})"
+  false
+end
+
+$unburden_failed = false
+
+tries = 0
+while !boxes_in_hand.empty? && tries < ATTEMPTS
+  tries += 1
+  echo "unburden: still holding #{boxes_in_hand.map(&:name).join(', ')} after the sell -- selling again (#{tries}/#{ATTEMPTS})."
+  # The sell goes through stow_the_shiny so the appraisal recorder is installed for
+  # whatever comes out of the box (it runs ;eloot sell itself, then its own check).
+  Script.run("stow_the_shiny", "sell")
+  sleep 1
+end
+
+unless boxes_in_hand.empty?
+  $unburden_failed = true
+  held = boxes_in_hand.map(&:name).join(', ')
+  sent = alert("Stuck holding #{held} after #{tries} extra sells -- bigshot will rest (encumbered / box in hand) until you step in.")
+  echo "unburden: still holding #{held}.#{sent ? ' Webhook sent.' : ''}"
+end
+
+end # module

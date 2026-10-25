@@ -24,6 +24,7 @@ Script.run("reanim", "die")
 
 Script.run("eherbs")
 Script.run("eloot", "sell")
+Script.run("unburden")  # a box eloot left in hand -> sell again
 Script.run("Fizzleworth-rest")
 Script.run("undead_bounty", "kill magna vereri")
 Script.run("buyitems")
