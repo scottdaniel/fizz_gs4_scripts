@@ -1,0 +1,228 @@
+# son-puz.lic -- Sonreeva puzzles, one at a time
+# Works out which Sonreeva room you're in (from its title and description), does the puzzle
+# there that your 10/25-10/26 runs solved, walks you to the next spot, and exits. Run it
+# again at the next puzzle. It never fights and never pays unless you say so.
+#
+#   ;son-puz         do the next puzzle from where you stand
+#   ;son-puz pay     same, and at the Mausoleum it also pays the justicar (OFFER 15000 soul
+#                    shards, twice) and rides the chute down; without `pay` it only says so
+#
+# Where it works (everything below was read out of your logs):
+#   Graveyard Temporalis, at the mausoleum   go black mausoleum
+#   Mausoleum                                ask justicar about entry, OFFER 15000 twice (pay),
+#                                            then the chute: "faint light coming from the
+#                                            right/left" -> LEAN RIGHT/LEFT, "straight ahead"
+#                                            -> nothing, until you "spit out onto the ground"
+#   the loop of colored rooms (arrival crypt, blue/yellow/red/green rooms): walks to the Dead
+#                                            End, touches blue, yellow, violet, orange, red,
+#                                            green runes 3 s apart, and goes through the
+#                                            narrow opening (it stays open only ~60 s) to the
+#                                            Hall of the Dead
+#   Hall of the Dead x2                      north, north, to the Dais
+#   Dais / Grand Hall (north room)           LOOK DOOR names the item shape ("an empty
+#                                            depression in the shape of a fang"); it gets that
+#                                            item from your containers, PUTs it in the door and
+#                                            goes through. The item is used up, and the drops
+#                                            (fang, caduceus ...) come from the creatures
+#   Grand Hall (first room)                  north, to the room with the stone door
+#   Courtyard                                the end of what the logs know
+#
+# Everything lives in the module: top-level defs/constants are shared by every Lich script.
+
+module SonPuz
+  RUNES     = %w[blue yellow violet orange red green].freeze
+  RUNE_GAP  = 3       # seconds between touches (Tarakan's group and yours used 3-6)
+  OPENING   = /northern wall begins to rumble/i
+  # loop room (by what its description says) => the step toward the Dead End
+  LOOP_STEP = [
+    [/Several torches are affixed upon the granite walls/i, 'northeast'],   # arrival crypt
+    [/glowing blue mark/i,                                  'north'],
+    [/faint yellow sigil/i,                                 'northwest'],
+    [/red symbol painted onto the center altar/i,           'northeast'],
+    [/barely covering a green marking/i,                    'north']
+  ].freeze
+
+  def self.say(msg)
+    echo "[son-puz] #{msg}"
+  end
+
+  def self.title;  XMLData.room_title.to_s;       end
+  def self.descr;  XMLData.room_description.to_s; end
+
+  # => a symbol naming the spot, or nil
+  def self.where
+    t, d = title, descr
+    if    t =~ /Graveyard Temporalis/i && d =~ /black marble mausoleum/i then :mausoleum_door
+    elsif t =~ /Sonreeva, Mausoleum/i             then :mausoleum
+    elsif t =~ /Sonreeva, Dead End/i              then :dead_end
+    elsif t =~ /Sonreeva, Hall of the Dead/i      then :hall
+    elsif t =~ /Sonreeva, Dais/i                  then :dais
+    elsif t =~ /Sonreeva, Grand Hall/i            then(d =~ /trapdoor/i ? :grand_first : :grand_door)
+    elsif t =~ /Sonreeva, Courtyard/i             then :courtyard
+    elsif t =~ /Sonreeva, (?:Crypt|Voln Encampment)/i then :loop
+    end
+  end
+
+  # Send a command and wait for the room to change (title or description), up to secs.
+  # @return true if it did
+  def self.step(cmd, secs = 6)
+    before = [title, descr]
+    waitrt?
+    fput cmd
+    deadline = Time.now + secs
+    sleep 0.2 until [title, descr] != before || Time.now > deadline
+    [title, descr] != before
+  end
+
+  # ---- stages ------------------------------------------------------------
+
+  def self.at_mausoleum_door
+    say "going into the mausoleum."
+    say "didn't get in." unless step("go black mausoleum")
+  end
+
+  def self.at_mausoleum(pay)
+    unless pay
+      say "this is the Mausoleum. `;son-puz pay` asks the justicar for entry and OFFERs 15,000 soul shards (twice), then rides the chute."
+      return
+    end
+    waitrt?
+    fput "ask justicar about entry"
+    sleep 1
+    r = dothistimeout("offer 15000", 5, /OFFER again within 30 seconds|ushers you into a chute|not enough|don't have|cannot afford/i).to_s
+    unless r =~ /OFFER again within 30 seconds/i
+      say "the justicar said: #{r.strip[0, 160]} -- stopping."
+      return
+    end
+    r = dothistimeout("offer 15000", 5, /ushers you into a chute|sliding downward|not enough|don't have|cannot afford/i).to_s
+    unless r =~ /chute|sliding/i
+      say "the second offer got: #{r.strip[0, 160]} -- stopping."
+      return
+    end
+    chute
+  end
+
+  # light from the right/left -> lean that way; straight ahead -> do nothing
+  def self.chute
+    say "in the chute."
+    deadline = Time.now + 180
+    while Time.now < deadline
+      line = get?
+      unless line
+        sleep 0.05
+        next
+      end
+      case line
+      when /faint light coming from the (right|left)/i
+        fput "lean #{$1.downcase}"
+      when /spit out onto the ground/i
+        say "out of the chute."
+        sleep 1
+        return
+      end
+    end
+    say "still in the chute after 3 minutes -- giving up."
+  end
+
+  def self.at_loop
+    steps = 0
+    while where == :loop && steps < 6
+      cmd = LOOP_STEP.find { |re, _| descr =~ re }&.last
+      unless cmd
+        say "can't tell which colored room this is -- walk to the Dead End (orange eye) and run me there."
+        return
+      end
+      say "-> #{cmd} (toward the Dead End)."
+      return say("couldn't move #{cmd}.") unless step(cmd)
+      steps += 1
+    end
+    at_dead_end if where == :dead_end
+  end
+
+  def self.at_dead_end
+    say "Dead End: touching #{RUNES.join(', ')}."
+    RUNES.each_with_index do |c, i|
+      waitrt?
+      fput "touch #{c} rune"
+      sleep RUNE_GAP unless i == RUNES.size - 1
+    end
+    opened = false
+    deadline = Time.now + 6
+    while Time.now < deadline
+      line = get?
+      if line.nil?
+        sleep 0.1
+      elsif line =~ OPENING
+        opened = true
+        break
+      end
+    end
+    return say("the wall didn't react -- check the runes and run me again.") unless opened
+    say "the wall opened -- going through."
+    say "couldn't get through the opening." unless step("go opening")
+  end
+
+  def self.at_hall
+    2.times do
+      break unless where == :hall
+      say "-> north."
+      return say("couldn't go north.") unless step("north")
+    end
+  end
+
+  def self.at_grand_first
+    say "-> north, to the stone door."
+    say "couldn't go north." unless step("north")
+  end
+
+  # the door names the shape it wants; get that item, put it in, go through
+  def self.door
+    r = dothistimeout("look door", 4, /\bdoor\b.*(?:depression|open|closed)/i).to_s
+    shape = r[/in the shape of an? (\w+)/i, 1]
+    if shape.nil?
+      say "no empty depression in the door text (#{r.strip[0, 120]}) -- trying to go through."
+      return say("the door didn't take me through.") unless step("go door")
+      return
+    end
+    say "the door wants a #{shape}."
+    g = dothistimeout("get #{shape}", 4, /You retrieve|You pick up|You remove|You already have|What were you referring to|could not find|Get what/i).to_s
+    if g =~ /What were you referring to|could not find|Get what/i
+      say "no #{shape} on you or in the room. Kill things (the drops are your puzzle items), `look` on the floor for it, then run me again."
+      return
+    end
+    p = dothistimeout("put #{shape} in door", 5, /causing the (?:door|stone door) to open|accomplish nothing|What were you referring to|doesn't fit|nothing happens/i).to_s
+    unless p =~ /causing the .*door to open/i
+      say "the door said: #{p.strip[0, 160]} -- stopping (the #{shape} is in your hand)."
+      return
+    end
+    say "door open."
+    say "the door didn't take me through." unless step("go door")
+  end
+
+  def self.at_courtyard
+    say "Courtyard: the logs end here (a fountain, gravestones, a mural of Old One Eye, the only exit is the door you came in by). Nothing recorded to do."
+  end
+
+  def self.run(pay)
+    spot = where
+    return say("don't recognize this room (#{title.strip}) -- stand in a Sonreeva room, the mausoleum door, or the Mausoleum.") unless spot
+    # the chute has no room of its own: the title stays the Mausoleum's while you slide
+    if spot == :mausoleum && !reget(20, /slide downward|sliding downward|faint light coming/i).to_a.empty?
+      return chute
+    end
+    say "at #{spot}."
+    case spot
+    when :mausoleum_door then at_mausoleum_door
+    when :mausoleum      then at_mausoleum(pay)
+    when :loop           then at_loop
+    when :dead_end       then at_dead_end
+    when :hall           then at_hall
+    when :grand_first    then at_grand_first
+    when :dais, :grand_door then door
+    when :courtyard      then at_courtyard
+    end
+    say "done at #{where || 'somewhere new'}."
+  end
+end
+
+SonPuz.run(script.vars[1].to_s.downcase == 'pay')
