@@ -19,10 +19,10 @@
 #   spell    -- spams a single incant <number> until all targets are dead;
 #               waits if mana drops below the configured minimum
 #
-# Prep (setup: "Prep script", default `Fizzleworth-prep arena`):
+# Prep (setup: "Prep script", default `Fizzleworth-prep here`):
 #   Run before every entry fee is paid, so it costs no arena time. Fizzleworth-prep does the
 #   rubs (small statue, white crystal...) and the scroll spell-up (scrollbuff3), readies the
-#   weapon and starts lifeguard / manalog; the "arena" argument skips its Icemule weapon-shop
+#   weapon and starts lifeguard / manalog; the "here" argument skips its Icemule weapon-shop
 #   trip. Spells that are still up are skipped, so it's quick when nothing has run out.
 #   Blank = no prep.
 #
@@ -78,7 +78,7 @@ module FizzAbyss
   REST_LOC_DEFAULT    = 'node'
   QUIT_DEFAULT        = true
   SCRIPT_DEFAULT      = 'Fizzleworth-attack-arena'
-  PREP_DEFAULT        = 'Fizzleworth-prep arena'
+  PREP_DEFAULT        = 'Fizzleworth-prep here'
   WAGGLE_DEFAULT      = 'ewaggle'
   DEMON_SEND_AT       = 40     # mana at which the rest fills the minor demon (;demonmana send)
   MANA_READY          = 0.9    # fraction of max mana wanted before paying the entry fee

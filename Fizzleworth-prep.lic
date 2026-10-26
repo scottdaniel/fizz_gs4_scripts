@@ -2,9 +2,11 @@
 
 module FizzleworthPrep
 
-# `;Fizzleworth-prep arena` (run by ;fizzabyss before each arena entry): everything below
-# except the buyweapon trip to Icemule -- the rubs, the scroll spell-up, weapon, lifeguard.
-arena = Script.current.vars[1].to_s.downcase == 'arena'
+# `;Fizzleworth-prep here` (`arena` is the same thing; ;fizzabyss runs it before each arena
+# entry): everything below except what walks to another room -- the rubs, the scroll
+# spell-up, weapon, lifeguard, but not the buyweapon trip to Icemule. Anything added to this
+# script that moves you must be skipped when `here` is set.
+here = %w[here arena].include?(Script.current.vars[1].to_s.downcase)
 
 # Arrangement: scepter (weapon) lives in the sling, runestaff (secondary
 # weapon) is stowed in the cloak. IMPORTANT (10.12): `store weapon` and
@@ -115,6 +117,7 @@ Script.start("Fizzleworth-manalog") unless Script.running?("Fizzleworth-manalog"
 
 # Safety net: Symbol of Restoration at low health, Symbol of Return when it's
 # critical (see Fizzleworth-lifeguard.lic; ;vars set lifeguard=off to disable).
+# It's autostarted too; this only brings it back if it was killed after login.
 Script.start("Fizzleworth-lifeguard") unless Script.running?("Fizzleworth-lifeguard")
 
 # Fizzleworth-attack-ultima reanims / grinds once per hunt -- re-arm both.
@@ -132,7 +135,7 @@ sleep 0.3
 
 # If verlok lost the spare weapon (a botched teardown last hunt), buy a new
 # one now so ;reanim has something to arm the animate with. No-op otherwise.
-Script.run("Fizzleworth-buyweapon") unless arena   # it walks to Icemule's weapon shop
+Script.run("Fizzleworth-buyweapon") unless here   # it walks to Icemule's weapon shop
 
 # Log mind saturation ("Field Exp: N/1220") right before the hunt starts, so
 # every hunt has a recorded starting mind for the wings-compare analysis
