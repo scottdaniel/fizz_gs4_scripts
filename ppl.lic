@@ -1,0 +1,186 @@
+# ppl.lic -- Pain, Phase, Limb disruption (then finish it)
+# Sonreeva's last mob, from Rolfard in the Ebon Gate Discord: "Lead with Pain 3+ times to
+# build up RT. Hit Phase 704 to make it corporal and then limb disrupt." The mob swings
+# kroderine tendrils; Limb Disruption (708) won't kill it, the point is to blow off an arm
+# or two so it drops the weapon, then something else kills it.
+#
+#   ;ppl          Pain x3, Phase until it takes, Limb Disruption (4 casts at most, fewer once
+#                 both arms/hands are gone), then Mana Disruption until it's dead
+#   ;ppl phase    skip the Pains
+#   ;ppl limb     skip the Pains and the first Phase
+#   ;ppl kill     just the finishing part
+#
+# Phase (704) at a noncorporeal creature solidifies it for 20 seconds (+3 per warding failure,
+# gswiki Phase_(704)) so it's recast after 16 seconds. Success = the "dusky aura flashes"
+# line or an end roll of 101 or more; it keeps casting until one of those shows (6 tries).
+# Limb Disruption's text, from the wiki: "The <creature>'s right arm explodes!" (arm/hand
+# sides are counted; legs and eyes aren't what drops a weapon). Every cast is gated on live
+# mana (Pain 11, Phase 4, Limb Disruption 8, Mana Disruption 2); short of it, the demon's stored mana
+# (;demonmana get, once) and Symbol of Mana are tried and then it stops with a message.
+# Works on your current target, else the first living creature that isn't your demon/animate.
+#
+# Everything lives in the module: top-level defs/constants are shared by every Lich script.
+
+module PPL
+  PAINS       = 3
+  PHASE_TRIES = 6
+  PHASE_LASTS = 16     # secs before the solid state is renewed (it lasts 20)
+  LIMB_TRIES  = 4      # 8 mana apiece -- the mana is saved for the kill
+  IGNORE_NPC  = /verlok|animated|minor demon/i
+  COST        = { 711 => 11, 704 => 4, 702 => 2, 708 => 8 }.freeze
+  PHASE_OK    = /dusky aura flashes/i
+  ARM_GONE    = /(right|left) (?:arm|hand) explodes!/i
+  NO_LIMBS    = /no (?:more )?limbs left/i
+  DROPPED     = /\bdrops? (?:its|his|her|a|an|the)\b|(?:falls?|slips?) from (?:its|his|her) grasp|clatters? to the ground/i
+
+  @lines = []
+
+  def self.start_capture
+    DownstreamHook.add("ppl", proc { |line|
+      @lines << line.to_s.gsub(/<[^>]*>/, "")
+      line
+    }, persist: false)
+  end
+
+  def self.alive?(t)
+    !!(t && t.status.to_s !~ /dead|gone/ && t.name.to_s !~ IGNORE_NPC)
+  end
+
+  def self.living(id)
+    t = GameObj.targets.to_a.find { |x| x.id == id }
+    alive?(t) ? t : nil
+  end
+
+  def self.foe
+    cur = GameObj.target
+    return cur if alive?(cur)
+    GameObj.targets.to_a.find { |t| alive?(t) }
+  end
+
+  def self.cost(n)
+    c = (Spell[n].mana_cost.to_i rescue 0)
+    c.positive? ? c : COST[n]
+  end
+
+  def self.symbol_of_mana
+    return false if Effects::Cooldowns.active?("Symbol of Mana") || Experience.deeds.to_i <= 3
+    waitrt?
+    fput "symbol of mana"
+    waitrt?
+    true
+  rescue StandardError
+    false
+  end
+
+  def self.top_up(need)
+    unless @asked_demon
+      @asked_demon = true
+      Script.run("demonmana", "get") if Script.exists?("demonmana")
+    end
+    return if checkmana >= need
+    symbol_of_mana
+  end
+
+  # One cast of spell n at the creature. @return the text it printed (an Array of lines),
+  # or nil when we're out of mana (said so).
+  def self.cast(n, target)
+    if checkmana < cost(n)
+      top_up(cost(n))
+      if checkmana < cost(n)
+        echo "[ppl] out of mana for #{Spell[n].name} (#{checkmana}/#{cost(n)}) -- stopping."
+        return nil
+      end
+    end
+    waitrt?
+    waitcastrt?
+    @lines.clear
+    Spell[n].cast(target)
+    waitcastrt?
+    waitrt?
+    @lines.dup
+  end
+
+  def self.end_roll(lines)
+    lines.map { |l| l[/==\s*([+-]?\d+)/, 1] }.compact.map(&:to_i).first
+  end
+
+  # Phase until it takes (the dusky aura line, or an end roll of 101+).
+  # @return :ok / :oom / :tried
+  def self.phase(target)
+    PHASE_TRIES.times do |i|
+      return :gone unless living(target.id)
+      out = cast(704, target) or return :oom
+      roll = end_roll(out)
+      if out.any? { |l| l =~ PHASE_OK } || (roll && roll >= 101)
+        @phased_at = Time.now.to_f
+        echo "[ppl] Phase took (end roll #{roll || '?'}, try #{i + 1})."
+        return :ok
+      end
+      echo "[ppl] Phase didn't take (end roll #{roll || '?'}) -- again."
+    end
+    :tried
+  end
+
+  def self.phase_stale?
+    @phased_at.nil? || Time.now.to_f - @phased_at >= PHASE_LASTS
+  end
+
+  # Limb Disruption until both arms/hands are gone (or it has no limbs / dropped something).
+  def self.limbs(target)
+    sides = []
+    LIMB_TRIES.times do
+      return unless living(target.id)
+      if phase_stale?
+        r = phase(target)
+        return if r == :oom || r == :gone
+      end
+      out = cast(708, target) or return
+      out.each { |l| sides << $1.downcase if l =~ ARM_GONE }
+      sides.uniq!
+      if out.any? { |l| l =~ DROPPED }
+        echo "[ppl] it dropped something -- on to the kill."
+        return
+      end
+      if out.any? { |l| l =~ NO_LIMBS } || sides.size >= 2
+        echo "[ppl] arms gone (#{sides.join(' + ')})."
+        return
+      end
+    end
+    echo "[ppl] #{LIMB_TRIES} Limb Disruptions, arms gone: #{sides.empty? ? 'none' : sides.join(' + ')} -- on to the kill."
+  end
+
+  # Plain Mana Disruption (2 mana) until it's dead, so the mana from the setup lasts.
+  def self.finish(target)
+    while living(target.id)
+      return unless cast(702, target)
+    end
+  end
+
+  def self.run(mode)
+    target = foe
+    return echo("[ppl] no creature to fight -- target it first.") unless target
+    id = target.id
+    echo "[ppl] #{mode}: #{target.name} (##{id})."
+    start_capture
+
+    if mode == 'full'
+      PAINS.times do |i|
+        break unless living(id)
+        echo "[ppl] Pain #{i + 1} of #{PAINS}."
+        cast(711, target) or return
+      end
+    end
+    if %w[full phase].include?(mode) && living(id)
+      r = phase(target)
+      return if r == :oom
+    end
+    limbs(target) if %w[full phase limb].include?(mode) && living(id)
+    finish(target)
+    echo "[ppl] it's down." unless living(id)
+  end
+end
+
+mode = script.vars[1].to_s.downcase
+mode = 'full' unless %w[phase limb kill].include?(mode)
+before_dying { DownstreamHook.remove("ppl") }
+PPL.run(mode)
