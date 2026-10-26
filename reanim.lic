@@ -15,8 +15,9 @@
     - Manually during a hunt: ;reanim
       Target resolution order: an explicit #id you passed, then your formal
       /target lock (GameObj.target) if you have one, then the first living
-      NPC in the room. Your own minor demon (matched via IGNORE_NPCS,
-      currently "verlok") is never picked as a target. If nothing resolves,
+      NPC in the room. Your own minor demon is never picked as a target
+      (skipped by id via TELL MDEMON RETURN, so an illusion can't fool it;
+      IGNORE_NPCS also filters "verlok" and animates by name). If nothing resolves,
       the room is considered empty and the script does nothing.
 
   Sequence:
@@ -29,8 +30,12 @@
        reading a stale pre-death status), so it won't appraise a live NPC.
     3) Prep and cast Animate Dead (730) on the corpse.
     4) "tell anim follow", "tell anim attack", then arm it:
-       a) make sure a spare <WEAPON> is on the ground -- tell verlok (your
-          minor demon) to drop one (skipped if one's already lying here).
+       0) tell the animate to drop whatever it's holding first (a two-handed
+          heavy crossbow answers a pickup with "already holding its maximum
+          capacity", 10.26).
+       a) make sure a spare <WEAPON> is on the ground -- tell your minor demon
+          to drop one (its noun comes from a silent TELL MDEMON RETURN, so it
+          works under any type or illusion; skipped if one's already lying here).
        b) "tell anim to get <WEAPON>", looping until it's actually off the
           ground. If the animate won't take it because its hands are full
           with two other weapons, drop the off-hand junk and retry.
@@ -222,6 +227,45 @@ rescue StandardError
 	false
 end
 
+# Your minor demon RIGHT NOW. It can be any type and wears whatever illusion you cast on it
+# (10.23: an imp that showed as a "gnoll"), so no noun list or "verlok" fits. A silent
+# TELL MDEMON RETURN answers with its id, noun and current name in every case, and calls it
+# back to the room if it had wandered off (same trick as demonmana.lic / fizzanim.lic):
+#   But your <a>X</a> is already here!  ...
+#   Your <a>X</a> acknowledges your order and begins to travel to your location.
+#   The magic in your location is interfering with your <a>X</a> returning to you.
+#   You have no minor demon at this time.
+# @return { id:, noun:, name: } with the demon in the room, else nil.
+REANIM_RETURN_REPLY = /already here!|acknowledges your order|interfering with your|You have no minor demon at this time/i
+REANIM_DEMON_LINK   = %r{(?:[Bb]ut your|Your|your) <pushBold/><a exist="(\d+)" noun="([\w,'-]+)">([\w\-' ]+)</a><popBold/>}
+def reanim_demon(arrive_secs = 6)
+	text = Lich::Util.quiet_command_xml("tell mdemon return", REANIM_RETURN_REPLY).to_a.join("\n")
+	return nil unless text =~ REANIM_DEMON_LINK
+	d = { id: $1, noun: $2, name: $3 }
+	here = text.include?("already here!")
+	if text.include?("begins to travel")
+		(arrive_secs * 2).times do
+			break if (here = GameObj.npcs.to_a.any? { |o| o && o.id.to_s == d[:id] })
+			sleep 0.5
+		end
+	end
+	here ? d : nil
+rescue StandardError
+	nil
+end
+
+# "tell <who> <phrase>", then "tell <who> to <phrase>" when the first wording was refused as
+# wording (10.26's log has the plain form working; reanim's 9/8 notes say only "to" did).
+# A "maximum capacity" refusal isn't about wording, so it isn't retried.
+def reanim_tell(who, phrase, ok, bad)
+	both = Regexp.union(ok, bad)
+	r = dothistimeout("tell #{who} #{phrase}", 3, both).to_s
+	if r =~ bad && r !~ ok && r !~ /maximum capacity|hands full/i
+		r = dothistimeout("tell #{who} to #{phrase}", 3, both).to_s
+	end
+	r
+end
+
 def arm_animate(noun)
 	held = animate_held_nouns
 	if held && held.any? { |w| same_weapon?(w, noun) }
@@ -230,22 +274,28 @@ def arm_animate(noun)
 		return
 	end
 
+	# 0) clear its hands FIRST: an animate holding a two-handed crossbow answers
+	# "already holding its maximum capacity" to a pickup (10.26, Sonreeva).
+	drop_other_weapons(noun)
+
 	# 1) get a spare WEAPON onto the ground
 	unless weapon_on_ground(noun)
-		unless verlok_here?
-			echo "[reanim] no minor demon here -- nudging it to follow. ('tell mdem to follow' before a hunt.)"
-			fput "tell mdem to follow"
-			sleep 1
+		demon = reanim_demon
+		if demon
+			r = reanim_tell(demon[:noun], "drop #{noun}",
+				/drops (?:a|an|the)/i,
+				/could not find|seems very confused|isn't holding|not holding|does(?:n't| not) have|not here/i)
+			debug("#{demon[:noun]} (your minor demon): #{r.strip[0, 80]}")
+		else
+			echo "[reanim] no minor demon here to hand over a #{noun}."
 		end
-		dothistimeout("tell verlok to drop #{noun}", 3,
-			/drops (?:a|an|the)|could not find|isn't holding|not holding|does(?:n't| not) have|not here/i)
 		# GameObj.loot can lag the drop line by a beat -- give it a moment
 		15.times { break if weapon_on_ground(noun); sleep 0.2 }
 		unless weapon_on_ground(noun)
 			# No minor demon (or it isn't carrying one) -- 10.04: the demon timed
 			# out and FIVE hunts ran with an unarmed animate. Drop our own copy
 			# from the pack instead.
-			echo "[reanim] verlok didn't drop a #{noun} -- dropping my own."
+			echo "[reanim] the demon didn't drop a #{noun} -- dropping my own."
 			g = dothistimeout("get #{noun}", 4,
 				/You (?:retrieve|get|remove|pick up|take)|You already have|could not find|What were you referring/i).to_s
 			if g =~ /You (?:retrieve|get|remove|pick up|take)|already have/i
@@ -262,8 +312,9 @@ def arm_animate(noun)
 	# 2) a spare IS on the ground now -- get the animate to take it
 	picked = false
 	WEAPON_PICKUP_TRIES.times do |i|
-		gr = dothistimeout("tell anim to get #{noun}", 4,
-			/snatches up|picks up|retriev|reaches down|takes hold of|obeys|obliges|hands full|cannot|can't|refuses/i)
+		gr = reanim_tell("anim", "get #{noun}",
+			/snatches up|picks up|retriev|reaches down|takes hold of|obeys|obliges/i,
+			/maximum capacity|hands full|could not find|seems very confused|cannot|can't|refuses/i)
 		waitrt?
 		sleep 1
 		if weapon_on_ground(noun).nil?
@@ -314,8 +365,11 @@ end
 
 # Weapon in hand -> the demon; if it's still in hand afterwards, stow it (the cloak).
 def give_or_stow(noun)
-	dothistimeout("give #{noun} to verlok", 3,
-		/grudgingly accepts|hand(?:s)? .* to (?:a|an|the)|refuses|isn't interested|maximum capacity|To whom|could not find/i)
+	demon = reanim_demon(1)
+	if demon
+		dothistimeout("give #{noun} to #{demon[:noun]}", 3,
+			/grudgingly accepts|hand(?:s)? .* to (?:a|an|the)|refuses|isn't interested|maximum capacity|To whom|could not find/i)
+	end
 	fput "stow #{noun}" if in_hand?(noun)
 	sleep 0.3
 end
@@ -375,8 +429,12 @@ def dismiss_animate(noun)
 
 	# reclaim the spare it just dropped -> verlok -> our pack
 	if weapon_on_ground(noun)
-		dothistimeout("tell verlok to get #{noun}", 3,
-			/picks up|snatches|grasps|retriev|reaches down|takes hold of|obeys|obliges|could not find|can't|cannot|refuses/i)
+		demon = reanim_demon(2)
+		if demon
+			reanim_tell(demon[:noun], "get #{noun}",
+				/picks up|snatches|grasps|retriev|reaches down|takes hold of|obeys|obliges/i,
+				/could not find|seems very confused|can't|cannot|refuses/i)
+		end
 		sleep 0.4
 		if weapon_on_ground(noun)
 			dothistimeout("get #{noun}", 3, /You (?:pick up|get)|already have|What were you/i)
@@ -396,8 +454,8 @@ def dismiss_animate(noun)
 	end
 
 	if weapon_on_ground(noun)
-		echo "[reanim] !! the #{noun.upcase} is on the floor here and wouldn't go to verlok."
-		echo "[reanim] !!   get #{noun} ; give #{noun} to verlok"
+		echo "[reanim] !! the #{noun.upcase} is on the floor here and wouldn't go to your minor demon."
+		echo "[reanim] !!   get #{noun} ; give #{noun} to <your demon>"
 	else
 		debug("#{noun} recovered")
 	end
@@ -427,10 +485,12 @@ explicit_target = args.find { |a| a.start_with?("#") }
 
 if explicit_target
 	target = explicit_target
-elsif GameObj.target and GameObj.target.name !~ IGNORE_NPCS
+elsif GameObj.target and GameObj.target.name !~ IGNORE_NPCS and GameObj.target.id.to_s != reanim_demon(1)&.dig(:id).to_s
 	target = "##{GameObj.target.id}"
 else
-	npc = GameObj.npcs.find { |n| n.status !~ /dead|gone/i and n.name !~ IGNORE_NPCS }
+	# your minor demon may wear an illusion ("gnoll") that no name filter recognizes: skip it by id
+	mine = reanim_demon(1)&.dig(:id).to_s
+	npc = GameObj.npcs.find { |n| n.status !~ /dead|gone/i and n.name !~ IGNORE_NPCS and n.id.to_s != mine }
 	target = npc ? "##{npc.id}" : nil
 end
 

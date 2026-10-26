@@ -64,11 +64,13 @@ module FizzAnim
     n.nil? || n.status.to_s =~ /dead|gone/i ? true : false
   end
 
+  # Never your minor demon, by id: under an illusion ("gnoll") no name filter recognizes it.
   def self.pick(explicit)
     return explicit.delete_prefix("#") if explicit
+    mine = demon&.dig(:id).to_s
     cur = GameObj.target
-    return cur.id.to_s if cur && cur.name.to_s !~ IGNORE_NPC && cur.status.to_s !~ /dead|gone/i
-    n = GameObj.npcs.to_a.find { |x| x.status.to_s !~ /dead|gone/i && x.name.to_s !~ IGNORE_NPC }
+    return cur.id.to_s if cur && cur.name.to_s !~ IGNORE_NPC && cur.status.to_s !~ /dead|gone/i && cur.id.to_s != mine
+    n = GameObj.npcs.to_a.find { |x| x.status.to_s !~ /dead|gone/i && x.name.to_s !~ IGNORE_NPC && x.id.to_s != mine }
     n&.id&.to_s
   end
 
