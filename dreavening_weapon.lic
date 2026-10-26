@@ -11,13 +11,19 @@
   `get tart` / `gob my tart`). So after eating, your hands are empty when the blessing
   comes round.
 
-  What it does: only while a Dreavening is on (it saw Dreaven speak or post a [Dreavening]
-  thought in the last 10 minutes, and not after "THIS DREAVENING IS FINISHED"), if your
-  right hand has been empty for 3 seconds in a row -- long enough that ;dreavening has
+  What it does: only while a Dreavening is on -- Dreaven is in the room with you and spoke
+  in the room in the last 10 minutes, and it isn't within 30 minutes of "THIS DREAVENING IS
+  FINISHED" -- if your right hand has been empty for 3 seconds in a row -- long enough that ;dreavening has
   finished eating, since it is holding food the whole time it's eating -- it does `ready
   weapon`. If the weapon is in your LEFT hand and the right is empty, it does `swap`.
   Outside a Dreavening it does nothing at all, so it won't interfere with scrolls, wands,
   instruments or anything else that has your hands.
+
+  10/25: it readied the weapon two minutes after the Dreavening ended (and you had stowed
+  it): Dreaven keeps posting [Dreavening] thoughts after FINISHED ("Top mana senders...",
+  "Please remember ALL tips...") and before the next one ("Next Dreavening is in 5
+  minutes"), and every one of them counted as "a Dreavening is on". Thoughts no longer count
+  at all, only Dreaven speaking in your room, and FINISHED starts a lockout.
 
   Usage:
     ;dreavening_weapon            start it (stays running; ;kill dreavening_weapon stops it)
@@ -30,16 +36,21 @@
 
 # seconds the right hand must stay empty before the weapon comes back out
 def hold_secs; 3; end
-# a Dreavening counts as "on" for this long after the last Dreaven line
+# a Dreavening counts as "on" for this long after Dreaven last spoke in the room
 def active_window; 600; end
+# ...and not at all for this long after it FINISHED (the next one is hours away)
+def finished_lockout; 1800; end
 
 $dreavening_weapon_active_until = 0
+$dreavening_weapon_locked_until = 0
 
 DownstreamHook.add("dreavening_weapon", proc { |line|
   text = line.to_s.gsub(/<[^>]+>/, '')
   if text =~ /THIS DREAVENING IS FINISHED/i
     $dreavening_weapon_active_until = 0
-  elsif text =~ /Dreaven (?:says|exclaims|yells)|\[Dreavening\]-GSIV:Dreaven/
+    $dreavening_weapon_locked_until = Time.now.to_f + finished_lockout
+  elsif text =~ /\bDreaven (?:says|exclaims|yells),/ && text !~ /GSIV:/ &&
+        Time.now.to_f >= $dreavening_weapon_locked_until
     $dreavening_weapon_active_until = Time.now.to_f + active_window
   end
   line
@@ -52,7 +63,8 @@ empty_since = nil
 loop do
   sleep 1
 
-  if Time.now.to_f >= $dreavening_weapon_active_until || dead?
+  if Time.now.to_f >= $dreavening_weapon_active_until || dead? ||
+     GameObj.pcs.none? { |pc| pc.noun == "Dreaven" }
     empty_since = nil
     next
   end
