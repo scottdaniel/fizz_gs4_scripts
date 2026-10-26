@@ -1,0 +1,306 @@
+# fizzanim.lic -- kill the target, and if it's suitable, animate it, arm it, keep it up
+# FOR INTERACTIVE HUNTS: you at the keyboard, wanting a buddy right now. ;reanim is the one
+# built for automation with bigshot (it feeds Fizzleworth-anim-cleanup and the end-of-hunt
+# teardown); this script doesn't touch reanim's state, so the cleanup doesn't know about an
+# animate raised here.
+#
+#   ;fizzanim            your current target (else the first living creature that isn't your
+#                        demon or an animate)
+#   ;fizzanim #1234      that creature
+#   ;fizzanim norefresh  don't start ;animate_refresher afterwards
+#   ;fizzanim noarm      don't hand it a weapon
+#
+#   1. Pain (711) at it until it's dead (at most 15 casts, each gated on mana)
+#   2. APPRAISE the corpse and only go on if it says "suitable for animation" (the other
+#      answer in your logs: "is not the kind of creature suitable to animation")
+#   3. Animate Dead (730, 30 mana) on the corpse; if mana is short it asks the demon once and
+#      tries Symbol of Mana first
+#   4. "tell anim follow", then the weapon hand-off (below), then "tell anim attack", then
+#      ;animate_refresher, which keeps the animate up with SACRIFICE CHANNEL (50 Necromancy ranks
+#      and a shadow essence; it warns by itself when it can't)
+#
+# The hand-off (the weapon is UserVars.reanim_weapon, default claidhmore):
+#   - it finds your minor demon's noun with a silent `tell mdemon return`, whatever illusion it
+#     wears (a verlok today, "gnoll" the next), instead of assuming "verlok"
+#   - the animate is told to drop what it's holding FIRST: 10/26 a tomb wight holding a heavy
+#     crossbow refused the claidhmore ("The wight is already holding its maximum capacity.")
+#     until `tell anim drop cross`
+#   - then the demon drops the weapon ("tell gnoll drop claid"), and the animate is told to get
+#     it ("tell anim get claid"), retrying with the off-hand junk dropped. Both "tell x drop"
+#     and "tell x to drop" are tried (reanim's notes say only the second worked on 9/8; the
+#     10/26 log shows the first)
+#   - if the demon isn't here or isn't carrying one, it drops a copy from your own pack
+#
+# Everything lives in the module: top-level defs/constants are shared by every Lich script.
+
+module FizzAnim
+  PAIN        = 711
+  ANIMATE     = 730
+  MAX_PAINS   = 15
+  IGNORE_NPC  = /verlok|animated|minor demon/i
+  APPRAISE_RE = /is suitable for animation|not the kind of creature suitable to animation|not suitable/i
+  COST        = { PAIN => 11, ANIMATE => 30 }.freeze
+
+  RETURN_REPLY = /already here!|acknowledges your order|interfering with your|You have no minor demon at this time/i
+  DEMON_LINK   = %r{(?:[Bb]ut your|Your|your) <pushBold/><a exist="(\d+)" noun="([\w,'-]+)">([\w\-' ]+)</a><popBold/>}
+  DROP_OK      = /\bdrops (?:a|an|the|its|his|her)\b/i
+  DROP_BAD     = /could not find|seems very confused|not able to make out|isn't holding|not holding|does(?:n't| not) have|not here/i
+  GET_OK       = /snatches up|picks up|retriev|reaches down|takes hold of|obeys|obliges/i
+  GET_BAD      = /maximum capacity|hands full|could not find|seems very confused|cannot|can't|refuses/i
+  NO_RETRY     = /maximum capacity|hands full/i   # a refusal of the request, not of the wording
+  # injuries / body parts, so "He has a fractured and bleeding left arm." isn't read as items
+  BODY         = /\b(?:arms?|legs?|heads?|eyes?|chest|back|necks?|hands?|foot|feet|abdomen|torso|lacerations?|concussion|cuts?|bruises?|bruised|swollen|fractured|bleeding|broken|wounds?|wounded|scars?|scarred|injur\w*|skin|ribs?|shoulders?|knees?|ankles?|wrists?|elbows?|jaw|face|ears?|missing|severed|crushed|mangled|gash\w*|slices?|blood\w*|good shape|appears to be)\b/i
+
+  def self.say(msg)
+    echo "[fizzanim] #{msg}"
+  end
+
+  def self.npc(id)
+    GameObj.npcs.to_a.find { |n| n.id.to_s == id.to_s }
+  end
+
+  def self.dead?(id)
+    n = npc(id)
+    n.nil? || n.status.to_s =~ /dead|gone/i ? true : false
+  end
+
+  def self.pick(explicit)
+    return explicit.delete_prefix("#") if explicit
+    cur = GameObj.target
+    return cur.id.to_s if cur && cur.name.to_s !~ IGNORE_NPC && cur.status.to_s !~ /dead|gone/i
+    n = GameObj.npcs.to_a.find { |x| x.status.to_s !~ /dead|gone/i && x.name.to_s !~ IGNORE_NPC }
+    n&.id&.to_s
+  end
+
+  def self.cost(n)
+    c = (Spell[n].mana_cost.to_i rescue 0)
+    c.positive? ? c : COST[n]
+  end
+
+  def self.symbol_of_mana
+    return false if Effects::Cooldowns.active?("Symbol of Mana") || Experience.deeds.to_i <= 3
+    waitrt?
+    fput "symbol of mana"
+    waitrt?
+    true
+  rescue StandardError
+    false
+  end
+
+  # @return true if we have at least `need` mana (after asking the demon / Symbol of Mana)
+  def self.mana_for(need)
+    return true if checkmana >= need
+    Script.run("demonmana", "get") if Script.exists?("demonmana")
+    return true if checkmana >= need
+    symbol_of_mana
+    checkmana >= need
+  end
+
+  def self.kill(id)
+    MAX_PAINS.times do |i|
+      return true if dead?(id)
+      unless mana_for(cost(PAIN))
+        say "out of mana for Pain (#{checkmana}/#{cost(PAIN)}) -- stopping."
+        return false
+      end
+      waitrt?
+      waitcastrt?
+      Spell[PAIN].cast("##{id}")
+      waitrt?
+      waitcastrt?
+    end
+    sleep 0.5
+    return true if dead?(id)
+    say "still alive after #{MAX_PAINS} Pains -- giving up."
+    false
+  end
+
+  # => :yes / :no / nil (no answer)
+  def self.suitable?(id)
+    line = Lich::Util.issue_command("appraise ##{id}", APPRAISE_RE, include_end: false, silent: true).last.to_s.gsub(/<[^>]*>/, "").strip
+    say "appraise: #{line.empty? ? '(no answer)' : line[0, 140]}"
+    return nil if line.empty?
+    line =~ /\bis suitable for animation/i && line !~ /\bnot\b/i ? :yes : :no
+  end
+
+  def self.raised?(id)
+    n = npc(id)
+    (n && n.name.to_s =~ /animated/i) || Spell[ANIMATE].active? ? true : false
+  end
+
+  def self.animate(id)
+    unless mana_for(cost(ANIMATE))
+      say "out of mana for Animate Dead (#{checkmana}/#{cost(ANIMATE)}) -- the corpse is left as it is."
+      return false
+    end
+    waitrt?
+    waitcastrt?
+    Spell[ANIMATE].cast("##{id}")
+    waitrt?
+    waitcastrt?
+    6.times do
+      return true if raised?(id)
+      sleep 0.5
+    end
+    say "no animate showed up -- is Animate Dead on its cooldown? (\"Your soul has recovered enough...\" tells you when it's back.)"
+    false
+  end
+
+
+  # ---- weapon hand-off ---------------------------------------------------
+
+  def self.weapon
+    v = UserVars.reanim_weapon.to_s.strip
+    v.empty? ? "claidhmore" : v
+  end
+
+  def self.same_weapon?(a, b)
+    a = a.to_s.downcase.strip
+    b = b.to_s.downcase.strip
+    return false if a.empty? || b.empty?
+    a == b || a.start_with?(b) || b.start_with?(a)
+  end
+
+  # Is a weapon matching `noun` lying on the ground ("claid" finds "massive bone-hilted
+  # claidhmore")?
+  def self.weapon_on_ground(noun)
+    GameObj.loot.to_a.find { |o| o && o.name.to_s.split(/\s+/).any? { |w| same_weapon?(w, noun) } }
+  end
+
+  def self.demon_here?(id)
+    (GameObj.npcs.to_a + GameObj.loot.to_a + GameObj.room_desc.to_a).any? { |o| o.id.to_s == id.to_s }
+  end
+
+  # Your minor demon, here in the room: { id:, noun:, name: }, or nil. A silent TELL MDEMON RETURN
+  # answers with its id, noun and current name under any illusion, and calls it back if it wandered
+  # off (same trick as demonmana.lic).
+  def self.demon
+    text = Lich::Util.quiet_command_xml("tell mdemon return", RETURN_REPLY).to_a.join("\n")
+    return nil unless text =~ DEMON_LINK
+    d = { id: $1, noun: $2, name: $3 }
+    here = text.include?("already here!")
+    if text.include?("begins to travel")
+      10.times { break if (here = demon_here?(d[:id])); sleep 1 }
+    end
+    here ? d : nil
+  end
+
+  # "tell <who> <phrase>", then "tell <who> to <phrase>" if the first wording was refused as
+  # wording. @return the game's last answer.
+  def self.tell(who, phrase, ok, bad)
+    both = Regexp.union(ok, bad)
+    r = dothistimeout("tell #{who} #{phrase}", 3, both).to_s
+    r = dothistimeout("tell #{who} to #{phrase}", 3, both).to_s if r =~ bad && r !~ ok && r !~ NO_RETRY
+    r
+  end
+
+  # LOOK at the animate and return the nouns of what it's HOLDING ("worn" items dropped):
+  # ["crossbow"], [] = empty-handed, nil = the LOOK couldn't be read.
+  def self.held_nouns
+    mine = GameObj.npcs.to_a.find { |n| n && n.name.to_s =~ /\banimated\b/i }
+    tgt  = mine ? "##{mine.id}" : "anim"
+    raw  = Lich::Util.issue_command("look #{tgt}",
+             /\b(?:has|have)\b|empty[- ]handed|hands? (?:are|is) empty|nothing in (?:its|his|her|their)/i,
+             include_end: false, silent: true) rescue []
+    lines = raw.map { |l| l.to_s.gsub(/<[^>]+>/, "") }
+    return [] if lines.any? { |l| l =~ /empty[- ]handed|hands? (?:are|is) empty|nothing in (?:its|his|her|their)/i }
+    line = lines.select { |l| l =~ /\b(?:has|have)\s+(?:a|an|some|two|three|four|several|a pair of)\b/i && l !~ BODY }.last
+    return nil unless line
+    m = line.match(/\b(?:has|have)\s+(.+?)\.?\s*$/i) or return nil
+    m[1].split(/\s*,\s*|\s+and\s+/i)
+        .reject { |item| item =~ /\(worn\)/i }
+        .map    { |item| item.sub(/\s*\([^)]*\)\s*$/, "").strip.split(/\s+/).last.to_s.downcase.gsub(/[^a-z'\-]/, "") }
+        .reject(&:empty?)
+        .uniq
+  rescue StandardError
+    nil
+  end
+
+  # Have the animate drop everything it holds except `keep`.
+  def self.drop_others(keep)
+    held = held_nouns
+    return say("couldn't read what the animate is holding.") if held.nil?
+    held.reject { |w| same_weapon?(w, keep) }.each do |w|
+      r = tell("anim", "drop #{w}", DROP_OK, DROP_BAD)
+      say "animate, drop #{w}: #{r.strip[0, 90].empty? ? '(no answer)' : r.strip[0, 90]}"
+    end
+  end
+
+  # Get a copy of the weapon onto the ground: the demon drops its own, else one from your pack.
+  def self.put_weapon_down(w)
+    d = demon
+    if d
+      r = tell(d[:noun], "drop #{w}", DROP_OK, DROP_BAD)
+      say "#{d[:noun]}, drop #{w}: #{r.strip[0, 90].empty? ? '(no answer)' : r.strip[0, 90]}"
+      15.times { break if weapon_on_ground(w); sleep 0.2 }
+    else
+      say "no minor demon here to hand over a #{w}."
+    end
+    return true if weapon_on_ground(w)
+    say "dropping my own #{w}."
+    g = dothistimeout("get #{w}", 4, /You (?:retrieve|get|remove|pick up|take)|You already have|could not find|What were you referring/i).to_s
+    if g =~ /You (?:retrieve|get|remove|pick up|take)|already have/i
+      fput "drop #{w}"
+      15.times { break if weapon_on_ground(w); sleep 0.2 }
+    end
+    weapon_on_ground(w) ? true : false
+  end
+
+  def self.arm
+    w = weapon
+    held = held_nouns
+    if held && held.any? { |h| same_weapon?(h, w) }
+      say "the animate already holds a #{w}."
+      return drop_others(w)
+    end
+    drop_others(w)   # first: a two-handed crossbow, or two weapons, refuses a third
+    return say("no #{w} to hand over -- the animate stays as it is.") unless weapon_on_ground(w) || put_weapon_down(w)
+    3.times do |i|
+      r = tell("anim", "get #{w}", GET_OK, GET_BAD)
+      sleep 1
+      if weapon_on_ground(w).nil?
+        say "the animate took the #{w}."
+        drop_others(w)   # whatever else it still holds (an innate whip) can go now
+        return true
+      end
+      say "the #{w} is still on the ground after try #{i + 1}: #{r.strip[0, 90]}"
+      drop_others(w)
+    end
+    say "WARNING: the animate wouldn't pick up the #{w} -- check it."
+  end
+
+  def self.run(explicit, refresh, do_arm)
+    id = pick(explicit)
+    return say("no creature to work on -- target one first.") unless id
+    t = npc(id)
+    say "#{t ? t.name : 'creature'} (##{id}): Pain until dead."
+    return unless kill(id)
+    case suitable?(id)
+    when :no
+      return say("it isn't suitable for animation -- leaving it.")
+    when nil
+      return say("the appraise gave no answer -- not animating blind.")
+    end
+    return unless animate(id)
+    say "animated."
+    fput "tell anim follow"
+    sleep 0.3
+    arm if do_arm
+    fput "tell anim attack"
+    if refresh
+      if Script.running?("animate_refresher")
+        say "animate_refresher is already running."
+      elsif Script.exists?("animate_refresher")
+        Script.start("animate_refresher")
+        say "started animate_refresher."
+      else
+        say "animate_refresher isn't installed (;repo download animate_refresher) -- the animate will expire in ten minutes."
+      end
+    end
+  end
+end
+
+args = script.vars[1..-1].to_a.compact.map(&:to_s).reject(&:empty?)
+FizzAnim.run(args.find { |a| a.start_with?("#") },
+             !args.any? { |a| a =~ /\A-{0,2}no-?refresh\z/i },
+             !args.any? { |a| a =~ /\A-{0,2}no-?arm\z/i })
