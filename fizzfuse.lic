@@ -4,7 +4,7 @@
         game: gemstone
         tags: scroll infusion, infuse, unlock, runestone, scroll
     requires: Lich > 5.4.0
-     version: 1.5
+     version: 1.6
         note: Written with assistance from Claude (Anthropic).
 
 
@@ -120,6 +120,10 @@ Infuse!
           the shatter and "The scroll glows dimly for a moment." in one line, and the
           glow check (added in 1.4) matched first. Shatter is now checked first, and
           "lose your focus" (no runestone in hand) also fetches a new one.
+        - Fixed unlocking not stopping on "The runestone is momentarily surrounded by a
+          bright white aura" (scroll can't be unlocked further): the stop check only
+          knew the "dim" wording and now matches "white aura". Also waits for the scroll
+          to be back in hand after fetching a rune, instead of waving at a blank hand.
 
 =end
 
@@ -294,6 +298,18 @@ def count_locked_spells
 	lines.count { |line| line =~ /^\s*\(\d+\)/ && line !~ /potential to add/ }
 end
 
+# find_rune can put the scroll back in hand with "get", and GameObj lags the
+# game briefly - waving then interpolated an empty hand object into the
+# command ("wave left at my #<Lich::Common::GameObj...>"). Wait until the
+# right hand has a real item again.
+def wait_for_right_hand(timeout = 5)
+	end_time = Time.now.to_f + timeout
+	until (hand = GameObj.right_hand) && hand.noun.to_s != ''
+		break if Time.now.to_f > end_time
+		sleep 0.1
+	end
+end
+
 # Unlock the locked spells on the scroll in your right hand.
 #
 # Checks with odeir'cos first to see how many spells still need unlocking,
@@ -311,6 +327,7 @@ def unlock_spells
 	echo "#{locked} locked spell(s) found, unlocking..."
 
 	find_rune("quiss'fyn")
+	wait_for_right_hand
 	while locked > 0
 		wave_lines = collect_lines("wave left at my #{GameObj.right_hand}", /Roundtime/, 5)
 		waitrt?
@@ -319,14 +336,19 @@ def unlock_spells
 		# regardless of what our count says, rather than risk waving forever
 		# on a stale rune if the count is ever off. There are several flavor-
 		# text variants for this ("shakes slightly"/"violently", "surrounded
-		# by a dim white aura", etc.) - match loosely instead of hardcoding
-		# one exact phrasing, since another variant we haven't seen yet could
-		# turn up the same way "dim white aura" did.
-		if wave_lines.any? { |line| line =~ /but nothing happens|surrounded by a dim white aura/ }
+		# by a dim/bright white aura", etc.) - match loosely instead of
+		# hardcoding one exact phrasing, since another variant we haven't seen
+		# yet could turn up the same way "bright white aura" did. (The aura
+		# means the scroll can't be unlocked any further - nothing more to gain
+		# from waving, even if the odeir'cos count says spells are still locked.)
+		if wave_lines.any? { |line| line =~ /but nothing happens|white aura/ }
 			echo "Scroll reports no more locked spells."
 			break
 		end
-		find_rune("quiss'fyn") if wave_lines.any? { |line| line =~ /disintegrates/ }
+		if wave_lines.any? { |line| line =~ /disintegrates/ }
+			find_rune("quiss'fyn")
+			wait_for_right_hand
+		end
 		locked -= 1 if wave_lines.any? { |line| line =~ /has somehow been altered/ }
 	end
 	echo "Scroll fully unlocked."
