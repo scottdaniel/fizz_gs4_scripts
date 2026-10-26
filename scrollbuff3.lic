@@ -26,9 +26,13 @@ Configurable durations for stackable or refreshable spells
     author: Nihiladrem (todd.estabrooks@gmail.com)
       game: gs
       tags: invoke, scroll, scrolls, hunting
-      version: 0.2.0
+      version: 0.2.1
 
     CHANGELOG:
+    0.2.1 - With no spell numbers on the command line, read them from the
+            scroll_buff_spells UserVar (the same one scrollinv.lic and
+            Fizzleworth-prep use) instead of printing help. ;scrollbuff3 help
+            still shows the help text, and explicit spell numbers still win.
     0.2.0 - Reworked to scan once instead of probing per spell. Old flow looped over
             every requested spell and, for each, invoke-tested both reserve scrolls
             then rummaged both containers -- dozens of "That spell is not on the ..."
@@ -182,7 +186,16 @@ end
 verbose = (CharSettings["scrollbuff-verbose"] == "True")
 
 ##Check for script commands
-SpellNums = script.vars[1..-1]
+## No arguments: fall back to the spell numbers in your scroll_buff_spells
+## UserVar (same var scrollinv.lic and Fizzleworth-prep read), e.g.
+##   ;vars set scroll_buff_spells=202 211 215 219 303
+## `;scrollbuff3 help` still shows the help text.
+cli_spells = script.vars[1..-1]
+if cli_spells.nil? || cli_spells.empty?
+	cli_spells = UserVars.scroll_buff_spells.to_s.scan(/\d+/).uniq
+	used_uservar = !cli_spells.empty?
+end
+SpellNums = cli_spells
 if SpellNums.nil? || SpellNums.count == 0 || SpellNums.first.start_with?("h")
     echofmt "Attempts to cast defensive or self-cast spells from your collection of scrolls, vellums, parchments, etc.",
 			"Reads every scroll once -- reserve slots, scrollsack, and vibrantscrollsack -- works out",
@@ -217,6 +230,10 @@ if SpellNums.nil? || SpellNums.count == 0 || SpellNums.first.start_with?("h")
             "Usage: ;#{script.name} 101 107 509 ...",
             "List up to 30 spell numbers separated by a space.",
             "",
+            "With no spell numbers, ;#{script.name} uses your scroll_buff_spells UserVar instead:",
+            "   ;vars set scroll_buff_spells=202 211 215 219 303",
+            "   (currently: #{UserVars.scroll_buff_spells || '(not set)'})",
+            "",
 			"To list all relevant settings for this script:",
 			"Current settings:"
 			
@@ -227,7 +244,8 @@ if SpellNums.nil? || SpellNums.count == 0 || SpellNums.first.start_with?("h")
 			"Use vibrant Scrolls: #{usevibrant}",	
 			"Stack spells to: #{stackto_duration} minutes",
 			"Refresh spells below: #{refreshto_duration} minutes",
-			"Output: #{vmode}"
+			"Output: #{vmode}",
+			"scroll_buff_spells: #{UserVars.scroll_buff_spells || '(not set)'}"
 
 
     exit
@@ -282,10 +300,13 @@ elsif SpellNums.first.start_with?("settings")
 			"Use vibrant Scrolls: #{usevibrant}",	
 			"Stack spells to: #{stackto_duration} minutes",
 			"Refresh spells below: #{refreshto_duration} minutes",
-			"Output: #{vmode}"
+			"Output: #{vmode}",
+			"scroll_buff_spells: #{UserVars.scroll_buff_spells || '(not set)'}"
 
 	exit			
 end
+
+echo "scrollbuff3: no spells given, using scroll_buff_spells: #{SpellNums.join(' ')}" if verbose && used_uservar
 
 ##Check for Vibrant Scroll Sack
 vibrantscrollsackVar = Vars["vibrantscrollsack"]
