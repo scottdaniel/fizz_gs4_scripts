@@ -97,8 +97,9 @@ module OrbCheck
   def self.wanted?(obj, gem_words)
     return obj.type.to_s =~ /gem/ || jar?(obj) if gem_words.empty?
 
+    # full_name: a jar's "containing uncut rubies" is in after_name, not name
     stems = gem_words.split.map { |word| word.sub(/(?:ies|y|es|s)\z/i, '') }
-    stems.all? { |stem| obj.name.to_s =~ /\b#{Regexp.escape(stem)}/i }
+    stems.all? { |stem| obj.full_name.to_s =~ /\b#{Regexp.escape(stem)}/i }
   end
 
   def self.held?(id)
@@ -253,7 +254,7 @@ module OrbCheck
   end
 
   def self.check_jar(jar)
-    contents = jar.name[/containing (.+)\z/, 1] || 'gems'
+    contents = jar.full_name[/containing (.+)\z/, 1] || 'gems'
     collect("get ##{jar.id}", GET_DONE)
     unless wait_for { held?(jar.id) }
       msg "Couldn't pick up the jar of #{contents}."
