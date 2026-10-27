@@ -1,0 +1,637 @@
+=begin
+      author: Fizzleworth
+        name: fizzport
+        game: gemstone
+        tags: sorcerer, planar shift, 740, teleport, rune book, chalk
+    requires: Lich > 5.14.2
+     version: 0.2
+        note: Written with assistance from Claude (Anthropic).
+
+  Planar Shift (740) to a pattern in your rune books: ;fizzport icemule
+
+  It finds the destination by name in the rune books in your shiftsack. READ shows each
+  pattern's label (e.g. [Icemule Trace, Town Center]) and its rune colour, and the colour
+  is the realm. Any part of a label works: ;fizzport hanging gardens
+
+  What it does (gswiki Planar Shift (740)):
+    1. Searches each rune book page by page for the label (TURN wraps from page 10 back
+       to page 1). Any sorcerer can draw from any book, bonded or not.
+    2. Picks the chalk from the realm you're in (the map's location name) and the
+       destination's rune colour:
+         - same realm                       waxy translucent chalk (cheap)
+         - another realm in the same zone   fine crystalline chalk, unless you have 75+
+                                            Demonology ranks
+         - another zone                     fine crystalline chalk (about 30,000 a trip)
+       Cheap chalk on a trip that needs crystalline fails automatically, with backlash.
+    3. Book in the right hand, chalk in the left: DRAW SUMMONING CIRCLE, DRAW PATTERN #,
+       then puts both away and re-equips your hands.
+    4. Waits for 40 mana, PREPAREs 740 and CASTs at the CIRCLE. A backlash leaves the
+       circle in place, so it casts again (up to 3 times, while health stays at 60%+).
+       A demon coming through the rift stops the script so you can deal with it.
+    5. Same realm: a rift opens for 60 seconds and it goes through (GO RIFT). Another
+       realm: the cast takes you straight there.
+
+  Shortcuts (anything else is matched against the labels as typed). Fizzleworth's book
+  (the blue leather book, bonded) has only the first three so far; SENSE PATTERN with it
+  in hand at the others to add them:
+    wl, landing        Town Square Central
+    ti, illistim       Ta'Illistim, Hanging Gardens
+    cys, cysaegir      Cysaegir, Linsandrych Common
+    icemule, it        Icemule Trace, Town Center
+    sol, solhaven      Solhaven (any label with "Solhaven" in it)
+    pinefar            Pinefar Trading Post, Greatroom
+    tv, vaalor         Ta'Vaalor, King's Court
+
+  Usage:
+    ;fizzport <destination>     e.g. ;fizzport icemule, ;fizzport hanging gardens
+    ;fizzport patterns          every pattern in every rune book (reads all the pages)
+    ;fizzport list              shortcuts, the realm you're in and your Demonology ranks
+    ;fizzport help              this help and your settings
+
+  Options (after the destination):
+    --long       use waxy translucent chalk, whatever fizzport thinks you need
+    --crystal    use fine crystalline chalk, whatever fizzport thinks you need
+    --tries=N    give up after N casts that backlash (default 3)
+
+  Settings:
+    ;vars set shiftsack=<container>   where the rune books and chalk are (falls back to
+                                      runestonesack, then infusesack, so the kit works unset)
+    ;vars set runebook=<name>         only search this book (e.g. blue.book); default: every
+                                      book in the shiftsack
+
+  Verified from Fizzleworth's 10/27 log: READ, TURN and the kit's chalk names. From
+  gswiki logs: the DRAW messages and the cross-realm cast. Not seen yet: the same-realm
+  rift and GO RIFT from Fizzleworth's own casts. Anything that doesn't match is printed.
+=end
+
+module Fizzport
+  # === config (edit to taste) ===================================================
+  DEFAULT_TRIES      = 3
+  # A backlash does mild-to-moderate damage; don't cast again below this
+  MIN_HEALTH_PCT     = 60
+  # gswiki: below 75 Demonology ranks, other realms (even in the same zone) need crystalline chalk
+  CROSS_REALM_RANKS  = 75
+  # gswiki: cheap chalk between realms adds 33% failure, minus 1% per 3 ranks over 75
+  LONG_CHALK_PENALTY = 33
+  BOOK_PAGES         = 10
+
+  # Realms: teleport zone (nil = isolated), rune colour (gswiki Realm and Planar Shift
+  # (guide)), and the map `location` names known to be in them. Besides the towns, these
+  # come from patterns in Fizzleworth's books (Stone Valley is twilight grey, Gyldemar is
+  # sapphire blue, ...). A location that isn't listed means fizzport can't tell which
+  # chalk you need; add it here once you know its realm.
+  REALMS = {
+    "Wehnimer's Landing"          => { zone: 1, color: 'twilight grey',
+                                       locations: ["Wehnimer's Landing", "the town of Wehnimer's Landing", 'the Coastal Cliffs', 'Stone Valley'] },
+    'Icemule Trace'               => { zone: 1, color: 'frosty white', locations: ['Icemule Trace'] },
+    'Solhaven'                    => { zone: 1, color: 'aquamarine',
+                                       locations: ['Solhaven', 'the free port of Solhaven', 'the southern part of Solhaven', 'the town of Solhaven'] },
+    'Pinefar'                     => { zone: 1, color: 'icy blue', locations: ['the Pinefar Trading Post'] },
+    'Icemule Trail-Glacier'       => { zone: 1, color: 'ghostly white', locations: [] },
+    'Icemule Trail-Mountain Pass' => { zone: 1, color: 'pearly white', locations: [] },
+    'Icemule Trail-Snowy Forest'  => { zone: 1, color: 'bone white', locations: [] },
+    'Abandoned Village'           => { zone: 1, color: 'stone grey', locations: [] },
+    'Cairnfang'                   => { zone: 1, color: 'ash grey', locations: [] },
+    'Northern Caravansary'        => { zone: 1, color: 'slate grey', locations: [] },
+    "Ta'Illistim"                 => { zone: 2, color: 'sapphire blue',
+                                       locations: ["Ta'Illistim", 'Gyldemar Forest', 'Gyldemar Road', 'the Blighted Forest', 'Sylvarraend Road', 'the Emerald Forest'] },
+    "Ta'Vaalor"                   => { zone: 2, color: 'gold-bordered crimson',
+                                       locations: ["Ta'Vaalor", "the city of Ta'Vaalor", 'Fearling Pass', 'the Lake of Fear', 'the hamlet of Ravelin'] },
+    'Cysaegir'                    => { zone: 2, color: 'verdant green', locations: ['Cysaegir', 'the village of Cysaegir'] },
+    "River's Rest"                => { zone: nil, color: 'sky blue', locations: ["River's Rest", "the town of River's Rest"] },
+    'Teras Isle'                  => { zone: nil, color: 'molten red', locations: ['Kharam-Dzu', 'the town of Kharam-Dzu', 'the Ruined Temple'] },
+    'Zul Logoth'                  => { zone: nil, color: 'coppery brown', locations: ['Zul Logoth'] },
+    "Old Ta'Faendryl"             => { zone: nil, color: 'scarlet', locations: ["Old Ta'Faendryl"] },
+    'Shadow Valley'               => { zone: nil, color: 'shadowy black', locations: ['the Shadow Valley'] },
+  }.freeze
+
+  # Shortcut -> text in the pattern's label
+  DESTINATIONS = {
+    'wl'       => 'Town Square Central',
+    'icemule'  => 'Icemule Trace, Town Center',
+    'sol'      => 'Solhaven',
+    'pinefar'  => 'Pinefar Trading Post, Greatroom',
+    'ti'       => "Ta'Illistim, Hanging Gardens",
+    'tv'       => "Ta'Vaalor, King's Court",
+    'cysaegir' => 'Cysaegir, Linsandrych Common',
+  }.freeze
+
+  ALIASES = {
+    'landing' => 'wl', 'it' => 'icemule', 'solhaven' => 'sol',
+    'illistim' => 'ti', 'vaalor' => 'tv', 'cys' => 'cysaegir',
+  }.freeze
+
+  # Shop names (gswiki): waxy translucent = the cheap chalk (1,000 silvers, 100 trips; LOOK:
+  # "very quickly made and of poor quality"), fine crystalline = 30,000 silvers a trip (LOOK:
+  # "of superior quality"). The older names are kept in case they turn up.
+  # Never mix them in one circle.
+  CHALKS = {
+    long:    { what: 'waxy translucent chalk', name: /waxy translucent chalk|long translucent chalk|rough stick of white chalk/i },
+    crystal: { what: 'fine crystalline chalk', name: /crystalline chalk|stubby translucent chalk/i },
+  }.freeze
+
+  # READ, one row per slot (10/27 log):
+  #   7. a set of jagged twilight grey "aq-beq-beq" glyphs [Town Square, Small Park]
+  #   8.
+  PATTERN_ROW = /^\s*(\d{1,2})\.\s+a set of \S+ (.+?) "[^"]*" \S+ \[(.+)\]\s*$/
+  LAST_ROW    = /^\s*20\.(?:\s|$)/
+  # TURN: "You turn to page 2 of your leather book." / "You flip back to the first page of your book."
+  TURNED      = /You turn to page (\d+) of your|You flip back to the first page of your/
+  # Hidden from the screen while searching, so 20 rows a page don't flood it
+  SQUELCH     = /^(?:\s*\d{1,2}\.(?:[ \t][^\r\n]*)?|You turn to page \d+ of your [^\r\n]*|You flip back to the first page of your [^\r\n]*)\r?\n/
+  HOOK        = 'fizzport-squelch'
+
+  # gswiki player logs (Missoni, Obelin) and Planar Shift (740) messaging
+  CIRCLE_DRAWN  = /you outline the shape of a summoning circle/i
+  PATTERN_DRAWN = /The circle is prepared|defensive sigil at the center/i
+  RIFT_OPENS    = /rift opens/i
+  BACKLASH      = /small shadowy rift begins to take form/i
+  DEMON         = /implodes upon itself|is standing around, surveying/i
+  NO_TELEPORT   = /soft yellow light|peter out/i
+  NOT_FOUND     = /could not find what you were referring to|What were you referring to/i
+  CAST_END      = /Cast Roundtime|Roundtime|You can't|Cast at what\?|#{NOT_FOUND}/i
+
+  # === helpers ===================================================================
+  def self.msg(text)
+    respond "[fizzport] #{text}"
+  end
+
+  def self.sack
+    [UserVars.shiftsack, UserVars.runestonesack, UserVars.infusesack].find { |name| name && !name.strip.empty? }
+  end
+
+  # GS4 style names, the way ;vars hold them: "kit", "alchemy kit", "blue.book". The last
+  # word is the noun; every other word has to start a word of the item's name.
+  def self.matches?(obj, name)
+    words = name.to_s.strip.sub(/\Amy\s+/i, '').split(/[\s.]+/)
+    return false if words.empty?
+
+    obj.noun.to_s.casecmp?(words.last) && words[0..-2].all? { |word| obj.name.to_s =~ /\b#{Regexp.escape(word)}/i }
+  end
+
+  # The shiftsack: worn, or one level down in something worn
+  def self.find_container(name)
+    top = GameObj.inv.find { |obj| matches?(obj, name) }
+    return top if top
+
+    GameObj.inv.each { |container|
+      found = container.contents.to_a.find { |obj| matches?(obj, name) }
+      return found if found
+    }
+    nil
+  end
+
+  # "look in" forces a fresh listing; GameObj#contents alone can be stale
+  def self.contents(container)
+    fput "look in ##{container.id}"
+    container.contents.to_a
+  end
+
+  def self.demonology
+    Skills.sorcerous_lore_demonology.to_i
+  end
+
+  # "Icemule Trace" / "it" / "hanging gardens" -> text to look for in the labels
+  def self.destination_text(words)
+    key = words.join.downcase.gsub(/[^a-z]/, '')
+    key = ALIASES[key] || key
+    DESTINATIONS[key] || words.join(' ')
+  end
+
+  def self.current_realm
+    location = Room.current&.location.to_s
+    REALMS.find { |_realm, info| info[:locations].include?(location) }&.first
+  end
+
+  def self.realm_of(color)
+    REALMS.find { |_realm, info| info[:color] == color.to_s.downcase }&.first
+  end
+
+  def self.extra_failure(ranks)
+    [LONG_CHALK_PENALTY - ((ranks - CROSS_REALM_RANKS) / 3), 0].max
+  end
+
+  # [chalk kind or nil, why]
+  def self.pick_chalk(here, to)
+    return [nil, "fizzport doesn't know the realm of the pattern's rune colour"] if to.nil?
+    return [nil, "fizzport doesn't know which realm \"#{Room.current&.location || 'this room'}\" is in"] if here.nil?
+    return [:long, "same realm (#{to})"] if here == to
+
+    from_zone = REALMS.dig(here, :zone)
+    if from_zone.nil? || from_zone != REALMS.dig(to, :zone)
+      return [:crystal, "#{here} and #{to} are in different teleport zones"]
+    end
+
+    ranks = demonology
+    if ranks >= CROSS_REALM_RANKS
+      return [:long, "another realm in the same zone; cheap chalk adds #{extra_failure(ranks)}% failure at #{ranks} Demonology ranks"]
+    end
+
+    [:crystal, "#{here} and #{to} are different realms, and cheap chalk needs #{CROSS_REALM_RANKS} Demonology ranks for that (you have #{ranks})"]
+  end
+
+  # put, not fput: fput would swallow the first response line. Collects until terminator,
+  # or until the game goes quiet for `idle` seconds (for text that isn't known yet).
+  def self.collect_lines(action, terminator = nil, timeout: 6, idle: 1.0)
+    waitrt?
+    waitcastrt?
+    Script.current.clear
+    put action
+    lines = []
+    deadline = Time.now + timeout
+    last_line = nil
+    loop do
+      line = get?
+      if line
+        lines << line.strip
+        last_line = Time.now
+        break if terminator && line =~ terminator
+      else
+        break if last_line && Time.now - last_line > idle
+        break if Time.now > deadline
+
+        sleep 0.1
+      end
+    end
+    lines
+  end
+
+  def self.show(lines)
+    lines.each { |line| respond "    #{line}" }
+  end
+
+  def self.hands
+    [GameObj.right_hand, GameObj.left_hand]
+  end
+
+  def self.held?(item)
+    item && hands.any? { |hand| hand.id == item.id }
+  end
+
+  # Gets an item out of the sack by id; returns it in hand, or nil
+  def self.take(item)
+    line = dothistimeout "get ##{item.id}", 5, /You remove|You get|You grab|You pull|Get what|What were you referring to|could not find/
+    return nil unless line =~ /You remove|You get|You grab|You pull/
+
+    20.times {
+      held = hands.find { |hand| hand.id == item.id }
+      return held if held
+      sleep 0.1
+    }
+    nil
+  end
+
+  def self.put_away(item)
+    return unless held?(item)
+
+    fput "put ##{item.id} in my #{sack}"
+  end
+
+  def self.squelch(on)
+    if on
+      DownstreamHook.add(HOOK, proc { |xml| xml.gsub(SQUELCH, '') })
+    else
+      DownstreamHook.remove(HOOK)
+    end
+  end
+
+  # The rows of the page the book is open to: [[number, colour, label], ...]
+  def self.read_page(book)
+    collect_lines("read ##{book.id}", LAST_ROW).map { |line|
+      number, color, label = line.match(PATTERN_ROW)&.captures
+      number && [number.to_i, color.downcase, label]
+    }.compact
+  end
+
+  # Turns one page; returns the new page number (TURN wraps from 10 to 1), or nil
+  def self.turn(book)
+    line = collect_lines("turn ##{book.id}", TURNED).find { |text| text =~ TURNED }
+    return nil if line.nil?
+
+    line =~ /page (\d+)/ ? Regexp.last_match(1).to_i : 1
+  end
+
+  # The best row on a page for the text: the label itself, else a label containing it
+  def self.match_row(rows, text)
+    wanted = text.downcase
+    rows.find { |_n, _c, label| label.downcase == wanted } ||
+      rows.find { |_n, _c, label| label.downcase.include?(wanted) }
+  end
+
+  # Holds each rune book in turn and reads its pages until a label matches. Returns
+  # [book, page or nil (the page it was already open to), number, colour, label], with
+  # that book in the right hand and open to that page, or nil.
+  def self.find_pattern(books, text)
+    squelch(true)
+    books.each { |book|
+      held = take(book)
+      next if held.nil?
+
+      fput "swap" if GameObj.left_hand.id == held.id
+      page = nil
+      BOOK_PAGES.times { |i|
+        if i.positive?
+          page = turn(held)
+          break if page.nil?
+        end
+        row = match_row(read_page(held), text)
+        return [held, page, *row] if row
+      }
+      put_away(held)
+    }
+    nil
+  ensure
+    squelch(false)
+  end
+
+  def self.rune_books
+    container = find_container(sack)
+    if container.nil?
+      msg "Can't find your #{sack} (shiftsack) on you."
+      return []
+    end
+    books = contents(container).select { |obj| obj.noun == 'book' }
+    UserVars.runebook.to_s.strip.empty? ? books : books.select { |obj| matches?(obj, UserVars.runebook) }
+  end
+
+  def self.circle_here?
+    (GameObj.loot.to_a + GameObj.room_desc.to_a).any? { |obj| obj.name =~ /summoning circle/i }
+  end
+
+  def self.draw(what, success)
+    lines = collect_lines("draw #{what}", /Roundtime|#{success.source}|#{NOT_FOUND.source}/i, timeout: 8)
+    waitrt?
+    return true if lines.any? { |line| line =~ success }
+
+    msg "DRAW #{what.upcase} didn't work. The game said:"
+    show(lines)
+    false
+  end
+
+  def self.wait_for_mana
+    cost = Spell[740].mana_cost
+    return if checkmana >= cost && Spell[740].affordable?
+
+    msg "Waiting for #{cost} mana (you have #{checkmana})."
+    sleep 1 until checkmana >= cost && Spell[740].affordable?
+  end
+
+  def self.moved?(rooms_before)
+    XMLData.room_count != rooms_before
+  end
+
+  def self.wait_to_move(rooms_before, seconds)
+    (seconds * 10).times {
+      return true if moved?(rooms_before)
+      sleep 0.1
+    }
+    moved?(rooms_before)
+  end
+
+  # Returns :moved, :rift, :backlash, :demon, :no_teleport or :unknown, and the lines
+  def self.cast_at_circle
+    wait_for_mana
+    fput "release" unless checkprep == "None"
+    dothistimeout "prepare 740", 5, /Your spell is ready|already have/
+    rooms_before = XMLData.room_count
+    lines = collect_lines("cast circle", CAST_END)
+    waitcastrt?
+
+    # A trip between realms may also say the rift opens before it moves you, so check for
+    # the move before treating it as a rift to walk through
+    rift = lines.any? { |line| line =~ RIFT_OPENS }
+    result = if lines.any? { |line| line =~ DEMON } then :demon
+             elsif lines.any? { |line| line =~ NO_TELEPORT } then :no_teleport
+             elsif lines.any? { |line| line =~ BACKLASH } then :backlash
+             elsif wait_to_move(rooms_before, rift ? 2 : 5) then :moved
+             elsif rift then :rift
+             else :unknown
+             end
+    [result, lines]
+  end
+
+  def self.help
+    respond
+    respond "fizzport - Planar Shift (740) to a pattern in your rune books."
+    respond
+    respond "Usage:"
+    respond "  ;fizzport <destination>     a shortcut, or any part of a pattern's label"
+    respond "                              e.g. ;fizzport icemule, ;fizzport hanging gardens"
+    respond "  ;fizzport patterns          every pattern in every rune book (reads all the pages)"
+    respond "  ;fizzport list              shortcuts, the realm you're in and your Demonology ranks"
+    respond "  ;fizzport help              this help"
+    respond
+    respond "Options (after the destination):"
+    respond "  --long        use #{CHALKS[:long][:what]}, whatever fizzport thinks you need"
+    respond "  --crystal     use #{CHALKS[:crystal][:what]}, whatever fizzport thinks you need"
+    respond "  --tries=N     give up after N casts that backlash (default #{DEFAULT_TRIES})"
+    respond
+    respond "Settings:"
+    respond "  shiftsack   #{sack || '(not set)'}   rune books and chalk"
+    respond "              ;vars set shiftsack=<container> (falls back to runestonesack, then infusesack)"
+    respond "  runebook    #{UserVars.runebook.to_s.strip.empty? ? '(every book in the shiftsack)' : UserVars.runebook}"
+    respond "              ;vars set runebook=<name> to only search one book (e.g. blue.book)"
+    respond
+  end
+
+  def self.list
+    here = current_realm
+    respond
+    respond "  You're in #{Room.current&.location || 'an unmapped room'} (realm: #{here || 'unknown'}), " \
+            "with #{demonology} Demonology ranks."
+    respond
+    DESTINATIONS.each { |key, label|
+      names = [key] + ALIASES.select { |_word, target| target == key }.keys
+      respond "  #{names.join(', ').ljust(20)} #{label}"
+    }
+    respond
+    respond "  Anything else is matched against the labels in your rune books (;fizzport patterns)."
+    respond
+  end
+
+  def self.patterns
+    books = rune_books
+    if books.empty?
+      msg "No rune books in your #{sack}."
+      return
+    end
+    empty_hands
+    @emptied_hands = true
+    squelch(true)
+    books.each { |book|
+      held = take(book)
+      next if held.nil?
+
+      respond
+      respond "  #{held.name}:"
+      page = nil
+      BOOK_PAGES.times { |i|
+        if i.positive?
+          page = turn(held)
+          break if page.nil?
+        end
+        read_page(held).each { |number, color, label|
+          where = page ? "page #{page.to_s.rjust(2)}" : 'open page'
+          respond "    #{where}  ##{number.to_s.ljust(3)} #{label.ljust(36)} #{color} (#{realm_of(color) || 'unknown realm'})"
+        }
+      }
+      put_away(held)
+    }
+    respond
+  ensure
+    squelch(false)
+  end
+
+  # === main ======================================================================
+  def self.run(args)
+    # Module state survives between runs (Lich re-opens the same module), so reset it
+    @cleaned_up = false
+    @emptied_hands = false
+    @filled_hands = false
+    @book = nil
+    @chalk = nil
+
+    words = args.reject { |arg| arg.start_with?('--') }
+    tries = (args.find { |arg| arg =~ /^--tries=\d+$/ }&.split('=')&.last || DEFAULT_TRIES).to_i
+    forced = (:long if args.include?('--long')) || (:crystal if args.include?('--crystal'))
+
+    if words.empty? || words.first =~ /^(help|\?)$/i
+      help
+      exit
+    elsif words.first =~ /^list$/i
+      list
+      exit
+    end
+
+    if sack.nil?
+      msg "Set the container with your rune books and chalk first: ;vars set shiftsack=<container name>"
+      exit
+    end
+
+    # before_dying, not ensure: on ;kill the script's thread dies first and fput from its
+    # ensure fails; before_dying runs after
+    before_dying { Fizzport.cleanup }
+
+    if words.first =~ /^patterns?$/i
+      patterns
+      exit
+    end
+
+    unless Spell[740].known?
+      msg "You don't know Planar Shift (740)."
+      exit
+    end
+    if circle_here?
+      msg "There's already a summoning circle here. RUB CIRCLE to erase it (if it's yours), or move, then try again."
+      exit
+    end
+
+    text = destination_text(words)
+    books = rune_books
+    if books.empty?
+      msg "No rune books in your #{sack}."
+      exit
+    end
+
+    empty_hands
+    @emptied_hands = true
+    @book, page, number, color, label = find_pattern(books, text)
+    if @book.nil?
+      msg "No pattern labelled \"#{text}\" in your rune books (;fizzport patterns lists them)."
+      exit
+    end
+    if XMLData.room_title.to_s.include?("[#{label}]")
+      msg "You're already at #{label}."
+      exit
+    end
+
+    to = realm_of(color)
+    here = current_realm
+    chalk_kind, why = pick_chalk(here, to)
+    if forced
+      chalk_kind = forced
+      why = "you asked for #{CHALKS[forced][:what]}"
+    elsif chalk_kind.nil?
+      msg "#{why}, so it can't tell which chalk #{label} (#{color}) needs. Run it again with --long " \
+          "(same realm) or --crystal (another realm or zone)."
+      exit
+    end
+
+    msg "#{label}: #{@book.name}, #{page ? "page #{page}" : 'the page it was open to'}, pattern #{number} " \
+        "(#{color}, #{to || 'unknown realm'})."
+    msg "Using #{CHALKS[chalk_kind][:what]}: #{why}."
+
+    chalk = contents(find_container(sack)).find { |obj| obj.name =~ CHALKS[chalk_kind][:name] }
+    @chalk = chalk && take(chalk)
+    if @chalk.nil?
+      msg "No #{CHALKS[chalk_kind][:what]} in your #{sack}."
+      exit
+    end
+
+    exit unless draw('summoning circle', CIRCLE_DRAWN)
+    exit unless draw("pattern #{number}", PATTERN_DRAWN)
+
+    # gswiki: the book and chalk aren't needed once the circle is drawn
+    put_away(@chalk)
+    put_away(@book)
+    fill_hands
+    @filled_hands = true
+
+    casts = 0
+    loop do
+      casts += 1
+      result, lines = cast_at_circle
+      case result
+      when :moved
+        msg "Arrived: #{XMLData.room_title}"
+        return
+      when :rift
+        rooms_before = XMLData.room_count
+        fput "go rift"
+        if wait_to_move(rooms_before, 5)
+          msg "Arrived: #{XMLData.room_title}"
+        else
+          msg "The rift opened but GO RIFT didn't move you. It stays open for 60 seconds."
+        end
+        return
+      when :demon
+        msg "!!! A DEMON CAME THROUGH THE RIFT !!! Fight it or run. Stopping."
+        return
+      when :no_teleport
+        msg "This room blocks teleporting (the runes glowed yellow and faded). Move somewhere else; RUB CIRCLE to erase it."
+        return
+      when :backlash
+        msg "Backlash on cast #{casts}. The circle is still here."
+        sleep 0.5 while checkstunned
+        waitrt?
+        if casts >= tries
+          msg "#{casts} backlashes. Stopping; the circle is still here for another try."
+          return
+        end
+        if percenthealth < MIN_HEALTH_PCT
+          msg "Health is #{percenthealth}%. Stopping until you heal; the circle is still here."
+          return
+        end
+      else
+        msg "Cast #{casts} didn't open a rift or move you. The game said:"
+        show(lines)
+        return
+      end
+    end
+  end
+
+  # Puts the book and chalk back if they're still in hand and re-equips what was in hand
+  def self.cleanup
+    return if @cleaned_up
+
+    @cleaned_up = true
+    squelch(false)
+    fput "release" unless checkprep == "None"
+    put_away(@chalk)
+    put_away(@book)
+    hands.each { |hand| fput "put ##{hand.id} in my #{sack}" if hand.noun == 'book' || hand.name =~ /chalk/i }
+    fill_hands if @emptied_hands && !@filled_hands
+  end
+end
+
+Fizzport.run(Script.current.vars[1..] || [])
