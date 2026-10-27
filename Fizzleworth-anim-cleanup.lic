@@ -46,13 +46,40 @@ HARVEST_BELOW        = 3 unless defined?(HARVEST_BELOW)        # only bother whe
 HARVEST_MAX_TARGETS  = 4 unless defined?(HARVEST_MAX_TARGETS)  # cap frozen time
 HARVEST_MIN_HEALTH   = 50 unless defined?(HARVEST_MIN_HEALTH)  # abort if something's actually hitting us
 HARVEST_MANA_FLOOR   = 20 unless defined?(HARVEST_MANA_FLOOR)  # leave this much for the walk home / next prep
-IGNORE_NPCS          = /verlok|animated/i unless defined?(IGNORE_NPCS)
+IGNORE_NPCS          = /verlok|animated/i unless defined?(IGNORE_NPCS)   # fallback; my_demon's id is what really excludes it
 PAIN_SPELL           = 711 unless defined?(PAIN_SPELL)
 TETHER_SPELL         = 706 unless defined?(TETHER_SPELL)
 FRAIL_RE = /enticingly frail|ready to be severed|hovering (?:on|at) the brink|near death/i unless defined?(FRAIL_RE)
 MID_RE   = /susceptible to manipulation/i unless defined?(MID_RE)
 SAC_OK   = /You violently shatter the bond on the soul|forming shadow essence/i unless defined?(SAC_OK)
 SAC_FAIL = /impossible to forge a bond|unable to complete the link|thrown back in a small blast/i unless defined?(SAC_FAIL)
+
+# Your minor demon RIGHT NOW -- any type, under whatever illusion it wears (10.23: an imp that
+# showed as a "gnoll"), so no "verlok" fits. A silent TELL MDEMON RETURN answers with its id
+# and noun (same trick as reanim.lic / demonmana.lic) and calls it back if it had wandered
+# off. Replies:
+#   But your <a>X</a> is already here!  ...
+#   Your <a>X</a> acknowledges your order and begins to travel to your location.
+#   The magic in your location is interfering with your <a>X</a> returning to you.
+#   You have no minor demon at this time.
+# @return { id:, noun:, here: } (waits up to arrive_secs for a called-back demon), else nil.
+RETURN_REPLY = /already here!|acknowledges your order|interfering with your|You have no minor demon at this time/i unless defined?(RETURN_REPLY)
+DEMON_LINK   = %r{(?:[Bb]ut your|Your|your) <pushBold/><a exist="(\d+)" noun="([\w,'-]+)">([\w\-' ]+)</a><popBold/>} unless defined?(DEMON_LINK)
+
+def my_demon(arrive_secs = 0)
+  text = Lich::Util.quiet_command_xml("tell mdemon return", RETURN_REPLY).to_a.join("\n")
+  return nil unless text =~ DEMON_LINK
+  d = { id: $1, noun: $2, here: text.include?("already here!") }
+  if text.include?("begins to travel")
+    (arrive_secs * 2).times do
+      break if (d[:here] = GameObj.npcs.to_a.any? { |o| o && o.id.to_s == d[:id] })
+      sleep 0.5
+    end
+  end
+  d
+rescue StandardError
+  nil
+end
 
 def essence
   Resources.shadow_essence.to_i
@@ -112,13 +139,14 @@ end
 # A dead-target check aborts the nudge so we don't Pain a corpse.
 def harvest_room
   return if essence >= HARVEST_BELOW
+  mine = my_demon&.dig(:id)          # never sacrifice my own demon, whatever it looks like
   got = 0
   GameObj.targets.to_a.each do |t|
     break if essence >= ESSENCE_MAX
     break if got >= HARVEST_MAX_TARGETS
     break if checkdead || (Char.percent_health.to_i rescue 100) < HARVEST_MIN_HEALTH
     next if t.nil? || t.status.to_s =~ /dead|gone/
-    next if t.name.to_s =~ IGNORE_NPCS
+    next if t.name.to_s =~ IGNORE_NPCS || (mine && t.id.to_s == mine)
     next unless worth_essence?(t)
     id = "##{t.id}"
 
@@ -205,7 +233,7 @@ def in_hand?(noun)
   r.nil? || r =~ /#{Regexp.escape(noun)}/i
 end
 
-# Pick the weapon back up and give it to verlok. Ground first (expiry, or a
+# Pick the weapon back up and give it to the demon. Ground first (expiry, or a
 # corpse that already dissolved), then straight off the corpse by id -- NOT
 # search/loot, that's the auto-discard path. If it's still in hand after the give
 # (no demon, or one that can't hold it) it goes in the cloak.
@@ -229,8 +257,11 @@ def recover_weapon(id, noun)
   end
   return false unless got
   sleep 0.3
-  dothistimeout("give #{noun} to verlok", 3,
-    /grudgingly accepts|hand(?:s)? .* to (?:a|an|the)|refuses|isn't interested|maximum capacity|To whom|could not find/i)
+  demon = my_demon(6)
+  if demon && demon[:here]
+    dothistimeout("give #{noun} to #{demon[:noun]}", 3,
+      /grudgingly accepts|hand(?:s)? .* to (?:a|an|the)|refuses|isn't interested|maximum capacity|To whom|could not find/i)
+  end
   fput "stow #{noun}" if in_hand?(noun)
   true
 end
@@ -289,7 +320,8 @@ end
 # ("A supple Ivasian inciter drops his leather whip and snatches up a massive
 # bone-hilted claidhmore!") -- no pickup could have beaten that.
 def hostile_here?
-  GameObj.targets.any? { |t| t && t.status.to_s !~ /dead|gone/ && t.name.to_s !~ IGNORE_NPCS }
+  mine = my_demon&.dig(:id).to_s
+  GameObj.targets.any? { |t| t && t.status.to_s !~ /dead|gone/ && t.name.to_s !~ IGNORE_NPCS && t.id.to_s != mine }
 rescue StandardError
   false
 end
@@ -333,7 +365,7 @@ end
 # still in the room -- instead of deferring the weapon hand-off to the town edge
 # the animate goes out with a bang. The wiki doesn't say what becomes of its
 # weapon, so the existing loss recovery (ground first, then the corpse by id) runs
-# right after, WITH the movers still frozen, and hands it to verlok. Falls back
+# right after, WITH the movers still frozen, and hands it to the demon. Falls back
 # to the old deferral if it can't be done. `;vars set reanim_explode=off` to skip.
 def explode_enabled?
   v = UserVars.reanim_explode
@@ -356,7 +388,7 @@ def explode_animate
   deadline = Time.now + 6
   sleep 0.2 until animate_lost? || Time.now > deadline
   return false unless animate_lost?          # didn't take -- let the caller fall back
-  rescue_weapon_after_loss                   # weapon -> verlok before anything walks off
+  rescue_weapon_after_loss                   # weapon -> demon before anything walks off
   true
 end
 

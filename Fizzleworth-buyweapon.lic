@@ -1,12 +1,12 @@
 =begin
   Fizzleworth-buyweapon.lic
 
-  Makes sure the minor demon (verlok'asha) is carrying a spare weapon for
-  ;reanim to hand the animate. If it isn't, buys one at Wineberry's in
+  Makes sure the minor demon (any type, under any illusion) is carrying a spare
+  weapon for ;reanim to hand the animate. If it isn't, buys one at Wineberry's in
   Icemule and gives it over, then returns to where it started.
 
-  Run from Fizzleworth-prep.lic. No-op (one `look` command) when verlok
-  already has the weapon.
+  Run from Fizzleworth-prep.lic. No-op (a silent TELL MDEMON RETURN and one `look`)
+  when the demon already has the weapon.
 
   Knobs (UserVars, so per-character):
     reanim_weapon         noun of the weapon (default "claidhmore")
@@ -22,11 +22,40 @@ module FizzBuyWeapon
   WITHDRAW  = 2000          # a buffer over the ~1200 the claidhmore haggles to
   SHOP      = "weaponshop"  # go2 alias -> Wineberry's, Icemule
 
-  # `look at verlok` prints its fixed description, then -- only when it's
+  # Your minor demon's room noun, whatever type it is and whatever illusion it wears (an
+  # imp showed as a "gnoll" on 10.23). A silent TELL MDEMON RETURN answers with its id and
+  # noun, and calls it back to the room if it had wandered off. Replies:
+  #   But your <a>X</a> is already here!  ...
+  #   Your <a>X</a> acknowledges your order and begins to travel to your location.
+  #   The magic in your location is interfering with your <a>X</a> returning to you.
+  #   You have no minor demon at this time.
+  RETURN_REPLY = /already here!|acknowledges your order|interfering with your|You have no minor demon at this time/i
+  DEMON_LINK   = %r{(?:[Bb]ut your|Your|your) <pushBold/><a exist="(\d+)" noun="([\w,'-]+)">([\w\-' ]+)</a><popBold/>}
+
+  # @return the demon's noun once it is in the room, else nil
+  def demon_noun(arrive_secs = 6)
+    text = Lich::Util.quiet_command_xml("tell mdemon return", RETURN_REPLY).to_a.join("\n")
+    return nil unless text =~ DEMON_LINK
+    id, noun = $1, $2
+    here = text.include?("already here!")
+    if text.include?("begins to travel")
+      (arrive_secs * 2).times do
+        break if (here = GameObj.npcs.to_a.any? { |o| o && o.id.to_s == id })
+        sleep 0.5
+      end
+    end
+    here ? noun : nil
+  rescue StandardError
+    nil
+  end
+
+  # `look at <demon>` prints its fixed description, then -- only when it's
   # carrying something -- a trailing "The iron verlok'asha is holding X." line.
   # Read lines for a few seconds, stopping early once that line shows.
-  def verlok_has_weapon?
-    put "look at verlok"
+  def demon_has_weapon?
+    noun = demon_noun
+    return false unless noun
+    put "look at #{noun}"
     deadline = Time.now + 4
     txt = +""
     until Time.now > deadline
@@ -44,7 +73,7 @@ module FizzBuyWeapon
   # Symbol of Blessing (Voln step 2+): blesses a weapon HELD IN THE RIGHT HAND so
   # it can hurt undead; permanent but each swing uses up one of its
   # (level + 2*rank) blesses; costs favor. gswiki Symbol_of_Blessing. Done to a
-  # freshly bought claidhmore before it goes to verlok, so the animate swings a
+  # freshly bought claidhmore before it goes to the demon, so the animate swings a
   # blessed weapon. Turn it off with `;vars set reanim_bless=false`.
   BLESS_OK   = /wave of power flows outward from you|white light wraps around/i
   BLESS_FAIL = /already (?:blessed|has a bless)|not blessable|cannot be blessed|can't be blessed|must be (?:holding|wielding)|right hand|do not have enough favor|don't have enough favor|not a member|You are not|could not find|What were you referring/i
@@ -94,23 +123,26 @@ module FizzBuyWeapon
     r.nil? || r =~ /#{Regexp.escape(NOUN)}/i
   end
 
-  # Give the weapon to verlok and say whether it actually took it (it's out of my
+  # Give the weapon to the demon and say whether it actually took it (it's out of my
   # hands afterwards). No demon, or one that can't hold it -> it's still in hand,
   # so stow it (the cloak) instead of carrying it into the hunt (10.04: the demon
   # had timed out, we logged "gave it to verlok" anyway and five hunts ran with an
   # unarmed animate).
-  def give_to_verlok
-    dothistimeout("give #{NOUN} to verlok", 4,
-      /grudgingly accepts|hand(?:s)? .* to (?:a|an|the)|refuses|isn't interested|maximum capacity|To whom|could not find/i)
+  def give_to_demon
+    noun = demon_noun
+    if noun
+      dothistimeout("give #{NOUN} to #{noun}", 4,
+        /grudgingly accepts|hand(?:s)? .* to (?:a|an|the)|refuses|isn't interested|maximum capacity|To whom|could not find/i)
+    end
     return true unless in_hand?
     fput "stow #{NOUN}"
-    echo "[buyweapon] verlok didn't take the #{NOUN} -- it's in the cloak; reanim will drop it itself. (A demon that can't hold one, like an igaesha, lands here every hunt.)"
+    echo "[buyweapon] the demon didn't take the #{NOUN} -- it's in the cloak; reanim will drop it itself. (A demon that can't hold one, like an igaesha, lands here every hunt.)"
     false
   end
 
   def run
-    if verlok_has_weapon?
-      echo "[buyweapon] verlok already has a #{NOUN} -- nothing to do."
+    if demon_has_weapon?
+      echo "[buyweapon] the demon already has a #{NOUN} -- nothing to do."
       return
     end
     # Before spending ~1200: is it already on us (stowed in the cloak, or in a
@@ -119,11 +151,11 @@ module FizzBuyWeapon
     g = dothistimeout("get #{NOUN}", 4,
           /You (?:retrieve|get|remove|pick up|take)|You already have|could not find|What were you referring|can't find/i).to_s
     if g =~ /You (?:retrieve|get|remove|pick up|take)|already have/i
-      ok = give_to_verlok
-      echo "[buyweapon] found the #{NOUN} on me -- #{ok ? 'gave it to verlok' : 'kept it (no verlok)'} instead of buying."
+      ok = give_to_demon
+      echo "[buyweapon] found the #{NOUN} on me -- #{ok ? 'gave it to the demon' : 'kept it (no demon)'} instead of buying."
       return
     end
-    echo "[buyweapon] verlok has no #{NOUN} -- buying one at Wineberry's."
+    echo "[buyweapon] the demon has no #{NOUN} -- buying one at Wineberry's."
 
     start = (Room.current.id rescue nil)
 
@@ -146,8 +178,8 @@ module FizzBuyWeapon
 
     if r =~ /Sold for|hands you (?:a|an|the)/i
       bless_weapon
-      ok = give_to_verlok
-      echo "[buyweapon] bought a #{NOUN}#{ok ? ' and gave it to verlok' : ' (kept -- no verlok)'}."
+      ok = give_to_demon
+      echo "[buyweapon] bought a #{NOUN}#{ok ? ' and gave it to the demon' : ' (kept -- no demon)'}."
     else
       echo "[buyweapon] !! couldn't buy a #{NOUN} (order ##{ORDER_NUM}): #{r.strip[0, 120]}"
     end
