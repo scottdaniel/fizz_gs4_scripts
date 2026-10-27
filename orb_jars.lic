@@ -1,0 +1,154 @@
+# orb_jars.lic
+=begin
+      author: Fizzleworth
+        name: orb_jars
+        game: gemstone
+        tags: locker, jar, orb gem, charge item, 517
+    requires: Lich > 5.14.2
+     version: 0.1
+        note: Written with assistance from Claude (Anthropic).
+
+  Moves the gem jars most likely to hold orb gems from the locker's deep chest
+  into the trunk, so they can be checked with ;orb_check and used with
+  ;charge_me_up_scotty. Stand in your locker with it open (OPEN LOCKER).
+
+  Usage:
+    ;orb_jars           move the jars on the list (one jar per kind)
+    ;orb_jars list      just show the list and what the chest has
+
+  The list (most likely first), from what ;orb_check found on 2026-10-20 (11 orbs
+  in 65 gems: pink/black pearls, uncut rubies, uncut emeralds, pink sapphires),
+  the gswiki (all tiny pearls are pure), and value, since an orb gem has to be
+  worth 1,000+ to use and a cheaper orb caps what it can add to an item.
+=end
+
+module OrbJars
+  JARS = [
+    'pink pearls',     # 3 orbs in 11 (tiny ones); tiny pearls appraised 2,163-2,394
+    'black pearls',    # 2 orbs, one of them large
+    'white pearls',    # tiny pearls are all pure (gswiki); ~1,500
+    'grey pearls',     # same
+    'uncut emeralds',  # 2 orbs; 3,750-5,500
+    'uncut rubies',    # 2 orbs; 2,500-3,000
+    'pink sapphires',  # 2 orbs in 18; 2,500
+    'uncut diamonds',  # 3,750-5,500 (0 of 3 so far, a tiny sample)
+    'black opals',     # 2,000
+    'blue sapphires',  # sapphires have given orbs; no wiki value
+  ].freeze
+
+  FROM = 'deep chest'
+  TO   = 'trunk'
+
+  # Verified 2026-10-20: "You remove an opalescent glass jar containing ... from in a deep chest."
+  # "You put an ora-edged snake skin sack in a dark stained antique oak trunk bound in wrought iron."
+  # "Your bag won't fit in a dark stained antique oak trunk bound in wrought iron."
+  GET_DONE = /^You (?:remove|get|grab|pull|take|pick up)|^Get what\?|^I could not find|^What were you referring to|^You need a free hand|^You can't/
+  PUT_DONE = /^You (?:put|place|slip|tuck|add|drop)|^I could not find|^What were you referring to|won't fit|^That is closed|too (?:full|heavy|large)|can't hold/
+
+  def self.msg(text)
+    respond "[orb_jars] #{text}"
+  end
+
+  # "deep chest" / "trunk": the last word is the noun, the rest has to be in the name
+  def self.matches?(obj, name)
+    words = name.split
+    obj.noun.to_s.casecmp?(words.last) && words[0..-2].all? { |word| obj.name.to_s =~ /\b#{Regexp.escape(word)}/i }
+  end
+
+  # The locker's chest and trunk are room objects once it's open
+  def self.find(name)
+    GameObj.loot.to_a.find { |obj| matches?(obj, name) } || GameObj.inv.find { |obj| matches?(obj, name) }
+  end
+
+  def self.held?(id)
+    [GameObj.right_hand, GameObj.left_hand].any? { |hand| hand.id.to_s == id.to_s }
+  end
+
+  def self.wait_for(seconds = 3)
+    (seconds * 10).to_i.times {
+      return true if yield
+      sleep 0.1
+    }
+    yield
+  end
+
+  def self.collect(action, done, timeout = 5)
+    lines = []
+    Script.current.clear
+    put action
+    end_time = Time.now.to_f + timeout
+    loop do
+      line = get?
+      if line.nil?
+        sleep 0.1
+      else
+        lines << line
+        break if line =~ done
+      end
+      break if Time.now.to_f > end_time
+    end
+    lines
+  end
+
+  # Lich keeps "containing pink pearls" in after_name, not name (name is just "opalescent
+  # glass jar"), so match on full_name
+  def self.jar_for(contents, kind)
+    contents.find { |obj| obj.noun == 'jar' && obj.full_name =~ /containing #{Regexp.escape(kind)}\z/i }
+  end
+
+  def self.run(args)
+    # Module state survives between runs (Lich re-opens the module)
+    @emptied_hands = false
+    from = find(FROM)
+    to = find(TO)
+    unless from && to
+      msg "Can't see your #{[(FROM unless from), (TO unless to)].compact.join(' or ')}. Stand in your locker and OPEN LOCKER first."
+      exit
+    end
+
+    # A fresh LOOK IN right before picking, so the IDs are live (cached contents go stale)
+    fput "look in ##{from.id}"
+    contents = from.contents.to_a
+    found = JARS.map { |kind| [kind, jar_for(contents, kind)] }
+
+    if args.first.to_s =~ /\A(?:list|help|\?)\z/i
+      msg "The #{JARS.size} jar kinds, most likely to hold orb gems first:"
+      found.each_with_index { |(kind, jar), i| respond "    #{(i + 1).to_s.rjust(2)}. #{kind.ljust(16)} #{jar ? 'in the chest' : '(no jar in the chest)'}" }
+      exit
+    end
+
+    todo = found.select { |_kind, jar| jar }
+    missing = found.reject { |_kind, jar| jar }.map(&:first)
+    msg "No jar of #{missing.join(', ')} in your #{from.name}." unless missing.empty?
+    if todo.empty?
+      msg "Nothing to move."
+      exit
+    end
+
+    before_dying { fill_hands if @emptied_hands }
+    empty_hands
+    @emptied_hands = true
+
+    moved = []
+    todo.each do |kind, jar|
+      collect("get ##{jar.id}", GET_DONE)
+      unless wait_for { held?(jar.id) }
+        msg "Couldn't pick up the jar of #{kind}."
+        next
+      end
+      lines = collect("put ##{jar.id} in ##{to.id}", PUT_DONE)
+      if wait_for { !held?(jar.id) }
+        moved << kind
+        next
+      end
+
+      msg "The #{to.name} wouldn't take the jar of #{kind}: #{lines.last}"
+      collect("put ##{jar.id} in ##{from.id}", PUT_DONE)
+      break
+    end
+
+    msg "Moved #{moved.size} jar#{moved.size == 1 ? '' : 's'} to your #{to.name}: #{moved.join(', ')}."
+  end
+end
+
+OrbJars.run(Script.current.vars[1..] || [])
