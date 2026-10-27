@@ -41,6 +41,7 @@ module OrbCheck
   # "Your pink pearl flickers in and out of existence for a moment but then stabilizes.  It seems
   # heavier." Only pure gems phase at all, so that's an orb too.
   ORB_REGEX    = /insubstantial and appears lighter|flickers in and out of existence/
+  UNPHASED_REGEX = /flickers in and out of existence/
   # Verified 2026-10-20: "An uncut diamond resists the effects of your magic!"
   RESIST_REGEX = /resists the effects of your magic/
   PREP_DONE    = /^Your spell(?:song)? is ready\.|^You already have a spell readied|^You can't think clearly enough|^You are concentrating too intently|^You are too injured|^But you don't have any mana|^You can't make that dextrous|^You do not know that spell|cough up some blood/
@@ -154,7 +155,8 @@ module OrbCheck
     sleep 0.5 until checkmana >= cost
   end
 
-  # True if the gem in hand is an orb gem. Mana is gated before the PREP and re-read
+  # :phased (an orb, shifting now), :unphased (an orb that was already shifting and this
+  # cast turned it solid), or false (not an orb). Mana is gated before the PREP and re-read
   # right before the CAST, so it never casts short and overextends.
   def self.orb?(gem)
     cost = Spell[704].mana_cost
@@ -173,7 +175,8 @@ module OrbCheck
     wait_for_mana(cost)
     lines = collect("cast at ##{gem.id}", CAST_DONE)
     waitcastrt?
-    return true if lines.any? { |line| line =~ ORB_REGEX }
+    return :unphased if lines.any? { |line| line =~ UNPHASED_REGEX }
+    return :phased if lines.any? { |line| line =~ ORB_REGEX }
     return false if lines.any? { |line| line =~ RESIST_REGEX }
 
     # Neither phased nor resisted: show it (once) so it can be checked
@@ -185,20 +188,26 @@ module OrbCheck
     false
   end
 
-  # Turns a shifting (phased) gem in hand solid again, so it doesn't stay weightless and
-  # "Special" for the spell's whole duration (that keeps containers out of locker trunks).
-  # Exactly one DROP, and only while it's shifting: on a solid gem, DROP really drops it.
-  # Returns the hand the gem is in afterwards, or nil if it got away.
+  # Turns a gem that just phased solid again, so it doesn't stay weightless and "Special"
+  # for the spell's whole duration (that keeps containers out of locker trunks).
+  # Exactly one DROP: on a shifting gem it turns solid and stays in hand; on a solid gem
+  # DROP really drops it. Only called when the cast said it phased ("insubstantial and
+  # appears lighter"). The hand's name doesn't say "shifting" (2026-10-27: waiting for that
+  # meant no DROP was ever sent and every orb went into the satchel shifting), so the cast
+  # result is the signal. Returns the hand the gem is in afterwards, or nil if it got away.
   def self.solidify(side, gem)
-    item = nil
-    return side unless wait_for(2) { (item = hand(side)).id && item.name =~ /\bshifting\b/i }
-
-    collect("drop ##{item.id}", SOLID_DONE)
-    return side if wait_for { hand(side).id && hand(side).name !~ /\bshifting\b/i }
-    return side unless hand_empty?(side)
+    # Phasing swaps in a new ID; give the hand a moment to show it
+    wait_for(2) { hand(side).id && hand(side).id.to_s != gem.id.to_s }
+    item = hand(side)
+    text = collect("drop ##{item.id || gem.id}", SOLID_DONE).join("\n")
+    # The hand may not show the new ID yet: try once more by noun (a held jar has a different one)
+    text = collect("drop my #{gem.noun}", SOLID_DONE).join("\n") if text =~ /^I could not find|^What were you/
+    @phased = nil
+    return side if text =~ /solid state again/
+    return side unless text =~ /^You drop/ || hand_empty?(side)
 
     # It hit the floor after all: pick it back up
-    floor = GameObj.loot.to_a.find { |obj| obj.noun == gem.noun && obj.name !~ /\bshifting\b/i }
+    floor = GameObj.loot.to_a.find { |obj| obj.noun == gem.noun }
     if floor
       collect("get ##{floor.id}", GET_DONE)
       return %w[left right].find { |s| hand(s).id.to_s == floor.id.to_s } if wait_for { held?(floor.id) }
@@ -214,8 +223,12 @@ module OrbCheck
   # again swaps the original back), so it's put away by hand, never by its old ID.
   def self.check_gem(gem, home)
     side = GameObj.left_hand.id.to_s == gem.id.to_s ? 'left' : 'right'
-    orb = orb?(gem)
-    side = solidify(side, gem) if orb
+    result = orb?(gem)
+    orb = result ? true : false
+    if result == :phased
+      @phased = side
+      side = solidify(side, gem)
+    end
     return nil if side.nil?
 
     collect("put #{side} in ##{(orb ? @dest : home).id}", PUT_DONE)
@@ -316,6 +329,7 @@ module OrbCheck
     @checked = 0
     @missed = 0
     @shown_unknown = false
+    @phased = nil
     @cleaned_up = false
     @emptied_hands = false
 
@@ -401,8 +415,11 @@ module OrbCheck
       obj = hand(side)
       next if obj.id.nil? || (@jar && obj.id.to_s == @jar.id.to_s)
 
-      # One DROP turns a shifting gem solid in hand (it isn't dropped); never on a solid one
-      if obj.name =~ /\bshifting\b/i
+      # One DROP turns a shifting gem solid in hand (it isn't dropped); never on a solid one.
+      # @phased says a gem in this hand phased and hasn't been solidified (the hand's name
+      # doesn't say "shifting", so that can't be the test)
+      if @phased == side
+        @phased = nil
         fput "drop ##{obj.id}"
         sleep 0.5
         obj = hand(side)
