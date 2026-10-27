@@ -5,7 +5,7 @@
         game: gemstone
         tags: bounty, adventurer's guild
     requires: Lich > 5.4.0
-     version: 1.2
+     version: 1.4
 
   undead_bounty.lic with the "must be undead" test replaced by an allowed list, and
   with heirloom and rescue-child tasks accepted by AREA.
@@ -21,8 +21,9 @@
     3. Keep it if it qualifies, otherwise `ask taskmaster for removal` and loop:
          kill ("suppress X activity") and dangerous-creature tasks: the creature's name
            contains anything on your creature list
-         heirloom and rescue-child tasks: the task's AREA contains anything on your
-           areas list (the attacking creature can be anything)
+         heirloom and rescue-child tasks: the attacking creature is on your creature list
+           (you must kill it to loot the heirloom / free the child), or the task's AREA
+           contains anything on your areas list
          gem orders: any gem (they drop while hunting anywhere); optionally only from
            certain towns' dealers (`gem_towns:` in the yaml, empty = any town)
 
@@ -39,6 +40,15 @@
   started in. See undead_bounty.lic for those details.
 
   changelog:
+    1.4
+      - heirloom/rescue tasks are accepted when the ATTACKER is on the creature list (or the
+        area is on the areas list): an Ice Plains heirloom vs a storm giant is unreachable while
+        hunting the Frozen Battlefield, so area alone is not enough
+    1.3
+      - a LOOTED heirloom is delivered (find it in your hands/containers, hold it in the right
+        hand, ask the guard -- the logic from ebounty.lic's Task.ask_guard), then turned in;
+        a "succeeded, return to the Adventurer's Guild" bounty is turned in too
+      - guard confirmation also accepts "You have completed your task" / "Ah, so you have returned"
     1.2
       - accept gem orders (:gem_assignment -> the town's gem dealer -> :gem), optionally
         limited to certain towns with gem_towns
@@ -346,7 +356,7 @@ module BountyChooser
   AREA_TASK_TYPES = %i[heirloom rescue].freeze
   # Mid-task states with too little data to judge (no creature/area in the text): never
   # tossed for a reroll.
-  IN_PROGRESS_STATES = %i[dangerous_spawned heirloom_found rescue_spawned].freeze
+  IN_PROGRESS_STATES = %i[dangerous_spawned rescue_spawned].freeze
 
   # What counts as a good task. creatures/areas/gem_towns are lowercase lists.
   Rules = Struct.new(:creatures, :areas, :gem_towns)
@@ -455,7 +465,9 @@ module BountyChooser
     end
   end
 
-  GUARD_TASK_COMPLETE_PATTERN = /successfully completed your task/i.freeze
+  # "successfully completed your task" (kill/gem/...) and, from ebounty.lic, the lines a
+  # guard gives when the task is done or an heirloom is handed back.
+  GUARD_TASK_COMPLETE_PATTERN = /successfully completed your task|You have completed your task|Ah, so you have returned/i.freeze
   TASKMASTER_TURN_IN_PATTERN = /Good job/i.freeze
 
   # if a previous run already finished killing/gathering/etc. and just never
@@ -466,6 +478,13 @@ module BountyChooser
   def self.turn_in_bounty(task)
     respond 'BountyChooser: found a completed bounty waiting to be turned in, handling that first...'
 
+    report_to_guard(task)
+    finish_at_taskmaster
+  end
+
+  # Ask the town's guard about the bounty (the report, or handing the heirloom back).
+  # Stops the script if the guard never confirms, so you can check by hand.
+  def self.report_to_guard(task)
     npc = locate_guard(task.town)
     confirmed = false
     5.times do
@@ -487,7 +506,11 @@ module BountyChooser
       respond "BountyChooser: #{npc.noun} didn't confirm the completed task, stopping so you can check manually."
       exit
     end
+    npc
+  end
 
+  # The last step of every task: the taskmaster says "Good job", then the reward goes to the bank.
+  def self.finish_at_taskmaster
     go_to_advguild
     confirmed = false
     5.times do
@@ -516,6 +539,75 @@ module BountyChooser
     waitrt?
   end
 
+  # ---- heirloom delivery (from ebounty.lic's Task.ask_guard) -------------------------------
+  # Once the heirloom is looted, `bounty` says "You have located a <item> and should bring it
+  # back to <guard>." (type :heirloom_found). ebounty finds that item in your containers,
+  # takes it in the right hand and asks the guard about the bounty; then the task becomes
+  # "succeeded, return to the Adventurer's Guild" (:taskmaster) and the usual turn-in follows.
+  HEIRLOOM_FOUND_PATTERN = /You have located (?:an?|some )?(?<item>.+?) and should bring (?:it back|your find)/i.freeze
+  CONTAINER_NOUNS = /\b(?:cloak|sack|bag|backpack|pouch|satchel|case|haversack|knapsack|tote|trunk|mantle|bandolier|harness|coffer)\b/i.freeze
+
+  # The heirloom: in a hand already (returns that GameObj), or in one of your containers
+  # (looked into fresh, loot sack first). nil if it isn't anywhere.
+  def self.find_heirloom(item_name)
+    q = /#{Regexp.escape(item_name)}/i
+    held = [GameObj.right_hand, GameObj.left_hand].compact.find { |h| h.name.to_s =~ q }
+    return held if held
+
+    lootsack = Vars.lootsack.to_s.strip
+    containers = GameObj.inv.to_a.select { |i| i.noun.to_s =~ CONTAINER_NOUNS || i.name.to_s =~ CONTAINER_NOUNS }
+    containers = containers.sort_by { |c| !lootsack.empty? && c.name.to_s.include?(lootsack) ? 0 : 1 }
+    containers.each do |c|
+      fput "open ##{c.id}"
+      fput "look in ##{c.id}"
+      sleep 0.5
+      found = c.contents.to_a.find { |x| x.name.to_s =~ q }
+      return found if found
+    end
+    nil
+  end
+
+  # Empty both hands except for `keep`, so the heirloom can go in the right one. A weapon goes
+  # to its sheath with STORE; anything else is stowed.
+  def self.free_hands_except(keep)
+    [['right', GameObj.right_hand], ['left', GameObj.left_hand]].each do |hand, obj|
+      next if obj.nil? || obj.id.nil? || obj.id == keep.id
+
+      fput "store #{hand}"
+      sleep 0.5
+      fput "stow #{hand}" if (hand == 'right' ? GameObj.right_hand : GameObj.left_hand)&.id == obj.id
+    end
+  end
+
+  def self.deliver_heirloom(task)
+    m = checkbounty.to_s.match(HEIRLOOM_FOUND_PATTERN)
+    unless m
+      respond "BountyChooser: you have a found heirloom to return, but I couldn't read its name from `bounty` - stopping so you can hand it in yourself."
+      exit
+    end
+    item_name = m[:item].strip
+    respond "BountyChooser: found heirloom '#{item_name}' - taking it to the guard."
+
+    item = find_heirloom(item_name)
+    unless item
+      respond "BountyChooser: couldn't find '#{item_name}' in your hands or containers - stopping so you can check."
+      exit
+    end
+
+    free_hands_except(item)
+    if GameObj.right_hand&.id == item.id
+      # already where it should be
+    elsif GameObj.left_hand&.id == item.id
+      fput 'swap'
+    else
+      fput "_drag ##{item.id} right"
+    end
+    waitrt?
+
+    report_to_guard(task)
+    finish_at_taskmaster
+  end
+
   # checks status ONCE before touching anything, and handles whatever's
   # already there:
   #   - a completed task waiting on a guard report -> turn it in
@@ -531,6 +623,19 @@ module BountyChooser
 
     if task.type == :guard
       turn_in_bounty(task)
+      return
+    end
+
+    # Found heirloom: bring it to the guard (ebounty.lic does the same), then turn in.
+    if task.type == :heirloom_found
+      deliver_heirloom(task)
+      return
+    end
+
+    # "You have succeeded in your task and can return to the Adventurer's Guild."
+    if task.type == :taskmaster
+      respond 'BountyChooser: a finished bounty is waiting at the taskmaster, handling that first...'
+      finish_at_taskmaster
       return
     end
 
@@ -699,15 +804,18 @@ module BountyChooser
 
   # Is this task one to keep?
   #   kill / dangerous-creature tasks (:cull, :dangerous): the creature is on the list
-  #   heirloom / rescue-child tasks: the AREA is on the areas list (the creature can be
-  #     anything -- these are about being in the right place)
+  #   heirloom / rescue-child tasks: the attacking CREATURE is on the creature list (you have to
+  #     kill that creature to loot the heirloom / free the child, so it must be one you hunt),
+  #     OR the AREA is on the areas list. 10/26: "storm giant on the Ice Plains" was assigned
+  #     as an Ice Plains heirloom, but bigshot hunts the Frozen Battlefield (north of the Ice
+  #     Plains), so the area alone can't be trusted -- the creature has to be there.
   #   gem orders (:gem): any gem; the dealer's town must be allowed (if gem_towns is set)
   def self.task_acceptable?(task, rules)
     case task.type
     when :cull, :dangerous
       creature_allowed?(task.creature, rules.creatures)
     when *AREA_TASK_TYPES
-      area_allowed?(task.location, rules.areas)
+      creature_allowed?(task.creature, rules.creatures) || area_allowed?(task.location, rules.areas)
     when :gem
       gem_town_allowed?(task.town, rules.gem_towns)
     else
@@ -810,8 +918,8 @@ module BountyChooser
     respond 'Kill ("suppress X activity") and dangerous-creature bounties are kept when the'
     respond 'creature name CONTAINS any entry of the (comma-separated) creature list, case-'
     respond 'insensitive. The creature does NOT have to be undead. Heirloom and rescue-child'
-    respond 'bounties are kept when their AREA contains any entry of --areas= (the attacker can'
-    respond 'be anything); with no areas listed they are removed. Gem orders are kept too (any'
+    respond 'bounties are kept when the attacking creature is on the creature list (you have to kill'
+    respond 'it) or their AREA contains any entry of --areas=. Gem orders are kept too (any'
     respond 'gem; optionally only for certain towns -- see gem_towns below).'
     respond ''
     respond 'The yaml file looks like:'
@@ -833,6 +941,9 @@ module BountyChooser
     respond '(out of boosts) it asks generically and judges whatever it is offered on all of the'
     respond 'rules above; if that is not acceptable it removes it, and the next ask normally hits'
     respond "the taskmaster's cooldown, which ends the run cleanly (try again at the next rest)."
+    respond ''
+    respond 'A looted heirloom ("You have located ... and should bring it back") is found in your hands or'
+    respond 'containers, held in the right hand and handed to the guard, then turned in at the taskmaster.'
     respond ''
     respond 'Also: a completed bounty is turned in first (guard, taskmaster, bank); an acceptable'
     respond 'in-progress bounty, or one that is partway done, is left alone; rerolls are capped at'
@@ -899,9 +1010,9 @@ end
 respond "BountyChooser: unrecognised name#{'s' if unknown.length > 1} #{unknown.map { |c| "'#{c}'" }.join(', ')} (will still match by name)." unless unknown.empty?
 respond "BountyChooser: accepting kill / dangerous-creature bounties for: #{creatures.join(', ')}"
 if areas.empty?
-  respond 'BountyChooser: no areas set, so heirloom and rescue-child tasks will be removed (add `areas:` to the yaml to allow them).'
+  respond 'BountyChooser: heirloom / rescue-child tasks are kept when the attacker is on the creature list (no areas set).'
 else
-  respond "BountyChooser: and heirloom / rescue-child tasks in: #{areas.join(', ')}"
+  respond "BountyChooser: heirloom / rescue-child tasks are kept when the attacker is on that list, or the area is: #{areas.join(', ')}"
 end
 
 respond "BountyChooser: and gem orders#{gem_towns.empty? ? ' in any town' : " from the gem dealers in: #{gem_towns.join(', ')}"}."
