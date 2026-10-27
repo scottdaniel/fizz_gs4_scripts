@@ -1,0 +1,54 @@
+#Felix-prep.lic
+#Empath version of Fizzleworth-prep.lic (Felixopedes) -- the same rubs, but no
+#scroll spell-up (Felix doesn't use scrolls) and none of Fizzleworth's
+#runestaff / animate / demon / lifeguard steps. Replaces the zombies_landing
+#profile's "stow all, ready weapon".
+
+module FelixPrep
+
+# clear hands -- "store weapon" puts the lance back in the stone grey harness
+# (the STORE weapon container READY WEAPON draws it from); "stow all" mops up
+# anything left in the off-hand. Plain STOW first would send the lance to the
+# stow container instead.
+fput "store weapon"
+fput "stow all"
+
+# rub stuff, but only if the spell isn't already active -- and only pause
+# after ones that actually ran, instead of always eating 3s per item
+unless Spell[1701].active?
+  Script.run("qverb", "rub gold coin")
+  pause 3
+end
+unless Spell[1712].active?
+  Script.run("qverb", "rub small statue")
+  pause 3
+end
+unless Spell[1705].active?
+  Script.run("qverb", "rub moonstone cube")
+  pause 3
+end
+unless Spell[509].active?
+  Script.run("qverb", "rub white crystal")
+  pause 3
+end
+unless GameObj.loot.find { |i| i.name =~ /#{Char.name} disk/ }
+  Script.run("qverb", "rub black crystal")
+  pause 3
+end
+
+fput "ready weapon"
+
+# Still nothing in either hand: the lance is really gone (disarmed and never
+# recovered, or the STORE weapon setting points at something that isn't
+# there). Don't let bigshot walk back out unarmed -- stop it here, in town,
+# the same way Brayis-prep.lic does. This runs before any travel (bigshot's
+# hunting_prep_commands happen at the start of pre_hunt).
+pause 0.5
+if checkright.nil? && checkleft.nil?
+  echo "Felix-prep: nothing in hand after READY WEAPON -- stopping bigshot. " \
+       "Check the STORE weapon setting (STORE LIST)."
+  Script.kill("bigshot") if Script.running?("bigshot")
+  exit
+end
+
+end #End of module

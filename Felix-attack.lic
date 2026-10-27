@@ -1,0 +1,251 @@
+# Felix-attack.lic
+# Bigshot custom attack routine for Felixopedes (Empath, polearm). Replaces the
+# zombies_landing profile's
+#
+#   incant 118 (m5), trip target (s7), attack target(xx)
+#
+# with a single hunting command:
+#
+#   script Felix-attack
+#
+# bigshot pauses itself, runs this once against the target it already has
+# locked, then resumes to loot / wander / retarget -- so this does ONE pass and
+# returns; bigshot re-invokes it every pass while the target is still up. Death
+# is read off GameObj status (what bigshot itself uses), not a per-creature
+# kill-message regex.
+#
+# Each pass, same order as the profile line:
+#
+#   1. Web (118), once per target: recast until it lands (endroll over 100) or
+#      WEB_MAX_TRIES misses, skipped if the target is already webbed. Checked
+#      against Felix's own logs: all 178 casts that rolled 101+ said "becomes
+#      ensnared", all 31 that rolled 100 or less said "The wisps dissipate
+#      harmlessly". Targeted Web costs 5 mana (the profile's m5), and every cast
+#      is gated on the live checkmana right before it goes out -- casting
+#      without the full cost in hand overexerts. Short on mana just skips Web;
+#      melee doesn't need it.
+#   2. Trip, unless the target is already lying down, or Trip isn't available
+#      (CMan.available? -- known, enough stamina, not overexerted; bigshot gates
+#      its own trip the same way). A webbed target takes a big bonus against it
+#      (+114 on 10/27, knocked the zombie flat). Waits out the Web's cast
+#      roundtime first: on 10/27 bigshot sent trip one second early, got "Wait
+#      1 seconds." and skipped it.
+#   3. Attack. Every pass ends here, so every pass sends a real
+#      roundtime-incurring command -- that roundtime is what paces bigshot's
+#      next call (an instant silent exit makes bigshot re-run the script in a
+#      tight loop -- see Brayis-attack.lic's 2026-09-11 spam note).
+#
+# Down / webbed are read off the live creature status (Creature[id], the same
+# <crtrStatus> feed bigshot's npc_prone? uses), not off trip's own messages:
+# trip's result varies by roll (a stun, "It is knocked to the ground!", "...and
+# falls!", a sprained ankle), so there's no one success line to match.
+#
+# Both hands empty = disarmed: don't fight bare-handed (Brayis died doing that
+# on 10/22) -- ask bigshot to rest instead. Felix-prep.lic stops bigshot if the
+# lance can't be readied in town.
+
+# --- knobs -------------------------------------------------------------------
+# Methods, not guarded constants, so an edit takes effect on the next pass
+# instead of waiting for a Lich restart.
+
+# Targeted Web is a flat 5 (effect-list.xml's 10 is the untargeted room cast).
+def web_mana;      5;   end
+
+# Web is an SMR attack; it lands when the endroll (the "== +N") clears 100.
+def web_endroll;   101; end
+def web_max_tries; 3;   end
+
+# --- patterns ----------------------------------------------------------------
+
+# A wound blocking spellcasting outright -- no roundtime, so retrying is useless.
+def cant_cast_wounded
+  /can't think clearly enough to prepare a spell/i
+end
+
+# First line of every trip reply seen in Felix's logs, so the read stops as
+# soon as the game answers.
+def trip_reply
+  Regexp.union(
+    /With a fluid whirl/,                  # the attempt itself
+    /is lying down.*awkward proposition/i, # already down: free, no roundtime
+    /You cannot trip/i,                    # "You cannot trip a tree viper."
+    /fails miserably/i,                    # fumble: hit yourself in the foot
+    /bare hands/i,                         # nothing to trip with
+    /You can't reach|Trip what\?/i,
+    /^\.\.\.wait|^Wait \d+ sec/i           # still in roundtime
+  )
+end
+
+# Downcased names of creature types that answered "You cannot trip ...", so
+# later passes (and later creatures of the same name) skip straight to the
+# attack. A global because bigshot re-invokes this script every pass; lasts
+# until Lich restarts, or: ;e $felix_no_trip.clear
+$felix_no_trip ||= {}
+
+# --- helpers -----------------------------------------------------------------
+
+# Monster-agnostic death check: bigshot itself reads GameObj status, which Lich
+# core keeps current from the room/combat XML. A dead creature reads "dead"
+# while the corpse lingers, then "gone" once it decays or is looted.
+def target_dead?(foe)
+  return true if foe.nil?
+  return true if foe.status.to_s =~ /dead|gone/
+  !GameObj.targets.any? { |t| t.id.to_i == foe.id.to_i && t.status.to_s !~ /dead|gone/ }
+end
+
+# Live creature statuses, same as bigshot's npc_has_status?: a creature holding
+# several statuses at once only advertises ONE of them through GameObj#status
+# (webbed + prone may print just "prone"), so prefer Creature[id]. Falls back
+# to the status string only when there's no CreatureInstance for this id yet.
+def creature_status?(foe, statuses, fallback)
+  creature = (defined?(Creature) ? Creature[foe.id] : nil) rescue nil
+  return statuses.any? { |s| creature.has_status?(s) } if creature
+  !!(foe.status.to_s =~ fallback)
+end
+
+# NOT named webbed? / prone? / stunned?: Lich evals a script's methods into
+# Lich::Common, and Object's own globals (lib/global_defs.rb's zero-arg
+# webbed? etc. -- YOUR status, not the creature's) take priority over them.
+# A webbed?(foe) here was silently shadowed and crashed every pass on 10/27.
+def foe_webbed?(foe)
+  creature_status?(foe, %w[webbed], /webbed/)
+end
+
+# Actually off its feet -- trip on one of these is refused ("...is lying down
+# -- attempting to trip her would be a rather awkward proposition."). Stunned
+# or webbed creatures are still standing, so they still get tripped.
+def foe_down?(foe)
+  creature_status?(foe, %w[prone sitting kneeling], /prone|lying|sitting|kneeling/)
+end
+
+def hands_empty?
+  checkright.nil? && checkleft.nil?
+end
+
+# Sends cast_cmd and collects every line through the cast roundtime (a single
+# dothistimeout only sees the first matching line, not the whole result).
+def cast_and_collect(cast_cmd)
+  text_lines = []
+  put cast_cmd
+  end_time = Time.now.to_f + 6
+  loop do
+    line = get?
+    if line.nil?
+      sleep 0.1
+    else
+      text_lines << line
+      break if line =~ /Cast Roundtime \d+ Sec|Roundtime: \d+ sec/i || line =~ cant_cast_wounded
+    end
+    break if Time.now.to_f >= end_time
+  end
+  text_lines.join(' ')
+end
+
+# Web (118) at foe until it lands or web_max_tries casts miss. Once it lands,
+# misses out, or a wound blocks casting, $felix_web_done holds this target's id
+# so later passes don't recast. Short on mana leaves it unset: the next pass
+# tries again if mana has come back. A miss and an armor-hindrance failure
+# ("Your armor prevents the spell from working correctly.") both just count as
+# a try. The foe_webbed? check at the top of each try also catches a landing whose
+# "ensnared" line arrived after the cast roundtime line.
+def land_web(foe)
+  return if $felix_web_done == foe.id.to_i
+
+  tries = 0
+  while tries < web_max_tries
+    break if target_dead?(foe) || foe_webbed?(foe)
+    return if checkmana < web_mana
+    fput "release" if checkprep != "None"
+    waitrt?
+    waitcastrt?
+    return if checkmana < web_mana   # last gate right before the cast
+    text = cast_and_collect("incant 118")
+    if text =~ cant_cast_wounded
+      echo "a wound is blocking spellcasting -- skipping Web, fighting on"
+      break
+    end
+    tries += 1
+    roll = (text =~ /o100 roll:.*?==\s*\+?(-?\d+)/ ? Regexp.last_match(1).to_i : nil)
+    break if text =~ /becomes ensnared/i || (roll && roll >= web_endroll)
+  end
+  $felix_web_done = foe.id.to_i
+  waitcastrt?
+end
+
+def trip_immune?(foe)
+  $felix_no_trip.key?(foe.name.to_s.downcase)
+end
+
+def mark_trip_immune(foe)
+  name = foe.name.to_s.downcase
+  return if $felix_no_trip.key?(name)
+  $felix_no_trip[name] = true
+  echo "#{name} can't be tripped -- skipping trip on it from now on"
+end
+
+# One trip attempt at foe. Doesn't look at whether it knocked the target down
+# -- the next pass reads that off foe_down? -- so a miss just means the next
+# pass trips again while the target is still standing.
+def try_trip(foe)
+  return if target_dead?(foe) || foe_down?(foe) || trip_immune?(foe)
+  return unless CMan.available?("trip")
+
+  waitrt?
+  waitcastrt?
+  result = dothistimeout("cman trip ##{foe.id}", 3, trip_reply).to_s
+  if result =~ /^\.\.\.wait|^Wait \d+ sec/i
+    waitrt?
+    waitcastrt?
+    return if target_dead?(foe)
+    result = dothistimeout("cman trip ##{foe.id}", 3, trip_reply).to_s
+  end
+  mark_trip_immune(foe) if result =~ /You cannot trip/i
+  waitrt?
+end
+
+def finish_attack(foe)
+  return if target_dead?(foe)
+  waitrt?
+  waitcastrt?
+  fput "attack ##{foe.id}"
+  waitrt?
+end
+
+# --- main --------------------------------------------------------------------
+
+foe = GameObj.targets.find { |t| t.id.to_i == XMLData.current_target_id.to_i } if XMLData.current_target_id
+foe ||= GameObj.targets.find { |t| t.status.to_s !~ /dead|gone/ && t.name !~ /animated/ }
+
+# nothing (live) to hit -- hand control straight back to bigshot, which loots
+exit if target_dead?(foe)
+
+fput "target ##{foe.id}" unless XMLData.current_target_id.to_i == foe.id.to_i
+
+waitrt?
+waitcastrt?
+
+exit if target_dead?(foe)
+
+if hands_empty?
+  echo "########## DISARMED -- nothing in either hand ##########"
+  echo "## not fighting bare-handed -- asking bigshot to rest"
+  $bigshot_should_rest = true
+  $rest_reason = "Disarmed"
+  exit
+end
+
+# The profile hunts in offensive (bigshot normally sets it before calling this;
+# no-op then). Web is SMR and doesn't care; trip and the attack do.
+fput "stance offensive" if stance != "offensive"
+
+# If Web or trip ever raises, still attack. On 10/27 a crash on the first line
+# of land_web (webbed? -- see the helpers note) made every pass exit instantly:
+# bigshot re-ran it several times a second and Felix never swung while a zombie
+# clawed at him. Report the error, but keep fighting.
+begin
+  land_web(foe)
+  try_trip(foe)
+rescue StandardError => e
+  echo "Felix-attack: #{e.class}: #{e.message} (#{Array(e.backtrace).first}) -- skipping Web/trip this pass"
+end
+finish_attack(foe)

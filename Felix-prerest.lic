@@ -1,0 +1,23 @@
+#Felix-prerest.lic
+#Empath version of Salvi-prerest.lic (Felixopedes) -- the zombies_landing
+#profile's resting scripts (ecure, eloot sell, ewaggle) plus the shared chores
+#the other characters run. ecure instead of eherbs: an empath heals himself.
+#No wands, so no fresh-wand sweep; no instrument, so no playsongs.
+
+module FelixPrerest
+
+# First, get off any unmapped room (go2 "current room not found"): see unlost.lic.
+# Stops here -- bigshot is stopped too -- if it can't walk out.
+Script.run("unlost")
+exit if $unlost_failed
+
+Script.run("ecure")
+Script.run("eloot", "sell")
+Script.run("unburden")  # a box eloot left in hand -> sell again
+Script.run("undead_bounty", "kill zombie")
+# Restocks the rub items Felix-prep uses. A no-op until his list is set:
+#   ;vars set items_to_buy=gold coin, small statue, moonstone cube, white crystal, black crystal
+Script.run("buyitems")
+Script.run("ewaggle")
+
+end #End of module
