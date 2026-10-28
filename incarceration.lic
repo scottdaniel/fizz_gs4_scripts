@@ -1,0 +1,149 @@
+# incarceration.lic
+#
+# Answers the city official's questions while you sit in the stocks after choosing
+# INCARCERATION at your trial. Every few minutes he says
+#   "Salvi, ANSWER me these questions in order, one at a time, and within two
+#    minutes.  What is your race, today's month, and your profession?"
+# and each part has to be its own ANSWER. Miss the two minutes and he adds time.
+#
+# Why: 10/28, 19:10. Salvi cast 335 instead of 330 in Town Square, killed three
+# people, chose 38 minutes in the stocks, then lost a round to "answer halfing"
+# (it's Halfling) and got more time.
+#
+#   ;incarceration     run once you're in the stocks; it exits when the official is gone
+#
+# Parts seen in Salvi's 10/28 log, and the answers the official nodded at:
+#   your name -> Salvi                  your race -> (halfling, by Stats.race)
+#   your profession -> (cleric)         your gender -> male
+#   today's day of the week -> leyan    today's month -> jastatos
+#   the number of the hour of the day in elven time -> 19   (from TIME's "19:20")
+#   the name of the city you were charged in for your crimes -> wehnimer's
+#   the year -> 5126                    (from TIME's "in the year 5126")
+# Day of the month is a guess; it hasn't been asked yet. A part it doesn't
+# recognise gets a loud echo so you can answer it by hand. INQUIRE shows the time
+# you have left ("You've got about 31 minutes left.").
+
+module Incarceration
+
+def self.question_re
+  /The city official says, "\w+, ANSWER me these questions in order, one at a time, and within two minutes\.\s+What is (.+?)\?"/
+end
+
+def self.verdict_re
+  /The city official nods in approval at your answer|I don't think so\.\s+Try again|Answer what\?/
+end
+
+def self.say(msg)
+  _respond "<pushBold/>incarceration: #{msg}<popBold/>"
+end
+
+# TIME: "Today is Leyan, day 28 of the month Jastatos in the year 5126.  It is
+# 19:20 by the elven time standard."
+def self.game_clock
+  line = dothistimeout "time", 5, /^Today is (.+?), day (\d+) of the month (.+?) in the year (\d+)\.\s+It is (\d+):(\d+)/
+  return nil unless line =~ /^Today is (.+?), day (\d+) of the month (.+?) in the year (\d+)\.\s+It is (\d+):(\d+)/
+
+  { weekday: $1, day: $2, month: $3, year: $4, hour: $5.to_i.to_s }
+end
+
+# JUSTICE HISTORY: "You have committed 4 crimes in Wehnimer's Landing in the last
+# six months."  Falls back to the map's location for the room you're in.
+def self.charged_city
+  line = dothistimeout "justice history", 5, /crimes? in (.+?) in the last|no crimes|have not committed/i
+  return $1 if line =~ /crimes? in (.+?) in the last/i
+
+  loc = Room.current&.location.to_s.sub(/^the (town|city|village) of /i, "")
+  loc.empty? ? nil : loc
+end
+
+# Whole value first, then its words one by one, since we don't know how the game
+# matches multi-word answers (Dark Elf, Day of the Huntress, Icemule Trace).
+def self.candidates(value)
+  return [] if value.nil? || value.to_s.strip.empty?
+
+  value = value.to_s.strip
+  words = value.split(/\s+/).reject { |w| w =~ /^(of|the)$/i }
+  ([value] + words).uniq
+end
+
+def self.answers_for(part)
+  # Order matters: "day of the month" has to be caught before "month".
+  case part
+  when /your name/i               then candidates(XMLData.name)
+  when /your race/i               then candidates(Stats.race)
+  when /your profession/i         then candidates(Stats.profession)
+  when /your gender/i             then candidates(Stats.gender)
+  when /your age/i                then candidates(Stats.age)
+  when /your level/i              then candidates(Stats.level)
+  when /city|town/i
+    city = charged_city
+    # "wehnimer's" is what the official took on 10/28, so the first word goes first.
+    city ? ([city.split(/\s+/).first] + candidates(city)).uniq : []
+  when /day of the week/i         then (c = game_clock) ? candidates(c[:weekday]) : []
+  when /day of the month|date/i   then (c = game_clock) ? [c[:day]] : []
+  when /month/i                   then (c = game_clock) ? candidates(c[:month]) : []
+  when /hour/i                    then (c = game_clock) ? [c[:hour]] : []
+  when /year/i                    then (c = game_clock) ? [c[:year]] : []
+  else []
+  end
+end
+
+# "your race, today's month, and your profession" -> three parts
+def self.split_parts(text)
+  text.split(/\s*,\s*(?:and\s+)?|\s+and\s+(?=your |today|the )/).map(&:strip).reject(&:empty?)
+end
+
+def self.answer_part(part)
+  tries = answers_for(part)
+  if tries.empty?
+    say "don't know how to answer \"#{part}\". ANSWER it yourself, quickly!"
+    return false
+  end
+
+  tries.each do |guess|
+    waitrt?
+    result = dothistimeout "answer #{guess}", 5, verdict_re
+    return true if result =~ /nods in approval/
+    return true if result =~ /Answer what\?/ # nothing pending; the round's already over
+
+    say "\"#{guess}\" wasn't accepted for \"#{part}\"." if result
+  end
+  say "ran out of answers for \"#{part}\". ANSWER it yourself, quickly!"
+  false
+end
+
+def self.official_here?
+  (Array(GameObj.npcs) + Array(GameObj.loot)).any? { |o| o.name =~ /city official/i }
+end
+
+say "waiting for the city official's questions."
+seen_official = official_here?
+misses = 0
+last_check = Time.now
+
+loop do
+  line = get?
+  if line.nil?
+    sleep 0.1
+  elsif line =~ question_re
+    parts = split_parts($1)
+    say "#{parts.size} question(s): #{parts.join(' | ')}"
+    parts.each { |part| break unless answer_part(part) }
+  elsif line =~ /You've got about (\d+) minutes? left/
+    say "#{$1} minutes left."
+  end
+
+  next if Time.now - last_check < 15
+
+  last_check = Time.now
+  here = official_here?
+  seen_official ||= here
+  misses = here ? 0 : misses + 1
+  # Two checks 15 s apart, so one odd room-object refresh can't end it mid-sentence.
+  if seen_official && misses >= 2
+    say "the city official is gone, so you should be out. ;jailbox gets your things back."
+    break
+  end
+end
+
+end # module
