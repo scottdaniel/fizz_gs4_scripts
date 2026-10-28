@@ -341,6 +341,7 @@ def self.sell_with_recorder
     line
   })
   begin
+    Script.run("diskwait")  # eloot only finds the disk's boxes if the disk is here when the sell starts (10/28)
     Script.run("eloot", "sell")
   ensure
     DownstreamHook.remove("shiny_appraise_down")

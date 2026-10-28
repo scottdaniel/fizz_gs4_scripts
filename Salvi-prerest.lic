@@ -11,6 +11,7 @@ Script.run("eherbs")
 # ;eloot sell under the appraisal recorder, then store anything eloot refused to
 # sell (appraised above your eloot limits) in the locker -- only when encumbered
 # past bigshot's limit. See stow_the_shiny.lic.
+Script.start("eloot_guard") unless Script.running?("eloot_guard")  # unpauses eloot when its containers are full
 Script.run("stow_the_shiny", "sell")
 Script.run("unburden")  # a box eloot left in hand (10/24: crashed pool count) -> sell again
 Script.run("undead_bounty", "kill ghostly pooka")

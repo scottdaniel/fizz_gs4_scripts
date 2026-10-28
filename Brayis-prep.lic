@@ -47,4 +47,8 @@ end
 
 fput "grip two"
 
+# Puts away loot eloot has no room for and unpauses it, so a full cloak can't
+# leave you fighting with your hands full (see eloot_guard.lic).
+Script.start("eloot_guard") unless Script.running?("eloot_guard")
+
 end #End of module

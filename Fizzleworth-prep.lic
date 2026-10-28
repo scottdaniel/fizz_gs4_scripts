@@ -120,6 +120,10 @@ Script.start("Fizzleworth-manalog") unless Script.running?("Fizzleworth-manalog"
 # It's autostarted too; this only brings it back if it was killed after login.
 Script.start("Fizzleworth-lifeguard") unless Script.running?("Fizzleworth-lifeguard")
 
+# Puts away loot eloot has no room for and unpauses it, so a full cloak can't
+# leave you fighting with your hands full (see eloot_guard.lic).
+Script.start("eloot_guard") unless Script.running?("eloot_guard")
+
 # Fizzleworth-attack-ultima reanims / grinds once per hunt -- re-arm both.
 # Also clear reanim's "buddy exists" flag: any animate from last hunt is long
 # gone by now (730 duration, plus the whole rest/travel/shop cycle in between).

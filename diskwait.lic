@@ -1,0 +1,39 @@
+# quiet
+# diskwait.lic  (first line `# quiet`: Lich skips its "active"/"has exited" lines, so a
+# run where the disk is already here prints nothing in the game window)
+#
+# Run in a prerest right before ;eloot sell. Waits up to MAX_WAIT seconds for your
+# floating disk to catch up and show in the room, so eloot sees it.
+#
+# Why: 10/28, 02:29. go2/eherbs walk faster than the disk follows, so Fizzlestiks
+# reached the inn and ;eloot sell started a second or two before "Your disk arrives,
+# following you dutifully." eloot 2.14.1 seeds its disk from Disk.mine once, when the
+# sell starts, and its wait_for_disk returns straight away when that's nil. So it
+# never looked on the disk, took no boxes to the locksmith pool, and at the pawnshop
+# (by then the disk had caught up) it stored the two closed boxes it found there in
+# the velvet cloak and the snowcat haversack ("** fluted steel coffer is closed.
+# Storing box..."). That filled both, and at 03:06 eloot paused holding a blue crystal
+# it had nowhere to put (see eloot_guard.lic).
+#
+#   ;diskwait     wait for the disk, then exit (right away if it's already here)
+
+module Diskwait
+
+MAX_WAIT = 10 unless defined?(MAX_WAIT) # seconds; on 10/28 it lagged 2-3 s behind go2
+
+def self.disk_here?
+  !Disk.mine.nil?
+rescue StandardError
+  false
+end
+
+unless disk_here?
+  (MAX_WAIT * 5).times do
+    break if disk_here?
+
+    sleep 0.2
+  end
+  echo "diskwait: no disk in the room after #{MAX_WAIT} s, so eloot will sell without it." unless disk_here?
+end
+
+end # module

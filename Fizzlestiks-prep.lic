@@ -54,6 +54,10 @@ fput "ready weapon"
 # this script after a successful recovery, so keep this a no-op when running.
 Script.start("Fizzlestiks-disarmguard") unless Script.running?("Fizzlestiks-disarmguard")
 
+# Puts away loot eloot has no room for and unpauses it, so a full cloak can't
+# leave you fighting with your hands full (see eloot_guard.lic).
+Script.start("eloot_guard") unless Script.running?("eloot_guard")
+
 # playsongs only when you're actually at the keyboard. Same afk_now UserVar that
 # gates deadexit (unset counts as ON, i.e. AFK -> no music):
 #   ;vars set afk_now=false   # at the keyboard: music plays during the hunt

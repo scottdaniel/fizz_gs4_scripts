@@ -1,0 +1,303 @@
+#eloot_guard.lic
+#Unsticks eloot when it pauses itself because nothing it stows into has room:
+#
+#   Failed to store the blue crystal.
+#   Pausing the script to handle it yourself
+#   ;unpause eloot after addressing to continue!
+#
+#It puts the stuck item somewhere else that has room and unpauses eloot, so an
+#unattended hunt or rest carries on instead of waiting all night for you. Not
+#character-specific: every <Char>-prep and <Char>-prerest starts it, and it
+#stays running for the rest of the session.
+#
+#Why: 10/28, Fizzlestiks. eloot had stored two closed boxes in the velvet cloak
+#and the snowcat haversack (the disk race diskwait.lic fixes), so both were
+#full. At 03:06:50 `loot room` picked up a blue crystal and eloot paused holding
+#it. bigshot sent "attack" for 28 s ("You cannot attack with a blue crystal in
+#your right hand!") until he was wounded enough to rest. At 03:09:58 the rest's
+#;eloot sell paused on the same crystal, and Fizzlestiks-prerest waited on it
+#until 08:42. His deerskin backpack had room the whole time.
+#
+#eloot prints those lines with Lich::Messaging, not as game text, so no
+#DownstreamHook sees them. Instead this polls for eloot being paused, then works
+#out the stuck item from eloot's own record of full containers
+#(ELoot.data.sacks_full keeps "blue crystal(1125144920)"), or else from the one
+#thing that's newly in a hand since eloot started.
+#
+#Where the item goes, in order (each try counts only if the item leaves the hand):
+# 1. your lootsack (UserVars.lootsack), then every container INVENTORY CONTAINERS
+#    lists, skipping the ones eloot just found full. That's the order Lich itself
+#    uses to empty your hands (lib/stash.rb), which is how go2 and eherbs put the
+#    crystal in the backpack on 10/28.
+# 2. your disk.
+# 3. Nowhere has room. Out hunting, it's dropped, because you can't fight
+#    holding it. In town, eloot is unpaused anyway, since the sell is about to
+#    empty its containers; once eloot is done this tries again and drops it only
+#    if there's still no room. A drop is posted to the exp_check webhook
+#    (`stuck: false` in exp_check.yaml mutes it).
+#While it does this out hunting, bigshot is paused (its attacks fail anyway).
+#
+#It leaves eloot alone in the locksmith pool room, where eloot has its own
+#recovery pause ("Could not set the box on a disk").
+#
+#   ;eloot_guard     start watching
+
+require 'json'
+require 'net/http'
+require 'uri'
+require 'yaml'
+
+module ElootGuard
+
+POLL_SECONDS = 0.5 unless defined?(POLL_SECONDS)
+
+# The item leaving your hand is what counts; this only ends the wait early.
+# Verified on 10/28: "You put a blue crystal in your deerskin backpack." and
+# "Your crystal won't fit in the velvet cloak." The rest are guesses.
+def self.put_result
+  /^You (?:put|place|slip|tuck|drop|add)\b|won't fit|is closed|can't|cannot|isn't|There is no|I could not|You need|too (?:full|heavy|large|big)/i
+end
+
+def self.say(msg)
+  # Lich::Messaging.msg goes through _respond (echo would HTML-escape the bold tags).
+  Lich::Messaging.msg("bold", "[eloot_guard] #{msg}")
+end
+
+# Webhook line, same webhook exp_check uses (`stuck: false` in exp_check.yaml mutes it).
+def self.alert(text)
+  cfg = (YAML.safe_load(File.read(File.join(DATA_DIR, "exp_check.yaml"))) rescue nil)
+  cfg = {} unless cfg.is_a?(Hash)
+  url = cfg["webhook_url"].to_s.strip
+  return false if url.empty? || cfg["stuck"] == false
+  uri = URI(url)
+  return false unless uri.is_a?(URI::HTTPS)
+  res = Net::HTTP.start(uri.host, uri.port, use_ssl: true, open_timeout: 5, read_timeout: 5) do |http|
+    http.post(uri.request_uri, { content: "[#{Char.name}] #{text}" }.to_json, "Content-Type" => "application/json")
+  end
+  res.is_a?(Net::HTTPSuccess)
+rescue StandardError => e
+  echo "eloot_guard: webhook failed (#{e.class}: #{e.message})"
+  false
+end
+
+def self.hand_items
+  [GameObj.right_hand, GameObj.left_hand].compact.select { |o| o.id && o.name != "Empty" }
+end
+
+def self.holding?(item)
+  hand_items.any? { |o| o.id == item.id }
+end
+
+# Same test as tackle-bot.lic / bard-bot.lic: in the town bigshot rests in.
+def self.town?
+  resting_room_id = (defined?(UserVars) && UserVars.op.is_a?(Hash)) ? UserVars.op["resting_room_id"].to_s.strip : ""
+  return false if resting_room_id.empty?
+  resting_room = Room.list[resting_room_id.to_i]
+  return false unless resting_room
+  Room.current.location == resting_room.location
+rescue StandardError
+  false
+end
+
+def self.pool_room?
+  Array(Room.current.tags).any? { |tag| tag.to_s =~ /locksmith pool/i }
+rescue StandardError
+  false
+end
+
+# eloot's containers that just refused something, keyed by name:
+#   {"dark teal velvet cloak" => ["2026-10-28 03:09:58", 1259, "blue crystal(1125144920)"], ...}
+# The "last cleared" entry is eloot's own bookkeeping, not a container.
+def self.eloot_full_record
+  return {} unless defined?(ELoot) && ELoot.respond_to?(:data)
+  full = ELoot.data.sacks_full
+  full.is_a?(Hash) ? full.reject { |name, _| name == "last cleared" } : {}
+rescue StandardError
+  {}
+end
+
+def self.recorded_ids
+  eloot_full_record.values.map { |info| Array(info)[2].to_s[/\((-?\d+)\)\s*\z/, 1] }.compact
+end
+
+def self.ready_ids
+  Array(ReadyList.ready_list&.values).compact.map { |o| o.respond_to?(:id) ? o.id : nil }.compact
+rescue StandardError
+  []
+end
+
+# The item eloot couldn't store: the held one eloot's full-container record names,
+# or else the only held thing that wasn't in a hand before eloot started. Never a
+# weapon or shield from your READY list.
+def self.stuck_item
+  ready = ready_ids
+  held = hand_items.reject { |o| ready.include?(o.id) }
+  recorded = recorded_ids
+  found = held.find { |o| recorded.include?(o.id) }
+  return found if found
+
+  fresh = held.reject { |o| @before_ids.include?(o.id) }
+  fresh.length == 1 ? fresh.first : nil
+end
+
+def self.lootsack
+  name = UserVars.lootsack.to_s.strip
+  return nil if name.empty?
+  Lich::Stash.find_container(name, loud_fail: false)
+rescue StandardError
+  nil
+end
+
+# Same command and parsing lib/stash.rb uses to find "other containers".
+def self.worn_containers
+  lines = Lich::Util.issue_command("inventory containers",
+                                   /^(?:You are (?:carrying nothing|holding no containers) at this time|You are wearing)/,
+                                   silent: true, quiet: true)
+  ids = Array(lines).join(" ").scan(/exist="(-?\d+)"/).flatten.uniq
+  inv = Array(GameObj.inv)
+  ids.map { |id| inv.find { |o| o.id == id } }.compact
+rescue StandardError
+  []
+end
+
+def self.candidate_bags(item)
+  full = eloot_full_record.keys
+  [lootsack, *worn_containers].compact.uniq(&:id).reject { |bag| bag.id == item.id || full.include?(bag.name) }
+end
+
+def self.my_disk
+  Disk.mine
+rescue StandardError
+  nil
+end
+
+def self.settle
+  waitrt?
+  waitcastrt?
+  wait_while { stunned? }
+end
+
+def self.put_into(item, bag)
+  settle
+  dothistimeout("_drag ##{item.id} ##{bag.id}", 3, put_result)
+  5.times do
+    break unless holding?(item)
+
+    sleep 0.1
+  end
+  !holding?(item)
+end
+
+def self.drop_item(item)
+  settle
+  dothistimeout("drop ##{item.id}", 3, put_result)
+  5.times do
+    break unless holding?(item)
+
+    sleep 0.1
+  end
+  !holding?(item)
+end
+
+# Where it ended up ("deerskin backpack", "disk"), or nil if nothing took it.
+def self.park(item)
+  candidate_bags(item).each do |bag|
+    return bag.name if put_into(item, bag)
+  end
+  disk = my_disk
+  return "disk" if disk && put_into(item, disk)
+
+  nil
+end
+
+def self.with_bigshot_paused
+  paused_it = !town? && Script.running?("bigshot") && !Script.paused?("bigshot") && Script.pause("bigshot")
+  yield
+ensure
+  Script.unpause("bigshot") if paused_it
+end
+
+def self.handle_pause
+  item = stuck_item
+  if item.nil?
+    unless @told_unknown
+      say "eloot is paused, but I can't tell what it couldn't store, so I'm leaving it paused (;unpause eloot when you're done)."
+      @told_unknown = true
+    end
+    return
+  end
+  return if @given_up.include?(item.id)
+
+  if item.id == @waiting_id
+    # Already tried everything for it during this sell. Let the sell go on and
+    # empty eloot's containers; finish_waiting tries again after.
+    Script.unpause("eloot")
+    return
+  end
+
+  with_bigshot_paused do
+    if (where = park(item))
+      say "eloot couldn't store the #{item.name} (its containers are full), so it's in your #{where} now. Unpausing eloot."
+    elsif town?
+      @waiting_id = item.id
+      say "eloot couldn't store the #{item.name} and nothing else has room. Unpausing eloot so the sell can empty its containers; I'll try again when it's done."
+    elsif drop_item(item)
+      msg = "Dropped the #{item.name} mid-hunt: eloot couldn't store it and no container had room."
+      say msg
+      alert(msg)
+    else
+      @given_up << item.id
+      msg = "eloot is paused holding the #{item.name}: no container has room and it wouldn't drop. Leaving eloot paused for you."
+      say msg
+      alert(msg)
+      return
+    end
+  end
+  Script.unpause("eloot")
+end
+
+# eloot has finished a sell that we let carry on with the item still in hand.
+def self.finish_waiting
+  return unless @waiting_id
+
+  item = hand_items.find { |o| o.id == @waiting_id }
+  @waiting_id = nil
+  return unless item
+
+  if (where = park(item))
+    say "After the sell, the #{item.name} is in your #{where}."
+  elsif drop_item(item)
+    msg = "Dropped the #{item.name} after the sell: still no container with room for it."
+    say msg
+    alert(msg)
+  else
+    msg = "Still holding the #{item.name} after the sell: no container has room and it wouldn't drop."
+    say msg
+    alert(msg)
+  end
+end
+
+# Module state outlives the script between runs, so reset it every start.
+@before_ids = hand_items.map(&:id)
+@waiting_id = nil
+@given_up = []
+@paused_polls = 0
+@told_unknown = false
+
+loop do
+  if !Script.running?("eloot")
+    finish_waiting
+    @before_ids = hand_items.map(&:id)
+    @paused_polls = 0
+    @told_unknown = false
+  elsif Script.paused?("eloot") && !pool_room?
+    # Two polls in a row, so a pause that's lifted right away is left alone.
+    @paused_polls += 1
+    handle_pause if @paused_polls >= 2
+  else
+    @paused_polls = 0
+  end
+  sleep POLL_SECONDS
+end
+
+end #End of module
