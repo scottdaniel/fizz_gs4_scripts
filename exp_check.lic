@@ -52,7 +52,7 @@ module ExpCheck
   FASH_START    = 'A sensation of heightened understanding crests over you'
   FASH_END      = 'The feeling of heightened understanding departs'
   LEVEL_UP      = /^\s*You are now level (\d+)!/                # anchored: ">think You are now level 69!" isn't one
-  STAT_GAIN     = /\((\w{3})\)\s*:\s*(\d+)\s+\+\d+\s+\.\.\./   # "Constitution (CON) :  85   +1  ...     27    +1"
+  STAT_GAIN     = /\((\w{3})\)\s*:\s*(\d+)\s+\+\d+\s+\.\.\.\s+-?\d+(?:\s+\+(\d+))?/   # "Constitution (CON) :  85   +1  ...     27    +1" (last +1 = bonus gain, often blank)
   MULT          = { 'doubled' => 2, 'tripled' => 3, 'quadrupled' => 4, 'quintupled' => 5 }
 
   EVENTS = {   # settings key => checkbox label
@@ -170,7 +170,7 @@ module ExpCheck
       @gains = []
       @events << [:level_up, $1.to_i, @gains]
     elsif @gains && text =~ STAT_GAIN
-      @gains << "#{$1} #{$2}"
+      @gains << "#{$1} #{$2}#{" +#{$3} Bonus" if $3}"
     end
   end
 
