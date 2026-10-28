@@ -15,10 +15,6 @@ fput "stow all"
 
 # rub stuff, but only if the spell isn't already active -- and only pause
 # after ones that actually ran, instead of always eating 3s per item
-unless Spell[1701].active?
-  Script.run("qverb", "rub gold coin")
-  pause 3
-end
 unless Spell[1712].active?
   Script.run("qverb", "rub small statue")
   pause 3
