@@ -3,6 +3,69 @@
 
 module SalviPrep
 
+# Temporary Sanctify on the runestaff: PREP 330, then EVOKE the runestaff, unless
+# LOOK already shows it. Same idea as Fizzleworth's old per-hunt ensorcell check.
+#
+# 10/28 log: the evoke at 13:10 gave "A diffuse multihued glow coalesces around
+# your fireleaf runestaff ..." (RECALL: "temporarily blessed against the undead
+# with holy water flares"), and LOOK at 18:50 still showed
+#   A faint aura of holy light radiates from the runestaff.       <- a normal bless
+#   A flickering aura of holy light radiates from the runestaff.  <- this Sanctify
+# That's 5h40m on, past gswiki's 4 hours, so LOOK decides, not a timer.
+#
+# The evoke only goes out if the prep line names Sanctify: 10/28 19:05 a typed
+# "prep 335" (Divine Wrath) evoked in Town Square killed three people and put
+# Salvi in the stocks. In a no-magic room (the jail cell) the evoke gets "Your
+# magic fizzles ineffectually."
+def self.runestaff_look
+  dothistimeout "look at my runestaff", 3,
+                /radiates from the runestaff|burn across the runestaff|nothing unusual|I could not find|What were you referring/
+end
+
+def self.sanctify_runestaff
+  return unless Spell[330].known?
+
+  staff = [GameObj.right_hand, GameObj.left_hand].find { |o| o && o.noun == "runestaff" }
+  unless staff
+    echo "Salvi-prep: no runestaff in hand, skipping Sanctify."
+    return
+  end
+  return if runestaff_look =~ /flickering aura of holy light/
+
+  cost = Spell[330].mana_cost.to_i
+  cost = 30 unless cost.positive?
+  if checkmana < cost
+    echo "Salvi-prep: #{checkmana} mana, Sanctify needs #{cost}. Skipping it this hunt."
+    return
+  end
+
+  waitcastrt?
+  fput "release" unless checkprep.to_s =~ /^(None)?$/
+  # 330 reads "focusing on the Sanctify spell", 335 "focusing upon the Divine Wrath spell"
+  prep = dothistimeout "prep 330", 5, /focusing (?:on|upon) the .+? spell|You can't|You don't/
+  unless prep =~ /focusing on the Sanctify spell/
+    echo "Salvi-prep: prep 330 didn't ready Sanctify (#{prep.inspect}), releasing."
+    fput "release" unless checkprep.to_s =~ /^(None)?$/
+    return
+  end
+
+  # The glow or the fizzle comes before "Cast Roundtime", so whichever matches
+  # first is the outcome.
+  result = dothistimeout "evoke runestaff", 5, /A diffuse multihued glow coalesces around your|fizzles ineffectually|Cast Roundtime/
+  waitcastrt?
+  case result
+  when /multihued glow/
+    # Check once that LOOK shows it now, or every prep would recast it.
+    unless runestaff_look =~ /flickering aura of holy light/
+      echo "Salvi-prep: Sanctify cast, but LOOK doesn't show the flickering aura. The next prep will cast it again."
+    end
+  when /fizzles/
+    echo "Salvi-prep: Sanctify fizzled (no-magic room?). It'll try again next prep."
+  else
+    echo "Salvi-prep: evoke runestaff got #{result.inspect}, not the Sanctify glow."
+  end
+end
+
 # Stop playing before gearing up for combat -- kills the instrument along
 # with the script (playsongs.lic's before_dying stows it). Kill is async,
 # so wait for it to actually finish before "clear hands" below sends its
@@ -47,6 +110,8 @@ unless GameObj.loot.find { |i| i.name =~ /#{Char.name} disk/ }
 end
 
 fput "ready weapon"
+
+sanctify_runestaff
 
 # Puts away loot eloot has no room for and unpauses it, so a full cloak can't
 # leave you fighting with your hands full (see eloot_guard.lic).
