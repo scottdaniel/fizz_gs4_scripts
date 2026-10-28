@@ -11,19 +11,21 @@
   `get tart` / `gob my tart`). So after eating, your hands are empty when the blessing
   comes round.
 
-  What it does: only while a Dreavening is on -- Dreaven is in the room with you and spoke
-  in the room in the last 10 minutes, and it isn't within 30 minutes of "THIS DREAVENING IS
-  FINISHED" -- if your right hand has been empty for 3 seconds in a row -- long enough that ;dreavening has
-  finished eating, since it is holding food the whole time it's eating -- it does `ready
-  weapon`. If the weapon is in your LEFT hand and the right is empty, it does `swap`.
-  Outside a Dreavening it does nothing at all, so it won't interfere with scrolls, wands,
-  instruments or anything else that has your hands.
+  What it does: it's on in Dreaven's room and off everywhere else. The moment Dreaven is
+  in the room with you, that room counts as the Dreavening room; it stays on there (even
+  while he crawls under the table to hide and drops out of the room list) until you're in
+  any other room. While it's on, if your right hand has been empty for 3 seconds in a row
+  -- long enough that ;dreavening has finished eating, since it is holding food the whole
+  time it's eating -- it does `ready weapon`. If the weapon is in your LEFT hand and the
+  right is empty, it does `swap`. Anywhere else it does nothing at all, so it won't
+  interfere with scrolls, wands, instruments or anything else that has your hands.
 
-  10/25: it readied the weapon two minutes after the Dreavening ended (and you had stowed
-  it): Dreaven keeps posting [Dreavening] thoughts after FINISHED ("Top mana senders...",
-  "Please remember ALL tips...") and before the next one ("Next Dreavening is in 5
-  minutes"), and every one of them counted as "a Dreavening is on". Thoughts no longer count
-  at all, only Dreaven speaking in your room, and FINISHED starts a lockout.
+  History: 10/25 and 10/27 versions tried to tell when a Dreavening was on from what
+  Dreaven said, and kept readying the weapon after it ended -- on 10/27 four times at the
+  lockers, 12 rooms away. His [Dreavening]-GSIV: lines (FINISHED included) are LNet chat
+  that never reaches a script, and the "is Dreaven here?" check broke when you were alone.
+  Being in his room is the whole test now. GameObj.pcs is nil, not [], when nobody else is
+  in the room, hence the Array().
 
   Usage:
     ;dreavening_weapon            start it (stays running; ;kill dreavening_weapon stops it)
@@ -36,35 +38,21 @@
 
 # seconds the right hand must stay empty before the weapon comes back out
 def hold_secs; 3; end
-# a Dreavening counts as "on" for this long after Dreaven last spoke in the room
-def active_window; 600; end
-# ...and not at all for this long after it FINISHED (the next one is hours away)
-def finished_lockout; 1800; end
 
-$dreavening_weapon_active_until = 0
-$dreavening_weapon_locked_until = 0
+def dreaven_here?
+  Array(GameObj.pcs).any? { |pc| pc.noun == "Dreaven" }
+end
 
-DownstreamHook.add("dreavening_weapon", proc { |line|
-  text = line.to_s.gsub(/<[^>]+>/, '')
-  if text =~ /THIS DREAVENING IS FINISHED/i
-    $dreavening_weapon_active_until = 0
-    $dreavening_weapon_locked_until = Time.now.to_f + finished_lockout
-  elsif text =~ /\bDreaven (?:says|exclaims|yells),/ && text !~ /GSIV:/ &&
-        Time.now.to_f >= $dreavening_weapon_locked_until
-    $dreavening_weapon_active_until = Time.now.to_f + active_window
-  end
-  line
-})
-before_dying { DownstreamHook.remove("dreavening_weapon") }
+echo "dreavening_weapon: will keep your weapon in your main hand while you're in Dreaven's room."
 
-echo "dreavening_weapon: watching for a Dreavening; will keep your weapon in your main hand during one."
-
+# XMLData.room_count goes up every time you move, so it names "this visit to this room"
+dreaven_room = nil
 empty_since = nil
 loop do
   sleep 1
 
-  if Time.now.to_f >= $dreavening_weapon_active_until || dead? ||
-     GameObj.pcs.none? { |pc| pc.noun == "Dreaven" }
+  dreaven_room = XMLData.room_count if dreaven_here?
+  if dreaven_room != XMLData.room_count || dead?
     empty_since = nil
     next
   end
@@ -82,7 +70,7 @@ loop do
     echo "dreavening_weapon: weapon is in your left hand -- swapping it to the main hand."
     fput "swap"
   else
-    echo "dreavening_weapon: right hand is empty during the Dreavening -- readying your weapon."
+    echo "dreavening_weapon: right hand is empty in Dreaven's room -- readying your weapon."
     fput "ready weapon"
   end
   empty_since = nil
