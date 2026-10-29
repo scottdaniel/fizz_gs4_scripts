@@ -3972,34 +3972,53 @@ end
 # Util
 module BlackArts
   module Util
+    # Lich's terminal-table doesn't wrap cells, and the old one-line rows made a table over 120
+    # columns wide that the client wrapped into a mess. Wrap each cell to fit about 80 columns.
     def self.help
-      rows = []
-      rows << ["#{$lich_char}#{Script.current.name}", "Runs guild tasks based on UI settings"]
-      rows << ["#{$lich_char}#{Script.current.name} ia", "Same, but asks you (NOD/SHAKE) about teach, learn and audience Illusions tasks"]
-      rows << [' ', ' ']
-      rows << ["#{$lich_char}#{Script.current.name} setup", "UI configuration tool"]
-      rows << ["#{$lich_char}#{Script.current.name} load", "Reloads settings from yaml file"]
-      rows << ["#{$lich_char}#{Script.current.name} list", "Lists settings from yaml file"]
-      rows << [' ', ' ']
-      rows << ["#{$lich_char}#{Script.current.name} check   <recipe> x<amount>", "Checks if you have ingredients"]
-      rows << ["#{$lich_char}#{Script.current.name} make    <recipe> x<amount>", "Makes a recipe a number of times"]
-      rows << ["#{$lich_char}#{Script.current.name} prepare <recipe> x<amount>", "Prepares any sub-recipes needed"]
-      rows << [' ', ' ']
-      rows << ["#{$lich_char}#{Script.current.name} guild", "Travels to the alchemy administrator"]
-      rows << ["#{$lich_char}#{Script.current.name} remove <alchemy|potions|trinkets>", "Trades task in"]
-      rows << [' ', ' ']
-      rows << ["#{$lich_char}#{Script.current.name} buy", "Buys consignment items"]
-      rows << ["#{$lich_char}#{Script.current.name} clean", "Attempts to organize/sell alchemy items"]
-      rows << ["#{$lich_char}#{Script.current.name} forage <herb to find> x<number>", "Forages herbs"]
-      rows << ["#{$lich_char}#{Script.current.name} suggest", "Lists potential recipes for current tasks"]
-      rows << [' ', ' ']
-      rows << ["#{$lich_char}#{Script.current.name} --debug=<on|off>", "Turns debug on/off for troubleshooting"]
-      rows << ["#{Script.current.name} finish", "While it's running: stop after the current task (semicolon optional)"]
+      name = Script.current.name
+      cmd = lambda { |args| "#{$lich_char}#{name}#{args.empty? ? '' : " #{args}"}" }
+      wrap = lambda { |text, width|
+        text.split(' ').each_with_object(['']) { |word, lines|
+          if lines.last.empty?
+            lines.last << word
+          elsif lines.last.length + 1 + word.length <= width
+            lines.last << ' ' << word
+          else
+            lines << word.dup
+          end
+        }.join("\n")
+      }
+      rows = [
+        [cmd.(''), 'Run guild tasks from your setup settings'],
+        [cmd.('ia'), 'Same, but ask you (NOD or SHAKE your head) about teach, learn and audience Illusions tasks'],
+        :separator,
+        ["#{name} finish", 'While running: stop after the current task'],
+        ["#{name} pause", 'While running: hold audience reps'],
+        ["#{name} resume", 'While running: carry on after a pause'],
+        :separator,
+        [cmd.('setup'), 'Open the settings window'],
+        [cmd.('load'), 'Reload settings from the yaml file'],
+        [cmd.('list'), 'List settings from the yaml file'],
+        :separator,
+        [cmd.('check <recipe> x<amount>'), 'Check you have the ingredients'],
+        [cmd.('make <recipe> x<amount>'), 'Make a recipe a number of times'],
+        [cmd.('prepare <recipe> x<amount>'), 'Prepare any sub-recipes it needs'],
+        [cmd.('suggest'), 'List recipes for your current tasks'],
+        :separator,
+        [cmd.('guild'), 'Go to the alchemy administrator'],
+        [cmd.('remove <alchemy|potions|trinkets>'), 'Trade that task in'],
+        [cmd.('buy'), 'Buy consignment items'],
+        [cmd.('clean'), 'Organize or sell alchemy items'],
+        [cmd.('forage <herb> x<number>'), 'Forage herbs'],
+        :separator,
+        [cmd.('--debug=<on|off>'), 'Turn debug output on or off'],
+      ].map { |row| row == :separator ? row : [wrap.(row[0], 30), wrap.(row[1], 40)] }
 
-      table = Terminal::Table.new :title => "BlackArts Help v#{BlackArts.get_script_version}", :rows => rows
-      table.align_column(1, :right)
+      table = Terminal::Table.new(:title => "FizzArts Help v#{BlackArts.get_script_version}", :rows => rows)
       respond
       respond table
+      respond "  finish, pause and resume only work while #{name} is running,"
+      respond "  with or without the semicolon."
       respond
     end
 
