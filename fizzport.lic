@@ -44,6 +44,8 @@
 
   Usage:
     ;fizzport <destination>     e.g. ;fizzport icemule, ;fizzport hanging gardens
+    ;fizzport <page> <#>        a pattern by number, e.g. ;fizzport 1 2 = page 1, pattern 2
+                                (in the first rune book, or the runebook setting)
     ;fizzport patterns          every pattern in every rune book (reads all the pages, then
                                 turns each book back to page 1), saved for ;fizzport list
     ;fizzport list              shortcuts and where each one's pattern is (as of the last
@@ -76,6 +78,7 @@ module Fizzport
   # gswiki: cheap chalk between realms adds 33% failure, minus 1% per 3 ranks over 75
   LONG_CHALK_PENALTY = 33
   BOOK_PAGES         = 10
+  PAGE_ROWS          = 20
 
   # Realms: teleport zone (nil = isolated), rune colour (gswiki Realm and Planar Shift
   # (guide)), and the map `location` names known to be in them. Besides the towns, these
@@ -338,6 +341,35 @@ module Fizzport
       rows.find { |row| row.last.downcase.include?(wanted) }
   end
 
+  # Holds the first rune book and turns it until TURN says it's on `page` (READ doesn't say
+  # which page is open, so a book already on that page goes all the way round). Returns
+  # [book, page, number, colour, label] with the book in the right hand, or nil.
+  def self.find_numbered(books, page, number)
+    squelch(true)
+    held = take(books.first)
+    return nil if held.nil?
+
+    fput "swap" if GameObj.left_hand.id == held.id
+    BOOK_PAGES.times {
+      current = turn(held)
+      if current.nil?
+        msg "Couldn't turn your #{books.first.name} to page #{page}."
+        break
+      end
+      next unless current == page
+
+      row = read_page(held).find { |slot, *| slot == number }
+      return [held, page, *row] if row
+
+      msg "Page #{page} of your #{books.first.name} has no pattern ##{number} (;fizzport list shows them)."
+      break
+    }
+    put_away(held)
+    nil
+  ensure
+    squelch(false)
+  end
+
   # Reads every page of the book in hand and leaves it open to page 1. Returns
   # [[page, number, colour, label], ...]. READ doesn't say the page number, so the page it
   # was open to comes from the first TURN (nil if no TURN was understood).
@@ -489,6 +521,7 @@ module Fizzport
     respond "Usage:"
     respond "  ;fizzport <destination>     a shortcut, or any part of a pattern's label"
     respond "                              e.g. ;fizzport icemule, ;fizzport hanging gardens"
+    respond "  ;fizzport <page> <#>        a pattern by number, e.g. ;fizzport 1 2 = page 1, pattern 2"
     respond "  ;fizzport patterns          every pattern in every rune book (reads all the pages, then"
     respond "                              turns each book back to page 1), saved for ;fizzport list"
     respond "  ;fizzport list              shortcuts and where each one's pattern is, your realm and"
@@ -535,7 +568,7 @@ module Fizzport
       end
       respond "  As of ;fizzport patterns on #{saved_at.strftime('%b %-d %H:%M')}. Run it again after a SENSE PATTERN."
     end
-    respond "  Anything else is matched against the labels in your rune books."
+    respond "  Anything else is matched against the labels in your rune books, or use ;fizzport <page> <#>."
     respond
   end
 
@@ -595,12 +628,18 @@ module Fizzport
     words = args.reject { |arg| arg.start_with?('--') }
     tries = (args.find { |arg| arg =~ /^--tries=\d+$/ }&.split('=')&.last || DEFAULT_TRIES).to_i
     forced = (:long if args.include?('--long')) || (:crystal if args.include?('--crystal'))
+    # ;fizzport 1 2 = page 1, pattern 2
+    numbered = words.map(&:to_i) if words.size == 2 && words.all? { |word| word =~ /\A\d+\z/ }
 
     if words.empty? || words.first =~ /^(help|\?)$/i
       help
       exit
     elsif words.first =~ /^list$/i
       list
+      exit
+    end
+    if numbered && !(numbered[0].between?(1, BOOK_PAGES) && numbered[1].between?(1, PAGE_ROWS))
+      msg "Pages are 1-#{BOOK_PAGES} and patterns 1-#{PAGE_ROWS} (e.g. ;fizzport 1 2 for page 1, pattern 2)."
       exit
     end
 
@@ -634,11 +673,17 @@ module Fizzport
       exit
     end
 
+    if numbered && books.size > 1
+      msg "Using page #{numbered[0]} of your #{books.first.name}, the first of #{books.size} rune books " \
+          "(;vars set runebook=<name> to pick one)."
+    end
+
     empty_hands
     @emptied_hands = true
-    @book, page, number, color, label = find_pattern(books, text)
+    @book, page, number, color, label = numbered ? find_numbered(books, *numbered) : find_pattern(books, text)
     if @book.nil?
-      msg "No pattern labelled \"#{text}\" in your rune books (;fizzport patterns lists them)."
+      # find_numbered says what was wrong itself
+      msg "No pattern labelled \"#{text}\" in your rune books (;fizzport patterns lists them)." unless numbered
       exit
     end
     if XMLData.room_title.to_s.include?("[#{label}]")
