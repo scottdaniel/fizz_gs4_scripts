@@ -52,7 +52,7 @@ module ExpCheck
   FASH_START    = 'A sensation of heightened understanding crests over you'
   FASH_END      = 'The feeling of heightened understanding departs'
   LEVEL_UP      = /^\s*You are now level (\d+)!/                # anchored: ">think You are now level 69!" isn't one
-  STAT_GAIN     = /\((\w{3})\)\s*:\s*(\d+)\s+\+\d+\s+\.\.\.\s+-?\d+(?:\s+\+(\d+))?/   # "Constitution (CON) :  85   +1  ...     27    +1" (last +1 = bonus gain, often blank)
+  STAT_GAIN     = /\((\w{3})\)\s*:\s*(\d+)\s+\+(\d+)\s+\.\.\.\s+-?\d+(?:\s+\+(\d+))?/   # "Constitution (CON) :  85   +1  ...     27    +1" (last +1 = bonus gain, often blank)
   MULT          = { 'doubled' => 2, 'tripled' => 3, 'quadrupled' => 4, 'quintupled' => 5 }
 
   EVENTS = {   # settings key => checkbox label
@@ -164,13 +164,16 @@ module ExpCheck
   # then a table of only the stats that rose (or "[No statistic increases this
   # level.]"), all within the same second; the "Training adjusted" line after it
   # is missing at low levels, so it isn't used as the end marker.
+  # The table's Stat and Bonus columns are the values from BEFORE the level
+  # (Salvi's L36 table said STR 94 +1, INFO right after said 95), so the gain
+  # is added to get the new stat.
   def self.watch_level(line)
     text = line.gsub(/<[^>]*>/, '')
     if text =~ LEVEL_UP
       @gains = []
       @events << [:level_up, $1.to_i, @gains]
     elsif @gains && text =~ STAT_GAIN
-      @gains << "#{$1} #{$2}#{" +#{$3} Bonus" if $3}"
+      @gains << "#{$1} #{$2.to_i + $3.to_i}#{" +#{$4} Bonus" if $4}"
     end
   end
 
