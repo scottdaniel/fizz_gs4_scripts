@@ -165,6 +165,10 @@ module Fizzport
   NO_TELEPORT   = /soft yellow light|peter out/i
   NOT_FOUND     = /could not find what you were referring to|What were you referring to/i
   CAST_END      = /Cast Roundtime|Roundtime|You can't|Cast at what\?|#{NOT_FOUND}/i
+  # TELL MDEMON RETURN replies (verified for fizzanim/reanim): "But your X is already here!",
+  # "Your X acknowledges your order and begins to travel to your location.", "The magic in
+  # your location is interfering with your X returning to you.", or no demon at all
+  RETURN_REPLY  = /already here!|acknowledges your order|interfering with your|You have no minor demon at this time/i
 
   # === helpers ===================================================================
   def self.msg(text)
@@ -520,6 +524,17 @@ module Fizzport
     false
   end
 
+  # A minor demon can get lost on the way, so call it to you once you're there
+  def self.arrived
+    msg "Arrived: #{XMLData.room_title}"
+    return unless Spell[725].known?
+
+    waitrt?
+    waitcastrt?
+    line = dothistimeout "tell mdemon return", 5, RETURN_REPLY
+    msg "Your minor demon can't reach you here; TELL MDEMON RETURN once you've moved on." if line =~ /interfering with your/
+  end
+
   def self.wait_for_mana
     cost = Spell[740].mana_cost
     return if checkmana >= cost && Spell[740].affordable?
@@ -786,13 +801,13 @@ module Fizzport
       result, lines = cast_at_circle
       case result
       when :moved
-        msg "Arrived: #{XMLData.room_title}"
+        arrived
         return
       when :rift
         rooms_before = XMLData.room_count
         fput "go rift"
         if wait_to_move(rooms_before, 5)
-          msg "Arrived: #{XMLData.room_title}"
+          arrived
         else
           msg "The rift opened but GO RIFT didn't move you. It stays open for 60 seconds."
         end
