@@ -23,6 +23,8 @@
         yourself; fizzarts waits, then turns it in) or SHAKE your head (trade it in).
         Before taking over movement again (after the guild's wait, or after a task you did
         yourself) it asks first: NOD to carry on, SHAKE to wait 5 more minutes.
+      - a demon still wearing an illusion (e.g. an Imp disguised as a gnoll) is dispelled
+        first, so its real type can be checked.
       - from rank 48, before asking for an Illusions task it makes sure your demon is the
         newest type your rank allows (Imp at 53, Verlok at 54, ...), summoning one if not:
         speed tasks stopped appearing at rank 53 while the demon was an Igaesha.
@@ -8004,7 +8006,7 @@ module BlackArts
     end
 
     # Fills demon_id / demon_noun / demon_name from "tell md to follow"
-    def self.read_demon
+    def self.read_demon(dispel_disguise: true)
       BlackArts.data.demon_id = nil
       BlackArts.data.demon_noun = nil
       BlackArts.data.demon_name = nil
@@ -8015,6 +8017,26 @@ module BlackArts
         BlackArts.data.demon_noun = Regexp.last_match(2)
         BlackArts.data.demon_name = Regexp.last_match(3)
       end
+
+      # A demon still wearing an illusion answers to its disguise ("Your elderly gnoll is already
+      # following you." for an Imp, 2026-10-28), so its type can't be read and ensure_demon left it
+      # alone instead of swapping it for the newest type. Dispel the disguise and read it again.
+      return unless dispel_disguise && BlackArts.data.demon_id && Illusions.disguised?(BlackArts.data.demon_noun)
+
+      disguise = BlackArts.data.demon_name.to_s
+      Util.msg("info", " Your demon is still disguised as #{disguise =~ /\A[aeiou]/i ? 'an' : 'a'} #{disguise}; dispelling the illusion to see what it is.")
+      sleep 0.5 until checkmana > 5
+      fput "illusion demon ##{BlackArts.data.demon_id} dispel"
+      Util.wait_rt
+      Illusions.read_demon(dispel_disguise: false)
+    end
+
+    # Disguises from the demon illusions (gswiki Illusions and Minor demon messaging): Igaesha as a
+    # hawk/osprey/buzzard/vulture/condor, Imp and Shien as a gnoll, Verlok as a raven/parrot/stork/
+    # toucan, Grantris as a ferret/mink, Aishan as a wolf/jackal, Arashan as a spinner/tarantula,
+    # Abyran and Grik as a robed/masked/caped/cowled/hooded figure
+    def self.disguised?(noun)
+      noun.to_s.downcase =~ /\A(?:hawk|osprey|buzzard|vulture|condor|gnoll|raven|parrot|stork|toucan|ferret|mink|wolf|jackal|spinner|tarantula|figure)\z/ ? true : false
     end
 
     # Illusions rank at which each minor demon type can be illusioned (gswiki Illusions page).
