@@ -53,8 +53,8 @@
     ;fizzport help              this help and your settings
 
   Options (after the destination):
-    --long       use waxy translucent chalk, whatever fizzport thinks you need
-    --crystal    use fine crystalline chalk, whatever fizzport thinks you need
+    --lowq       low quality chalk (waxy translucent), whatever fizzport thinks you need
+    --highq      high quality chalk (fine crystalline), whatever fizzport thinks you need
     --tries=N    give up after N casts that backlash (default 3)
 
   Settings:
@@ -83,12 +83,15 @@ module Fizzport
   # Realms: teleport zone (nil = isolated), rune colour (gswiki Realm and Planar Shift
   # (guide)), and the map `location` names known to be in them. Besides the towns, these
   # come from patterns in Fizzleworth's books (Stone Valley is twilight grey, Gyldemar is
-  # sapphire blue, ...). A location that isn't listed means fizzport can't tell which
-  # chalk you need; add it here once you know its realm.
+  # sapphire blue, the South Gate's snowfields are frosty white, ...). Locations are also
+  # learned from ;fizzport patterns (see learned_locations), so a SENSE PATTERN in a new
+  # area teaches fizzport its realm.
   REALMS = {
     "Wehnimer's Landing"          => { zone: 1, color: 'twilight grey',
-                                       locations: ["Wehnimer's Landing", "the town of Wehnimer's Landing", 'the Coastal Cliffs', 'Stone Valley'] },
-    'Icemule Trace'               => { zone: 1, color: 'frosty white', locations: ['Icemule Trace'] },
+                                       locations: ["Wehnimer's Landing", "the town of Wehnimer's Landing", 'the Coastal Cliffs',
+                                                   'Stone Valley', 'the Lower Dragonsclaw'] },
+    'Icemule Trace'               => { zone: 1, color: 'frosty white',
+                                       locations: ['Icemule Trace', 'the town of Icemule Trace', 'the southern snowfields'] },
     'Solhaven'                    => { zone: 1, color: 'aquamarine',
                                        locations: ['Solhaven', 'the free port of Solhaven', 'the southern part of Solhaven', 'the town of Solhaven'] },
     'Pinefar'                     => { zone: 1, color: 'icy blue', locations: ['the Pinefar Trading Post'] },
@@ -210,7 +213,39 @@ module Fizzport
 
   def self.current_realm
     location = Room.current&.location.to_s
-    REALMS.find { |_realm, info| info[:locations].include?(location) }&.first
+    REALMS.find { |_realm, info| info[:locations].include?(location) }&.first || learned_locations[location]
+  end
+
+  # Map locations your rune book vouches for: a saved pattern whose label is the title of map
+  # rooms that all share one location puts that location in the pattern's realm (10/29:
+  # "Icemule Trace, South Gate" is frosty white, so the southern snowfields are Icemule's).
+  # A label used in several places, like every guild's "Sorcerer Guild, Entrance", says nothing.
+  def self.learned_locations
+    _saved_at, entries = saved_patterns
+    # Title -> realms of the patterns with that label (more than one realm: trust none)
+    wanted = {}
+    entries.each { |entry|
+      realm = realm_of(entry[3])
+      (wanted["[#{entry.last}]"] ||= []) << realm if realm
+    }
+    return {} if wanted.empty?
+
+    places = Hash.new { |hash, key| hash[key] = [] }
+    Map.list.each { |room|
+      next if room.nil?
+
+      Array(room.title).each { |title| places[title] << room.location if wanted.key?(title) }
+    }
+    learned = {}
+    wanted.each { |title, realms|
+      found = places[title].uniq
+      next unless realms.uniq.size == 1 && found.size == 1 && found.first.is_a?(String)
+
+      place = found.first
+      # Two realms for one location: trust neither
+      learned[place] = learned.key?(place) && learned[place] != realms.first ? nil : realms.first
+    }
+    learned.compact
   end
 
   def self.realm_of(color)
@@ -529,8 +564,8 @@ module Fizzport
     respond "  ;fizzport help              this help"
     respond
     respond "Options (after the destination):"
-    respond "  --long        use #{CHALKS[:long][:what]}, whatever fizzport thinks you need"
-    respond "  --crystal     use #{CHALKS[:crystal][:what]}, whatever fizzport thinks you need"
+    respond "  --lowq        low quality chalk (#{CHALKS[:long][:what]}), whatever fizzport thinks you need"
+    respond "  --highq       high quality chalk (#{CHALKS[:crystal][:what]}), whatever fizzport thinks you need"
     respond "  --tries=N     give up after N casts that backlash (default #{DEFAULT_TRIES})"
     respond
     respond "Settings:"
@@ -627,7 +662,7 @@ module Fizzport
 
     words = args.reject { |arg| arg.start_with?('--') }
     tries = (args.find { |arg| arg =~ /^--tries=\d+$/ }&.split('=')&.last || DEFAULT_TRIES).to_i
-    forced = (:long if args.include?('--long')) || (:crystal if args.include?('--crystal'))
+    forced = (:long if args.include?('--lowq')) || (:crystal if args.include?('--highq'))
     # ;fizzport 1 2 = page 1, pattern 2
     numbered = words.map(&:to_i) if words.size == 2 && words.all? { |word| word =~ /\A\d+\z/ }
 
@@ -693,13 +728,20 @@ module Fizzport
 
     to = realm_of(color)
     here = current_realm
+    same_realm = here && to && here == to
     chalk_kind, why = pick_chalk(here, to)
-    if forced
+    if forced == :long && chalk_kind == :crystal
+      # Cheap chalk here can only backlash (10/29: three in a row, Icemule's South Gate to the Landing)
+      msg "Not using #{CHALKS[:long][:what]}: #{why}, and cheap chalk between realms fails every time. Use --highq."
+      exit
+    elsif forced
       chalk_kind = forced
       why = "you asked for #{CHALKS[forced][:what]}"
     elsif chalk_kind.nil?
-      msg "#{why}, so it can't tell which chalk #{label} (#{color}) needs. Run it again with --long " \
-          "(same realm) or --crystal (another realm or zone)."
+      msg "#{why}. #{label} is #{color} (#{to || 'an unknown realm'})."
+      msg "Cheap chalk only works inside one realm; between realms it backlashes every time. Use --lowq only if " \
+          "you're sure you're in #{to || "that pattern's realm"}, otherwise --highq."
+      msg "To teach fizzport this area: SENSE PATTERN here with your rune book in hand, then ;fizzport patterns."
       exit
     end
 
@@ -750,6 +792,11 @@ module Fizzport
         msg "Backlash on cast #{casts}. The circle is still here."
         sleep 0.5 while checkstunned
         waitrt?
+        unless chalk_kind == :crystal || same_realm
+          msg "Not casting again: fizzport couldn't confirm you're in #{to || "the pattern's realm"}, and cheap chalk " \
+              "between realms fails every time. RUB CIRCLE; if #{label} is in another realm, use --highq."
+          return
+        end
         if casts >= tries
           msg "#{casts} backlashes. Stopping; the circle is still here for another try."
           return
