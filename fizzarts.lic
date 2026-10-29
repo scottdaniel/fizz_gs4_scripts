@@ -23,6 +23,9 @@
         yourself; fizzarts waits, then turns it in) or SHAKE your head (trade it in).
         Before taking over movement again (after the guild's wait, or after a task you did
         yourself) it asks first: NOD to carry on, SHAKE to wait 5 more minutes.
+        Audience tasks are different: NOD lets fizzarts do just the reps (no automated
+        apology or nod watching, since you're doing the talking), and "fizzarts pause" /
+        "fizzarts resume" hold them (you can move while paused).
       - a demon still wearing an illusion (e.g. an Imp disguised as a gnoll) is dispelled
         first, so its real type can be checked.
       - from rank 48, before asking for an Illusions task it makes sure your demon is the
@@ -4737,6 +4740,7 @@ module BlackArts
     def self.set_hooks
       original_once = BlackArts.data.settings[:once_and_done]
       Guild.voucher_safety_reset
+      BlackArts.data.paused = false
 
       finish = proc { |server_string|
         # ";fizzarts finish" or plain "fizzarts finish" (the semicolon was confusing, and without it
@@ -4748,6 +4752,16 @@ module BlackArts
           # Swallow the command. Each UpstreamHook's return value is handed to the next one, and
           # Util.msg returns an Array, which crashed Lich's client thread ("undefined method '=~'
           # for an instance of Array").
+          nil
+        # "fizzarts pause" / "fizzarts resume": hold audience reps (e.g. someone complains) without
+        # anything showing in the room
+        elsif server_string =~ /^(?:<c>)?;?fizza\w*\s+pause\b/i
+          BlackArts.data.paused = true
+          Util.msg("info", " fizzarts paused: no more audience reps until you type \"fizzarts resume\".")
+          nil
+        elsif server_string =~ /^(?:<c>)?;?fizza\w*\s+(?:resume|unpause|continue)\b/i
+          BlackArts.data.paused = false
+          Util.msg("info", " fizzarts resuming.")
           nil
         elsif server_string =~ /Please rephrase that command/
           nil
@@ -5190,7 +5204,7 @@ module BlackArts
                   :note, :note_names, :sea_water_flask, :sea_water_vial, :bundled_herb, :ingredient_count, :correct_herb_count, :put_regex, :get_regex, :herb_doses,
                   :last_alchemy_buy, :alchemy_grind_history, :recipes, :consignment_list, :current_admin, :skin, :skin_number, :creature, :guild_skill, :locations, :ranks,
                   :need_empty_flask, :start_room, :start_town, :current_room, :no_forage, :mortar_check, :cauldron, :note_withdrawal, :note_refresh, :visited_towns,
-                  :west_guilds, :east_guilds, :all_guilds, :cities, :boundaries, :gld_skills, :shadow_container, :shadow_item, :demon_id, :demon_noun, :demon_name, :interactive
+                  :west_guilds, :east_guilds, :all_guilds, :cities, :boundaries, :gld_skills, :shadow_container, :shadow_item, :demon_id, :demon_noun, :demon_name, :interactive, :paused
 
     def initialize(settings)
       @settings = settings
@@ -5215,6 +5229,7 @@ module BlackArts
       @demon_noun = nil
       @demon_name = nil
       @interactive = false
+      @paused = false
       @settings[:no_magic] ||= []
       @settings[:guild_pause] = @settings[:guild_pause].to_i.positive? ? @settings[:guild_pause].to_i : 60
 
@@ -7378,6 +7393,21 @@ module BlackArts
       end
     end
 
+    # Audience tasks in interactive mode: NOD and fizzarts does just the reps (no apology or nod
+    # watching, since you're doing the talking); "fizzarts pause" / "fizzarts resume" hold them any
+    # time. SHAKE trades the task in.
+    def self.interactive_audience(skill, task)
+      answer = Guild.nod_or_shake(lambda {
+        Util.msg("yellow", " Your #{skill} task: #{task}.")
+        Util.msg("yellow", " NOD to let fizzarts do the audience reps (type \"fizzarts pause\" any time to hold them), or SHAKE your head to trade it in.")
+      })
+      if answer == :nod
+        Illusions.do_illusions(place: 'audience')
+      else
+        Guild.remove_task(skill)
+      end
+    end
+
     def self.interactive_choice(skill, task)
       answer = Guild.nod_or_shake(lambda {
         Util.msg("yellow", " Your #{skill} task: #{task}.")
@@ -7585,7 +7615,7 @@ module BlackArts
         Guild.new_task(skill)
       elsif guild_status[skill][:task] =~ /practice your latest Illusion in front of an audience/
         if BlackArts.data.interactive
-          Guild.interactive_task(skill, guild_status[skill][:task])
+          Guild.interactive_audience(skill, guild_status[skill][:task])
         elsif BlackArts.data.settings[:no_audience]
           Util.msg("info", " Skipping audience illusion task (Skip Audience Illusions is on). Trading it in.")
           Guild.remove_task(skill)
@@ -7690,6 +7720,10 @@ module BlackArts
       @audience_objectors ||= {}
       @audience_announced ||= {}
       DownstreamHook.remove('fizzarts_audience_nod')
+      # Interactive mode: you're there and doing the talking, so no apology, and a nod while you
+      # chat isn't taken as a complaint. "fizzarts pause" / "fizzarts resume" are the controls.
+      return if BlackArts.data.interactive
+
       DownstreamHook.add('fizzarts_audience_nod', proc { |xml|
         if @audience_objector.nil? && xml.gsub(/<[^>]+>/, '') =~ /\b([A-Z][\w'-]+) nods to you\b/
           name = Regexp.last_match(1)
@@ -7715,6 +7749,13 @@ module BlackArts
     # Before each rep: false means someone nodded and the task should be dropped. Waits for an
     # audience, and the first time one is there, asks and gives them 15 seconds to nod.
     def self.audience_ready?
+      Illusions.wait_while_paused
+      if BlackArts.data.interactive
+        sleep 5 until Guild.check_audience || BlackArts.data.paused
+        return Illusions.audience_ready? if BlackArts.data.paused
+
+        return true
+      end
       return false if Illusions.audience_objected?
 
       sleep 5 until Guild.check_audience || Illusions.audience_objected? || Illusions.audience_objector_here
@@ -7739,7 +7780,21 @@ module BlackArts
     # Like sleep, but stops as soon as someone nods
     def self.audience_pause(seconds)
       end_time = Time.now + seconds
-      sleep 0.5 while Time.now < end_time && !Illusions.audience_objected?
+      sleep 0.5 while Time.now < end_time && !Illusions.audience_objected? && !BlackArts.data.paused
+    end
+
+    # "fizzarts pause" holds audience reps until "fizzarts resume". Moving while paused is fine (find
+    # a quieter crowd): practice wherever you are when you resume, and say the apology again if
+    # that room hasn't heard it. Not for shadow illusions, whose item stays on the floor where it
+    # was dropped, so moving still stops the script there.
+    def self.wait_while_paused
+      return unless BlackArts.data.paused
+
+      sleep 1 while BlackArts.data.paused
+      return if @shadow_on_floor || Room.current.id == @task_room
+
+      @task_room = Room.current.id
+      @audience_asked = false
     end
 
     # gswiki Illusions: "Once a rep is executed, 30 seconds must pass before another can be
@@ -7870,6 +7925,7 @@ module BlackArts
         Illusions.shadow_item(item: drop_item)
         Util.get_res("_drag ##{BlackArts.data.shadow_item.id} drop", BlackArts.data.get_regex)
         Util.wait_rt
+        @shadow_on_floor = true
       end
       Illusions.track_task_start
       stopped = nil
@@ -7903,6 +7959,7 @@ module BlackArts
       sleep 1
       if Room.current.id == @task_room
         Inventory.store_item(BlackArts.data.shadow_container, BlackArts.data.shadow_item) unless !item.nil?
+        @shadow_on_floor = false
       elsif item.nil?
         Util.msg("yellow", " Your #{BlackArts.data.shadow_item&.name || 'shadow item'} is still on the floor in room #{@task_room}.")
       end
@@ -9816,7 +9873,7 @@ when 'suggest'
   BlackArts::Util.suggestion
 when 'test'
   BlackArts::Util.test
-when 'finish'
+when 'finish', 'pause', 'resume'
   BlackArts::Util.msg "yellow", ' This command only works while the script is running'
 when /ver/
   BlackArts::Util.msg "yellow", " version #{BlackArts.get_script_version}"
