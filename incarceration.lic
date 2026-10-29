@@ -10,7 +10,13 @@
 # people, chose 38 minutes in the stocks, then lost a round to "answer halfing"
 # (it's Halfling) and got more time.
 #
-#   ;incarceration     run once you're in the stocks; it exits when the official is gone
+#   ;incarceration     run once you're in the stocks; it exits when you're set free
+#
+# Release, 10/28 19:58 (with 15 s of roundtime after it):
+#   The city official says, "Well, Salvi, I hope you've learned your lesson now.
+#   You may go."  With that, the official walks over to you and sets you free.
+# He leaves the room soon after (the 10/28 run, which only had the "official gone"
+# check, exited 29 s later); that check stays as a fallback.
 #
 # Parts seen in Salvi's 10/28 log, and the answers the official nodded at:
 #   your name -> Salvi                  your race -> (halfling, by Stats.race)
@@ -131,6 +137,9 @@ loop do
     parts.each { |part| break unless answer_part(part) }
   elsif line =~ /You've got about (\d+) minutes? left/
     say "#{$1} minutes left."
+  elsif line =~ /the official walks over to you and sets you free/
+    say "you're free. Check INVENTORY; ;jailbox gets anything they kept back."
+    break
   end
 
   next if Time.now - last_check < 15
