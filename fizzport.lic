@@ -44,8 +44,10 @@
 
   Usage:
     ;fizzport <destination>     e.g. ;fizzport icemule, ;fizzport hanging gardens
-    ;fizzport patterns          every pattern in every rune book (reads all the pages)
-    ;fizzport list              shortcuts, the realm you're in and your Demonology ranks
+    ;fizzport patterns          every pattern in every rune book (reads all the pages, then
+                                turns each book back to page 1), saved for ;fizzport list
+    ;fizzport list              shortcuts and where each one's pattern is (as of the last
+                                ;fizzport patterns), the realm you're in, Demonology ranks
     ;fizzport help              this help and your settings
 
   Options (after the destination):
@@ -137,9 +139,14 @@ module Fizzport
   LAST_ROW    = /^\s*20\.(?:\s|$)/
   # TURN: "You turn to page 2 of your leather book." / "You flip back to the first page of your book."
   TURNED      = /You turn to page (\d+) of your|You flip back to the first page of your/
-  # Hidden from the screen while searching, so 20 rows a page don't flood it
-  SQUELCH     = /^(?:\s*\d{1,2}\.(?:[ \t][^\r\n]*)?|You turn to page \d+ of your [^\r\n]*|You flip back to the first page of your [^\r\n]*)\r?\n/
+  # Hidden from the screen while reading, so 20 rows a page don't flood it. Tested line by
+  # line on the text without its tags (10/28: a whole-chunk regex missed every row).
+  SQUELCH     = /\A(?:\d{1,2}\.(?:\s.*)?|You turn to page \d+ of your .*|You flip back to the first page of your .*)\z/
+  XML_TAG     = /<[^>]*>/
   HOOK        = 'fizzport-squelch'
+  # CharSettings key for what ;fizzport patterns last found (a JSON string, so it comes back
+  # as plain arrays rather than settings proxies)
+  SAVED_KEY   = 'patterns'
 
   # gswiki player logs (Missoni, Obelin) and Planar Shift (740) messaging
   CIRCLE_DRAWN  = /you outline the shape of a summoning circle/i
@@ -287,9 +294,21 @@ module Fizzport
     fput "put ##{item.id} in my #{sack}"
   end
 
+  # Drops rune book rows and TURN lines from what reaches the screen. A dropped line's tags
+  # are kept (as Lich's quiet commands do) so stream and style state stays intact.
+  def self.squelch_lines(xml)
+    kept = xml.lines.map { |line|
+      next line unless line.gsub(XML_TAG, '').strip =~ SQUELCH
+
+      tags = line.scan(XML_TAG).join
+      tags.empty? ? nil : "#{tags}\n"
+    }.compact
+    kept.empty? ? nil : kept.join
+  end
+
   def self.squelch(on)
     if on
-      DownstreamHook.add(HOOK, proc { |xml| xml.gsub(SQUELCH, '') })
+      DownstreamHook.add(HOOK, proc { |xml| Fizzport.squelch_lines(xml) }, persist: false)
     else
       DownstreamHook.remove(HOOK)
     end
@@ -311,11 +330,62 @@ module Fizzport
     line =~ /page (\d+)/ ? Regexp.last_match(1).to_i : 1
   end
 
-  # The best row on a page for the text: the label itself, else a label containing it
+  # The best row for the text: the label itself, else a label containing it. Works on page
+  # rows and saved patterns alike, since both end in the label.
   def self.match_row(rows, text)
     wanted = text.downcase
-    rows.find { |_n, _c, label| label.downcase == wanted } ||
-      rows.find { |_n, _c, label| label.downcase.include?(wanted) }
+    rows.find { |row| row.last.downcase == wanted } ||
+      rows.find { |row| row.last.downcase.include?(wanted) }
+  end
+
+  # Reads every page of the book in hand and leaves it open to page 1. Returns
+  # [[page, number, colour, label], ...]. READ doesn't say the page number, so the page it
+  # was open to comes from the first TURN (nil if no TURN was understood).
+  def self.read_book(book)
+    first_rows = read_page(book)
+    open_page = nil
+    page = nil
+    rows = []
+    (BOOK_PAGES - 1).times {
+      page = turn(book)
+      break if page.nil?
+
+      open_page ||= page == 1 ? BOOK_PAGES : page - 1
+      read_page(book).each { |row| rows << [page, *row] }
+    }
+    rows += first_rows.map { |row| [open_page, *row] }
+    BOOK_PAGES.times {
+      break if page.nil? || page == 1
+
+      page = turn(book)
+    }
+    rows.sort_by { |row_page, number, *| [row_page || 0, number] }
+  end
+
+  # [time saved or nil, [[book, page, number, colour, label], ...]]
+  def self.saved_patterns
+    data = JSON.parse(CharSettings[SAVED_KEY].to_s)
+    [Time.at(data['saved'].to_i), data['entries'].to_a]
+  rescue JSON::ParserError, TypeError, NoMethodError
+    [nil, []]
+  end
+
+  def self.save_patterns(entries)
+    CharSettings[SAVED_KEY] = JSON.generate({ 'saved' => Time.now.to_i, 'entries' => entries })
+  end
+
+  def self.shortcut_names(key)
+    ([key] + ALIASES.select { |_word, target| target == key }.keys).join(', ')
+  end
+
+  # Shortcut -> the saved pattern it would use, or nil
+  def self.shortcut_patterns(entries)
+    DESTINATIONS.to_h { |key, text| [key, match_row(entries, text)] }
+  end
+
+  def self.where(entry)
+    book, page, number = entry
+    "#{book}, #{page ? "page #{page}" : 'open page'} ##{number}"
   end
 
   # Holds each rune book in turn and reads its pages until a label matches. Returns
@@ -350,6 +420,8 @@ module Fizzport
       msg "Can't find your #{sack} (shiftsack) on you."
       return []
     end
+    # A rune book still in hand isn't in the sack's listing (10/28: "No rune books in your kit")
+    hands.each { |hand| fput "put ##{hand.id} in my #{sack}" if hand.noun == 'book' && hand.name =~ /leather book/i }
     books = contents(container).select { |obj| obj.noun == 'book' }
     UserVars.runebook.to_s.strip.empty? ? books : books.select { |obj| matches?(obj, UserVars.runebook) }
   end
@@ -417,8 +489,10 @@ module Fizzport
     respond "Usage:"
     respond "  ;fizzport <destination>     a shortcut, or any part of a pattern's label"
     respond "                              e.g. ;fizzport icemule, ;fizzport hanging gardens"
-    respond "  ;fizzport patterns          every pattern in every rune book (reads all the pages)"
-    respond "  ;fizzport list              shortcuts, the realm you're in and your Demonology ranks"
+    respond "  ;fizzport patterns          every pattern in every rune book (reads all the pages, then"
+    respond "                              turns each book back to page 1), saved for ;fizzport list"
+    respond "  ;fizzport list              shortcuts and where each one's pattern is, your realm and"
+    respond "                              Demonology ranks"
     respond "  ;fizzport help              this help"
     respond
     respond "Options (after the destination):"
@@ -440,15 +514,33 @@ module Fizzport
     respond "  You're in #{Room.current&.location || 'an unmapped room'} (realm: #{here || 'unknown'}), " \
             "with #{demonology} Demonology ranks."
     respond
+    saved_at, entries = saved_patterns
+    found = shortcut_patterns(entries)
     DESTINATIONS.each { |key, label|
-      names = [key] + ALIASES.select { |_word, target| target == key }.keys
-      respond "  #{names.join(', ').ljust(20)} #{label}"
+      status = if saved_at.nil? then ''
+               elsif found[key] then where(found[key])
+               else 'no pattern yet'
+               end
+      respond "  #{shortcut_names(key).ljust(20)} #{label.ljust(33)} #{status}"
     }
     respond
-    respond "  Anything else is matched against the labels in your rune books (;fizzport patterns)."
+    if saved_at.nil?
+      respond "  Run ;fizzport patterns once and this list will show which shortcuts have a pattern."
+    else
+      others = entries - found.values
+      unless others.empty?
+        respond "  Other patterns (use any part of the label):"
+        others.each { |entry| respond "    #{entry.last.ljust(36)} #{where(entry)}" }
+        respond
+      end
+      respond "  As of ;fizzport patterns on #{saved_at.strftime('%b %-d %H:%M')}. Run it again after a SENSE PATTERN."
+    end
+    respond "  Anything else is matched against the labels in your rune books."
     respond
   end
 
+  # Reads every page of every rune book, leaves each open to page 1, and saves what it
+  # finds for ;fizzport list
   def self.patterns
     books = rune_books
     if books.empty?
@@ -457,26 +549,35 @@ module Fizzport
     end
     empty_hands
     @emptied_hands = true
+    entries = []
     squelch(true)
     books.each { |book|
       held = take(book)
       next if held.nil?
 
       respond
-      respond "  #{held.name}:"
-      page = nil
-      BOOK_PAGES.times { |i|
-        if i.positive?
-          page = turn(held)
-          break if page.nil?
-        end
-        read_page(held).each { |number, color, label|
-          where = page ? "page #{page.to_s.rjust(2)}" : 'open page'
-          respond "    #{where}  ##{number.to_s.ljust(3)} #{label.ljust(36)} #{color} (#{realm_of(color) || 'unknown realm'})"
-        }
+      respond "  #{book.name}:"
+      rows = read_book(held)
+      respond "    (no patterns)" if rows.empty?
+      rows.each { |page, number, color, label|
+        respond "    #{page ? "page #{page.to_s.rjust(2)}" : 'open page'}  ##{number.to_s.ljust(3)} #{label.ljust(36)} " \
+                "#{color} (#{realm_of(color) || 'unknown realm'})"
+        entries << [book.name, page, number, color, label]
       }
       put_away(held)
     }
+    squelch(false)
+    save_patterns(entries)
+
+    missing = shortcut_patterns(entries).select { |_key, entry| entry.nil? }.keys
+    respond
+    if missing.empty?
+      respond "  Every shortcut has a pattern."
+    else
+      respond "  Shortcuts with no pattern yet (SENSE PATTERN there with your bonded book in hand):"
+      missing.each { |key| respond "    #{shortcut_names(key).ljust(18)} #{DESTINATIONS[key]}" }
+    end
+    respond "  Saved for ;fizzport list."
     respond
   ensure
     squelch(false)
