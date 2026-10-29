@@ -149,6 +149,8 @@ module Fizzport
   # line on the text without its tags (10/28: a whole-chunk regex missed every row).
   SQUELCH     = /\A(?:\d{1,2}\.(?:\s.*)?|You turn to page \d+ of your .*|You flip back to the first page of your .*)\z/
   XML_TAG     = /<[^>]*>/
+  # A bare prompt: ">", "R>", "!S>"
+  PROMPT      = /\A[^\s<>]*>\z/
   HOOK        = 'fizzport-squelch'
   # CharSettings key for what ;fizzport patterns last found (a JSON string, so it comes back
   # as plain arrays rather than settings proxies)
@@ -332,23 +334,32 @@ module Fizzport
     fput "put ##{item.id} in my #{sack}"
   end
 
-  # Drops rune book rows and TURN lines from what reaches the screen. A dropped line's tags
-  # are kept (as Lich's quiet commands do) so stream and style state stays intact.
+  # Drops rune book rows, TURN lines and the prompt after each command from what reaches the
+  # screen. A dropped line keeps only the tags Lich's own quiet commands keep.
   def self.squelch_lines(xml)
     kept = xml.lines.map { |line|
-      next line unless line.gsub(XML_TAG, '').strip =~ SQUELCH
+      text = line.gsub(XML_TAG, '').gsub('&gt;', '>').strip
+      next line unless text =~ SQUELCH || text =~ PROMPT
 
-      tags = line.scan(XML_TAG).join
-      tags.empty? ? nil : "#{tags}\n"
+      Lich::Util.preserve_quiet_state_tags(line)
     }.compact
     kept.empty? ? nil : kept.join
   end
 
+  # While reading the book: no "[fizzport]>turn #..." echoes (silent script) and no rows,
+  # TURN lines or prompts (the hook). Safe to call off more than once.
   def self.squelch(on)
+    script = Script.current
     if on
+      if @was_silent.nil? && script
+        @was_silent = script.silent ? true : false
+        script.silent = true
+      end
       DownstreamHook.add(HOOK, proc { |xml| Fizzport.squelch_lines(xml) }, persist: false)
     else
       DownstreamHook.remove(HOOK)
+      script.silent = @was_silent if script && !@was_silent.nil?
+      @was_silent = nil
     end
   end
 
@@ -380,6 +391,7 @@ module Fizzport
   # which page is open, so a book already on that page goes all the way round). Returns
   # [book, page, number, colour, label] with the book in the right hand, or nil.
   def self.find_numbered(books, page, number)
+    msg "Turning your #{books.first.name} to page #{page}, this may take a while..."
     squelch(true)
     held = take(books.first)
     return nil if held.nil?
@@ -459,6 +471,7 @@ module Fizzport
   # [book, page or nil (the page it was already open to), number, colour, label], with
   # that book in the right hand and open to that page, or nil.
   def self.find_pattern(books, text)
+    msg "Looking through your rune book#{books.size > 1 ? 's' : ''} for \"#{text}\", this may take a while..."
     squelch(true)
     books.each { |book|
       held = take(book)
@@ -618,6 +631,7 @@ module Fizzport
     empty_hands
     @emptied_hands = true
     entries = []
+    msg "Looking through your rune book#{books.size > 1 ? 's' : ''} for patterns, this may take a while..."
     squelch(true)
     books.each { |book|
       held = take(book)
@@ -659,6 +673,7 @@ module Fizzport
     @filled_hands = false
     @book = nil
     @chalk = nil
+    @was_silent = nil
 
     words = args.reject { |arg| arg.start_with?('--') }
     tries = (args.find { |arg| arg =~ /^--tries=\d+$/ }&.split('=')&.last || DEFAULT_TRIES).to_i
