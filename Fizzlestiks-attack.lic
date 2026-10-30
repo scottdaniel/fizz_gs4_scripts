@@ -9,13 +9,20 @@
 # attack decision per call and returns; bigshot re-invokes it every pass while
 # the target is still up. Same shape as Brayis-attack.lic, minus the tackle.
 #
-# Decision each pass (what "feint (s9), attack (xx)" did):
+# Rhythm (what "feint (s9), attack (xx)" did): bigshot expands that list to one
+# feint plus five attacks ((xx) is five) and runs it top to bottom per target,
+# so it's a feint, five swings, a feint, and so on. This keeps that rhythm
+# across calls in $fizzlestiks_attack_rhythm ([target id, swings since the
+# feint]): a new target opens with a feint, then five plain attacks, then the
+# next feint.
 #
-#   Feint (CMAN, 9 stamina) if it's available -- Lich's own CMan.available?
-#   already folds in "known", enough stamina, off cooldown, and not
-#   overexerted, so there's no hardcoded stamina number here to drift out of
-#   date. Otherwise (or if the feint couldn't be sent at all) a plain attack
-#   with his current weapon, instead of sitting idle waiting on stamina.
+#   The feint goes only if Lich's own CMan.available? says so -- it folds in
+#   "known", enough stamina, off cooldown, and not overexerted, so there's no
+#   hardcoded stamina number here to drift out of date. If it isn't available,
+#   that slot is a plain attack instead, the way (s9) skipped the feint.
+#
+# 10/30 12:34: the first version feinted on EVERY pass while stamina lasted --
+# ten feints on one hobgoblin, about 30 s, before the first swing.
 #
 # Deliberately does NOT switch back to stance defensive -- bigshot's own
 # hunting/wander stance settings take over once this returns.
@@ -81,4 +88,11 @@ end
 
 fput "stance offensive" if stance != "offensive"
 
-plain_attack(foe) unless try_feint(foe)
+last_id, swings = $fizzlestiks_attack_rhythm
+swings = nil unless last_id == foe.id # new target: open with a feint
+if (swings.nil? || swings >= 5) && try_feint(foe)
+  $fizzlestiks_attack_rhythm = [foe.id, 0]
+else
+  plain_attack(foe)
+  $fizzlestiks_attack_rhythm = [foe.id, swings.to_i + 1]
+end
