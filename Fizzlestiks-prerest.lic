@@ -29,7 +29,10 @@ Script.run("eherbs")
 Script.start("eloot_guard") unless Script.running?("eloot_guard")  # unpauses eloot when its containers are full
 Script.run("diskwait")  # eloot only finds the disk's boxes if the disk is here when the sell starts (10/28)
 Script.run("eloot", "sell")
-Script.run("undead_bounty", "kill darkwoode")
+# Darkwoodes, greater orcs and werebears all live in the Upper Trollfang rooms his
+# profile hunts (10/30: darkwoode alone came up 3 times in 281 offers). The latter two
+# also get bounties in Cairnfang and the foothills of Zeltoph, hence --kill-areas.
+Script.run("bounty_chooser", "kill darkwoode, greater orc, werebear --kill-areas=Upper Trollfang")
 Script.run("ewaggle")
 
 # playsongs only when you're actually at the keyboard. Same afk_now UserVar that

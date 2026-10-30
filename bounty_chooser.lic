@@ -5,7 +5,7 @@
         game: gemstone
         tags: bounty, adventurer's guild
     requires: Lich > 5.4.0
-     version: 1.4
+     version: 1.5
 
   undead_bounty.lic with the "must be undead" test replaced by an allowed list, and
   with heirloom and rescue-child tasks accepted by AREA.
@@ -26,10 +26,13 @@
            contains anything on your areas list
          gem orders: any gem (they drop while hunting anywhere); optionally only from
            certain towns' dealers (`gem_towns:` in the yaml, empty = any town)
+       With --kill-areas (or `kill_areas:`), anything kept for its CREATURE must also be
+       in one of those areas -- for creatures that live in more than one place.
 
   usage:
     ;bounty_chooser help
     ;bounty_chooser kill skeletal ice troll, cold guardian, frost giant --areas=Ice Plains, Icemule Trail
+    ;bounty_chooser kill darkwoode, greater orc, werebear --kill-areas=Upper Trollfang
     ;bounty_chooser dangerous frost giant
     ;bounty_chooser                 (no arguments: everything from data/GSIV/<char>/bounty_chooser.yaml)
 
@@ -40,6 +43,11 @@
   started in. See undead_bounty.lic for those details.
 
   changelog:
+    1.5
+      - optional --kill-areas= / kill_areas: a task kept for its creature (kill, dangerous,
+        or heirloom/rescue by attacker) must also be in one of those areas. 10/30 Fizzlestiks
+        hunts Upper Trollfang, but his greater orc bounties were in Cairnfang 7 times and the
+        foothills of Zeltoph 3 times, and werebears in Cairnfang 3 times. Unset = any area, as before.
     1.4
       - heirloom/rescue tasks are accepted when the ATTACKER is on the creature list (or the
         area is on the areas list): an Ice Plains heirloom vs a storm giant is unreachable while
@@ -358,8 +366,8 @@ module BountyChooser
   # tossed for a reroll.
   IN_PROGRESS_STATES = %i[dangerous_spawned rescue_spawned].freeze
 
-  # What counts as a good task. creatures/areas/gem_towns are lowercase lists.
-  Rules = Struct.new(:creatures, :areas, :gem_towns)
+  # What counts as a good task. creatures/areas/gem_towns/kill_areas are lowercase lists.
+  Rules = Struct.new(:creatures, :areas, :gem_towns, :kill_areas)
 
   def self.ask_master_for_bounty(bounty_type, max_attempts: 10)
     go_to_advguild
@@ -785,6 +793,17 @@ module BountyChooser
     creatures.any? { |entry| !entry.empty? && name.include?(entry.downcase) }
   end
 
+  # The task's creature is on the list and, when kill_areas is set, it's in one of those
+  # areas too. 10/30: Fizzlestiks hunts darkwoodes in Upper Trollfang, where greater orcs
+  # and werebears also live, but their bounties came up in Cairnfang and the foothills of
+  # Zeltoph as well -- the right creature in a place he never goes.
+  def self.creature_task_allowed?(task, rules)
+    return false unless creature_allowed?(task.creature, rules.creatures)
+
+    kill_areas = Array(rules.kill_areas)
+    kill_areas.empty? || area_allowed?(task.location, kill_areas)
+  end
+
   # The area of a task ("Ice Plains", "Icemule Trail"), matched like creatures are.
   def self.area_allowed?(area, areas)
     name = area.to_s.downcase
@@ -813,9 +832,9 @@ module BountyChooser
   def self.task_acceptable?(task, rules)
     case task.type
     when :cull, :dangerous
-      creature_allowed?(task.creature, rules.creatures)
+      creature_task_allowed?(task, rules)
     when *AREA_TASK_TYPES
-      creature_allowed?(task.creature, rules.creatures) || area_allowed?(task.location, rules.areas)
+      creature_task_allowed?(task, rules) || area_allowed?(task.location, rules.areas)
     when :gem
       gem_town_allowed?(task.town, rules.gem_towns)
     else
@@ -912,6 +931,7 @@ module BountyChooser
     respond 'usage:'
     respond "    ;#{n} help"
     respond "    ;#{n} kill skeletal ice troll, cold guardian, frost giant --areas=Ice Plains, Icemule Trail"
+    respond "    ;#{n} kill darkwoode, greater orc, werebear --kill-areas=Upper Trollfang"
     respond "    ;#{n} dangerous frost giant"
     respond "    ;#{n}                 - no arguments: everything comes from data/GSIV/<char>/bounty_chooser.yaml"
     respond ''
@@ -921,6 +941,8 @@ module BountyChooser
     respond 'bounties are kept when the attacking creature is on the creature list (you have to kill'
     respond 'it) or their AREA contains any entry of --areas=. Gem orders are kept too (any'
     respond 'gem; optionally only for certain towns -- see gem_towns below).'
+    respond 'With --kill-areas= (kill_areas: in the yaml), anything kept for its creature must also'
+    respond 'be in one of those areas -- for creatures that live in more than one place.'
     respond ''
     respond 'The yaml file looks like:'
     respond '    bounty_type: kill      # optional: kill (default) or dangerous -- only used with a Bounty Boost'
@@ -933,6 +955,8 @@ module BountyChooser
     respond '      - Icemule Trail'
     respond '    gem_towns:            # optional; leave out for gem orders from any town'
     respond '      - Icemule Trace'
+    respond '    kill_areas:           # optional; leave out to keep a listed creature in any area'
+    respond '      - Frozen Battlefield'
     respond ''
     respond 'Creature names are checked against the known creatures before the script leaves'
     respond 'the guild -- a list where nothing matches is rejected instead of burning a boost.'
@@ -960,14 +984,19 @@ end
 
 # Allowed creatures and areas: from the command line, else the yaml file.
 #   ;bounty_chooser kill skeletal ice troll, cold guardian --areas=Ice Plains, Icemule Trail
+#   ;bounty_chooser kill darkwoode, greater orc, werebear --kill-areas=Upper Trollfang
 args = script.vars[1..-1].to_a
 args = args.drop(1) if BountyChooser::BOUNTY_TYPES.include?(args.first.to_s.strip.downcase)
 rest = args.join(' ')
-areas_arg = rest[/--areas=(.*)\z/i, 1]
-creature_arg = rest.sub(/--areas=.*\z/i, '')
+# Each --flag= runs to the next --flag or the end; the creature list is everything before.
+flag_arg = ->(name) { rest[/(?:\A|\s)--#{name}=(.*?)(?=\s+--[a-z-]+=|\z)/i, 1] }
+areas_arg = flag_arg.call('areas')
+kill_areas_arg = flag_arg.call('kill-areas')
+creature_arg = rest.sub(/(?:\A|\s)--[a-z-]+=.*\z/im, '')
 split_list = ->(text) { text.to_s.split(',').map { |c| c.strip.downcase }.reject(&:empty?) }
 creatures = split_list.call(creature_arg)
 areas = split_list.call(areas_arg)
+kill_areas = split_list.call(kill_areas_arg)
 
 path = File.join(DATA_DIR, XMLData.game, Char.name, 'bounty_chooser.yaml')
 require 'yaml'
@@ -994,6 +1023,9 @@ if creatures.empty? || areas.empty?
     areas = Array(saved['areas'] || saved[:areas]).map { |c| c.to_s.strip.downcase }.reject(&:empty?)
   end
 end
+if kill_areas.empty?
+  kill_areas = Array(saved['kill_areas'] || saved[:kill_areas]).map { |c| c.to_s.strip.downcase }.reject(&:empty?)
+end
 
 if creatures.empty?
   respond "BountyChooser: no creature list given and none in #{path} -- try ;#{Script.current.name} help"
@@ -1009,6 +1041,7 @@ if unknown.length == creatures.length
 end
 respond "BountyChooser: unrecognised name#{'s' if unknown.length > 1} #{unknown.map { |c| "'#{c}'" }.join(', ')} (will still match by name)." unless unknown.empty?
 respond "BountyChooser: accepting kill / dangerous-creature bounties for: #{creatures.join(', ')}"
+respond "BountyChooser: ...but only in: #{kill_areas.join(', ')}" unless kill_areas.empty?
 if areas.empty?
   respond 'BountyChooser: heirloom / rescue-child tasks are kept when the attacker is on the creature list (no areas set).'
 else
@@ -1017,4 +1050,4 @@ end
 
 respond "BountyChooser: and gem orders#{gem_towns.empty? ? ' in any town' : " from the gem dealers in: #{gem_towns.join(', ')}"}."
 
-BountyChooser.run(bounty_type, BountyChooser::Rules.new(creatures, areas, gem_towns))
+BountyChooser.run(bounty_type, BountyChooser::Rules.new(creatures, areas, gem_towns, kill_areas))
