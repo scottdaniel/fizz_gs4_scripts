@@ -43,6 +43,26 @@ def self.tidy_staffs
   end
 end
 
+# Crooked Intent: TURN on the urglaes thumb-ring (the Sonreeva CS reward) gives 15 minutes of +1
+# casting strength, listed under Buffs in SPELL ACTIVE. Verified 10.30 19:13:57: "You spin your
+# urglaes thumb-ring, and grim intent courses through you." The ring is worn; if TURN says it
+# isn't, get it out of the cloak and put it on, then TURN again. Any other reply (a cooldown, say)
+# is only echoed -- 25% of turns double the boost and cost one spirit, per its ANALYZE text.
+def self.crooked_intent
+  return if Effects::Buffs.active?("Crooked Intent")
+  ok     = /grim intent courses through you/i
+  not_on = /could not find|What were you referring|not (?:wearing|worn)|aren't wearing|must be (?:worn|wearing)/i
+  r = dothistimeout("turn my thumb-ring", 3, Regexp.union(ok, not_on)).to_s
+  if r =~ not_on
+    fput "get my thumb-ring"
+    sleep 0.5
+    fput "wear my thumb-ring"
+    sleep 0.5
+    r = dothistimeout("turn my thumb-ring", 3, ok).to_s
+  end
+  echo "[prep] thumb-ring TURN: #{r.strip.empty? ? 'no answer' : r.strip[0, 100]}" unless r =~ ok
+end
+
 # Stop playing before gearing up for combat -- kills the instrument along
 # with the script (playsongs.lic's before_dying stows it). Kill is async,
 # so wait for it to actually finish before "clear hands" below sends its
@@ -81,6 +101,8 @@ unless GameObj.loot.find { |i| i.name =~ /#{Char.name} disk/ }
   Script.run("qverb", "rub black crystal")
   pause 3
 end
+
+crooked_intent       # hands are empty here
 
 # cast protective spells from scrolls -- spell list lives in UserVars.scroll_buff_spells
 # (shared with scrollinv.lic's "Buff Scrolls" categorization); seeded once below

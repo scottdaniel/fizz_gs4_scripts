@@ -49,9 +49,11 @@ module FizzBuyWeapon
     nil
   end
 
-  # `look at <demon>` prints its fixed description, then -- only when it's
-  # carrying something -- a trailing "The iron verlok'asha is holding X." line.
-  # Read lines for a few seconds, stopping early once that line shows.
+  # `look at <demon>` prints its fixed description, then -- only when it's carrying
+  # something -- a trailing line naming it. A bare demon: "The iron verlok'asha is holding X."
+  # One wearing the illusion you cast on it (10.30, gnoll): "Peering past the surface of the
+  # illusion you have created, you can make out the faint form of a claidhmore suspended within
+  # the gnoll." Read lines for a few seconds, stopping early once that line shows.
   def demon_has_weapon?
     noun = demon_noun
     return false unless noun
@@ -65,9 +67,10 @@ module FizzBuyWeapon
         next
       end
       txt << line << "\n"
-      break if line =~ /is holding|could not find|don't see/i
+      break if line =~ /is holding|suspended within|could not find|don't see/i
     end
-    txt =~ /is holding\b[^.\n]*\b#{Regexp.escape(NOUN)}/i
+    txt =~ /is holding\b[^.\n]*\b#{Regexp.escape(NOUN)}/i ||
+      txt =~ /faint form of\b[^.\n]*\b#{Regexp.escape(NOUN)}\b[^.\n]*suspended within/i
   end
 
   # Symbol of Blessing (Voln step 2+): blesses a weapon HELD IN THE RIGHT HAND so
