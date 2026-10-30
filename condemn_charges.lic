@@ -1,0 +1,48 @@
+# quiet
+# condemn_charges.lic  (first line `# quiet`: Lich skips its "active"/"has exited" lines)
+#
+# Reads how many empowered Condemn (309) charges a Cleric has banked and how far
+# along the next one is, and stores it for the attack scripts:
+#
+#   ;condemn_charges
+#
+#   $condemn_charges   charges stored right now (0..$condemn_max)
+#   $condemn_max       most it can bank (1 or 2 in the logs)
+#   $condemn_progress  casts counted toward the next charge (0..$condemn_every - 1)
+#   $condemn_every     casts per charge (10)
+#   $condemn_synced_at when it last ran, whether or not it found the line
+#
+# Salvi-prep runs it once per hunt, and Salvi-attack / Salvi-attack-web run it
+# themselves the first time they cast Condemn after a Lich start. From there they
+# keep the numbers up to date themselves: a plain `incant 309` is one cast toward
+# the next charge, an evoke spends a charge.
+#
+# Why: the attacks used to evoke on every 10th plain cast and ignore what was
+# banked. 10/29, Salvi's `spell` showed "2 out of 2 empowered casts of Condemn, with
+# 0/10 toward your next charge" -- full, so every cast after that banked nothing
+# and the progress was wasted. Evoking whenever a charge is stored stops that.
+#
+# Verified `spell` line (Salvi, 2026-10-29 and earlier logs):
+#   You have stored enough holy magic for 2 out of 2 empowered casts of Condemn, with 0/10 toward your next charge.
+# seen as 0/1 with 3/10, 1/1 with 0/10, 2/2 with 0/10, and so on. If the line
+# doesn't come back, the old local tally takes over (charges start at 0 and
+# one is banked per 10 plain casts), so nothing breaks.
+
+module CondemnCharges
+
+LINE = /You have stored enough holy magic for (\d+) out of (\d+) empowered casts of Condemn, with (\d+)\/(\d+) toward your next charge/ unless defined?(LINE)
+
+# `spell` isn't instant (>2s), which is why this runs once per hunt, not per cast.
+result = dothistimeout("spell", 6, LINE)
+$condemn_synced_at = Time.now.to_f
+
+if (m = LINE.match(result.to_s))
+  $condemn_charges  = m[1].to_i
+  $condemn_max      = m[2].to_i
+  $condemn_progress = m[3].to_i
+  $condemn_every    = m[4].to_i
+else
+  echo "condemn_charges: no Condemn charge line in the `spell` output -- counting casts locally instead."
+end
+
+end # module

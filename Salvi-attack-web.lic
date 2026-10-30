@@ -35,10 +35,10 @@
 #      penalty to avoiding your attack" -- literally this combo. Landed once
 #      per target ($salvi_webbed_id tracker), so bigshot re-invoking every pass
 #      doesn't rewebb (and burn mana) once it's already stuck.
-#   2. Condemn (309) -- same empowered-evoke-every-EMPOWER_EVERY-casts logic as
-#      Salvi-attack.lic, sharing its $salvi_condemn_casts tally (same
-#      character, same server-side empowerment counter, whichever script casts
-#      it) rather than tracking a separate count.
+#   2. Condemn (309) -- same evoke-whenever-a-charge-is-banked logic as
+#      Salvi-attack.lic, sharing its $condemn_charges bank (same character, same
+#      server-side empowerment counter, whichever script casts it) rather than
+#      tracking a separate count. See condemn_charges.lic.
 #   3. Hold up to CONDEMN_WAIT (or the shorter EMPOWERED_CONDEMN_WAIT) for the
 #      DoT, bailing early if the target dies or the room fills past FLEE_HINT
 #      living targets (bigshot's about to flee -- don't sit still for it).
@@ -106,12 +106,16 @@ WEB_MAX_TRIES = 3   unless defined?(WEB_MAX_TRIES)
 CONDEMN_WAIT           = 10 unless defined?(CONDEMN_WAIT)
 EMPOWERED_CONDEMN_WAIT = 3  unless defined?(EMPOWERED_CONDEMN_WAIT)
 
-# Condemn banks an empowered charge server-side every N normal casts. Rather
-# than querying `spell` every cycle (slow, >2s), just tally casts locally: every
-# EMPOWER_EVERY plain incants, the next Condemn is an evoke. The tally lives in
-# a global ($salvi_condemn_casts, shared with Salvi-attack.lic -- it's the same
-# character's empowerment counter regardless of which script is casting) so it
-# survives this script being re-invoked each attack pass.
+# Condemn banks an empowered charge server-side every N normal casts, up to a cap
+# (2 out of 2 on 10/29), and stops counting once it's full. Querying `spell` every
+# cycle is slow (>2s), so condemn_charges.lic reads the bank once per hunt (Salvi-prep
+# runs it; this script runs it the first time after a Lich start) and the tally is
+# kept locally from there: a plain incant is one cast toward the next charge, an
+# evoke spends a charge, and Condemn is evoked whenever a charge is banked. The
+# numbers live in globals ($condemn_charges etc., shared with Salvi-attack.lic --
+# it's the same character's counter regardless of which script is casting) so they
+# survive this script being re-invoked each attack pass. EMPOWER_EVERY is only the
+# fallback for casts per charge if the sync can't read it.
 EMPOWER_EVERY = 10 unless defined?(EMPOWER_EVERY)
 
 # Living-target count past which bigshot is about to flee (mirrors
@@ -260,18 +264,37 @@ def land_web(foe)
   $salvi_webbed_id = foe.id.to_i
 end
 
-# Casts Condemn (309) at foe -- an empowered evoke once EMPOWER_EVERY plain
-# incants have been logged (then the tally resets), a plain incant otherwise --
-# and waits out its roundtime. Costs SPELL_309_MANA either way; the caller has
-# already checked the mana, this re-checks against the LIVE value one more time
-# right before the cast so nothing slips through. Identical to
-# Salvi-attack.lic's version, sharing its $salvi_condemn_casts tally.
+# Loads the Condemn charge bank (see condemn_charges.lic) the first time it's
+# needed after a Lich start, and fills in defaults if that sync found nothing.
+# Identical to Salvi-attack.lic's version.
+def condemn_state
+  Script.run("condemn_charges") if $condemn_synced_at.nil?
+  $condemn_charges  ||= 0
+  $condemn_progress ||= 0
+  $condemn_max      ||= 2
+  $condemn_every    ||= EMPOWER_EVERY
+end
+
+# A plain Condemn is one cast toward the next charge; a full bank counts nothing.
+def count_plain_condemn
+  return if $condemn_charges >= $condemn_max
+  $condemn_progress += 1
+  return if $condemn_progress < $condemn_every
+  $condemn_charges += 1
+  $condemn_progress = 0
+end
+
+# Casts Condemn (309) at foe -- an empowered evoke whenever a charge is banked, a
+# plain incant otherwise -- and waits out its roundtime. Costs SPELL_309_MANA
+# either way; the caller has already checked the mana, this re-checks against the
+# LIVE value one more time right before the cast so nothing slips through.
+# Identical to Salvi-attack.lic's version, sharing its $condemn_charges bank.
 # @return [Boolean] true if the empowered (evoke) path was used.
 def cast_condemn(foe)
   return false if checkmana < SPELL_309_MANA
 
-  $salvi_condemn_casts ||= 0
-  empowered = $salvi_condemn_casts >= EMPOWER_EVERY
+  condemn_state
+  empowered = $condemn_charges >= 1
 
   if empowered
     fput "prep 309"
@@ -279,10 +302,10 @@ def cast_condemn(foe)
     waitrt?
     return false if checkmana < SPELL_309_MANA   # last gate before the evoke
     fput "evoke ##{foe.id}"
-    $salvi_condemn_casts = 0
+    $condemn_charges -= 1
   else
     fput "incant 309"
-    $salvi_condemn_casts += 1
+    count_plain_condemn
   end
   waitcastrt?
   waitrt?

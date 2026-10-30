@@ -113,6 +113,10 @@ fput "ready weapon"
 
 sanctify_runestaff
 
+# Read the banked Condemn charges once per hunt; the attack scripts keep count
+# from there (see condemn_charges.lic).
+Script.run("condemn_charges")
+
 # Puts away loot eloot has no room for and unpauses it, so a full cloak can't
 # leave you fighting with your hands full (see eloot_guard.lic).
 Script.start("eloot_guard") unless Script.running?("eloot_guard")
