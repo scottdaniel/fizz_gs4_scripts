@@ -1,0 +1,41 @@
+#Htrow-prerest.lic
+#Brayis-prerest.lic for Htrowelzzif -- no wands, so no fresh-wand sweep -- plus
+#the bounty profile's ewaggle, so she's spelled up before the next hunt.
+
+module HtrowPrerest
+
+# First, get off any unmapped room (go2 "current room not found"): see unlost.lic.
+# Stops here -- bigshot is stopped too -- if it can't walk out.
+Script.run("unlost")
+exit if $unlost_failed
+
+Script.run("eherbs")
+Script.start("eloot_guard") unless Script.running?("eloot_guard")  # unpauses eloot when its containers are full
+Script.run("diskwait")  # eloot only finds the disk's boxes if the disk is here when the sell starts (10/28)
+Script.run("eloot", "sell")
+Script.run("unburden")  # a box eloot left in hand -> sell again
+
+# Restocks the rub items Htrow-prep uses. Her list starts out empty
+# (UserVars are per character), so this fills it in once; after that it's
+# left alone, so change it in-game with:
+#   ;vars set items_to_buy=quartz orb, white crystal, black crystal, small statue, moonstone cube
+if UserVars.items_to_buy.to_s.strip.empty?
+  UserVars.items_to_buy = "quartz orb, white crystal, black crystal, small statue, moonstone cube"
+end
+Script.run("buyitems")
+
+# A free account can't hunt carrying 5,000+ silver, and eherbs withdraws 8,000
+# for herbs and keeps the change (10/30: every swing refused until it was
+# banked by hand). buyitems' closing "deposit all" normally banks it, but not
+# when buyitems stops early (encumbered, bank short), so bank whatever is
+# still on hand and come back before the next hunt.
+if Lich::Util.silver_count > 0
+  home = Room.current.id
+  Script.run("go2", "bank")
+  fput "deposit all"
+  Script.run("go2", "#{home} --disable-confirm") if home
+end
+
+Script.run("ewaggle")
+
+end #End of module

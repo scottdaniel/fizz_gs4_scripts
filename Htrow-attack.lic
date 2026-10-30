@@ -1,0 +1,289 @@
+# Htrow-attack.lic
+# Bigshot custom attack routine for Htrowelzzif (Sorcerer who fights with a
+# longsword and shield). Drop it into a bigshot hunting-commands list as a
+# single command:
+#
+#   script Htrow-attack
+#
+# Built on Brayis-attack.lic rather than Fizzleworth's sorcerer scripts: she has
+# no Magic Item Use, so there's no wand fallback -- the finisher is her sword.
+# bigshot pauses itself, runs this once against the target it already has
+# locked, then resumes to loot / wander / retarget -- so this does ONE pass of
+# her rotation per call and returns; bigshot re-invokes it every pass while the
+# target is still up. Death is read off GameObj status (what bigshot itself
+# uses), not a per-creature kill-message regex.
+#
+# Each pass (Scott's rotation, 10/30):
+#
+#   stance guarded, then each spell in opener_spells -- Blood Burst (701), then
+#     Mana Disruption (702) -- each only if live mana covers it;
+#   stance offensive, then a plain attack with the longsword.
+#
+# and bigshot's next call repeats it until the target is dead.
+#
+# Why a script for it: bigshot's hunting_stance (Offensive) re-sends "stance
+# offensive" before every command, so in a bigshot command list the guard never
+# lasted to the casts (10/30 log: "stanc guard", "[bigshot]>stance offensive",
+# "incant 701"). In here nothing comes between the guard and the casts.
+#
+# NOTE on Tenebrous Tether (706), which her list used to cast second: it's a
+# concentration spell and her next swing breaks it. On 10/30 all 10 targets it
+# rooted were freed by the very next attack ("...your concentration on the
+# spell is broken."), so each one bought about two seconds of root for 6 mana.
+# Replaced by Disintegrate (705), then by 702, which costs 2 mana to 705's 5.
+#
+# OVEREXERTION: a cast without its full mana in hand still goes through and
+# hurts you, so each one is gated on the live checkmana against its cost,
+# re-read right before the incant (after the previous cast drained mana) --
+# the job (m1)/(m2) would do in a bigshot list. Short on mana just means fewer
+# casts; the sword swing happens either way.
+#
+# FREE ACCOUNT: she can't hunt carrying 5,000+ silver -- every cast and swing
+# just gets "[Because your account is free, you cannot hunt while carrying 5000
+# silvers or more. ...]" (21 times on 10/30, after eherbs withdrew 8,000 for
+# herbs and kept the change). A refused swing has no roundtime, so without a
+# check bigshot would re-run this script in a tight loop. A persistent hook
+# notes that message; the pass that sees it asks bigshot to rest instead
+# (reason "Carrying 5,000+ silver"), and Htrow-prerest.lic banks the coins.
+#
+# DISARM (from Brayis-attack.lic, where a death dirge disarmed Brayis twice and
+# he died fighting bare-fisted): her shield stays in the LEFT hand after a
+# disarm, so the check is the sword hand (right) being empty, not both hands.
+# On an empty right hand it tries GIRD once (the sword may just be in the
+# cloak); if that still leaves it empty it prints a DISARMED banner, sets
+# $bigshot_should_rest (reason "Disarmed") and exits without attacking.
+# Htrow-prep.lic stops bigshot in town if GIRD comes up empty there too.
+# A persistent DownstreamHook records the room any "Use the RECOVER ITEM
+# command" line arrives in, since a disarm can land while bigshot is walking.
+
+# --- knobs (methods, so an edit applies on the next pass without a relog) ----
+
+# Spells cast at the target every pass, in this order, before the swing.
+def opener_spells
+  [701, 702]
+end
+
+# Mana for one cast. Spell#mana_cost reads Lich's effect-list.xml (701 = 1,
+# 702 = 2); the table is only the fallback if that lookup comes back empty.
+def spell_mana(num)
+  cost = (Spell[num].mana_cost.to_i rescue 0)
+  cost.positive? ? cost : { 701 => 1, 702 => 2, 705 => 5, 706 => 6 }.fetch(num, 99)
+end
+
+# --- patterns ----------------------------------------------------------------
+
+# A wound bad enough to block casting -- no roundtime, and every other cast
+# would fail the same way, so the pass skips straight to the sword.
+CANT_CAST_WOUNDED = /can't think clearly enough to prepare a spell/i unless defined?(CANT_CAST_WOUNDED)
+
+# Still in cast roundtime from the last spell: the incant didn't go out.
+CAST_WAIT = /^\s*\.\.\.wait|^Wait \d+ sec/i unless defined?(CAST_WAIT)
+
+# The end of one cast's output (or one of the two refusals above).
+CAST_DONE = /Cast Roundtime \d+ Sec|Roundtime: \d+ sec|can't think clearly enough to prepare|^\s*\.\.\.wait|^Wait \d+ sec/i unless defined?(CAST_DONE)
+
+# --- helpers -----------------------------------------------------------------
+
+# Monster-agnostic death check: bigshot itself never text-matches kill messages
+# (they vary per creature) -- it reads GameObj status, which Lich core keeps
+# current from the room/combat XML. A dead creature reads "dead" while the
+# corpse lingers, then "gone" once it decays or is looted.
+def target_dead?(foe)
+  return true if foe.nil?
+  return true if foe.status.to_s =~ /dead|gone/
+  !GameObj.targets.any? { |t| t.id.to_i == foe.id.to_i && t.status.to_s !~ /dead|gone/ }
+end
+
+# Sends one incant and returns everything it printed, up to its cast roundtime
+# line (or the wound block / a "Wait N sec." refusal, neither of which gets
+# one). clear first so lines left over from the previous cast -- its blood
+# burst ticks, its own roundtime line -- can't end this read early.
+def cast_collect(cmd, timeout = 6)
+  lines = []
+  clear
+  put cmd
+  deadline = Time.now.to_f + timeout
+  loop do
+    line = get?
+    if line.nil?
+      sleep 0.1
+    else
+      lines << line
+      break if line =~ CAST_DONE
+    end
+    break if Time.now.to_f >= deadline
+  end
+  lines.join("\n")
+end
+
+def go_guarded
+  fput "stance guarded" if stance != "guarded"
+end
+
+def can_afford?(num)
+  checkmana >= spell_mana(num)
+end
+
+# Each opener spell in turn, from guarded. A spell she can't afford is skipped,
+# not the whole list -- a cheaper one after it may still fit. Stops early if
+# the target dies or a wound blocks casting.
+def cast_openers(foe)
+  opener_spells.each do |num|
+    return if target_dead?(foe)
+    next unless can_afford?(num)
+    waitcastrt?
+    waitrt?
+    return if target_dead?(foe)
+    next unless can_afford?(num)   # re-read right before the incant
+    go_guarded
+    text = cast_collect("incant #{num}")
+    if text =~ CAST_WAIT
+      # Sleep the seconds the game gave: right after a swing, Lich may not have
+      # registered its roundtime yet, so waitrt? alone returns at once and the
+      # retry gets refused too (10/30 11:54:51, "...wait 4 seconds." -- that
+      # pass lost its 701).
+      secs = text[/wait (\d+) sec/i, 1].to_i
+      sleep([secs, 5].min) if secs.positive?
+      waitrt?
+      waitcastrt?
+      return if target_dead?(foe)
+      next unless can_afford?(num)
+      text = cast_collect("incant #{num}")
+    end
+    return if text =~ CANT_CAST_WOUNDED
+  end
+end
+
+# Offensive, then one swing with the longsword. No-ops if the openers already
+# killed it.
+def finish_attack(foe)
+  return if target_dead?(foe)
+  waitcastrt?
+  waitrt?
+  return if target_dead?(foe)
+  fput "stance offensive" if stance != "offensive"
+  fput "attack"
+  waitrt?
+end
+
+# --- disarm handling ---------------------------------------------------------
+
+# GS4 prints this for EVERY way of having an item knocked away (a death dirge's
+# voice, a hardened-hide rebound, a curse, ...), so one pattern covers them all.
+HTROWELZZIF_DISARM_MSG = /Use the RECOVER ITEM command/i unless defined?(HTROWELZZIF_DISARM_MSG)
+
+# How long a recorded disarm room is still believed when reporting it.
+HTROWELZZIF_DISARM_FRESH_SECS = 1800 unless defined?(HTROWELZZIF_DISARM_FRESH_SECS)
+
+# Remembers WHERE the disarm line arrived. bigshot re-invokes this script every
+# pass and a disarm can land while bigshot is walking between passes, so the
+# recording has to live in a hook that outlives each pass: persist: true is
+# what stops Lich removing it when this script exits. Re-adding it each pass
+# just replaces it under the same name.
+# To remove it: ;e DownstreamHook.remove('htrowelzzif_disarm_room')
+DownstreamHook.add('htrowelzzif_disarm_room', proc { |server_string|
+  begin
+    if server_string =~ HTROWELZZIF_DISARM_MSG
+      room = Room.current
+      $htrowelzzif_disarm = { room: room&.id, title: Array(room&.title).first, at: Time.now }
+    end
+  rescue StandardError
+    nil
+  end
+  server_string
+}, persist: true)
+
+# GIRD puts the longsword in the right hand and the shield in the left, and a
+# disarm only takes the sword -- so the right hand is the one that matters.
+def sword_hand_empty?
+  checkright.nil?
+end
+
+# Report the disarm loudly and send bigshot to rest rather than fight on with
+# just a shield. Htrow-prep.lic then stops bigshot if GIRD finds no sword.
+def handle_disarmed
+  info  = $htrowelzzif_disarm
+  fresh = info && (Time.now - info[:at]) < HTROWELZZIF_DISARM_FRESH_SECS
+  here  = Room.current
+  echo "########## DISARMED -- no sword in the right hand ##########"
+  if fresh
+    echo "## the RECOVER ITEM line arrived #{(Time.now - info[:at]).round}s ago in room #{info[:room]} (#{info[:title]})"
+  else
+    echo "## disarm room unknown (no recent RECOVER ITEM line seen); noticed in room #{here&.id} (#{Array(here&.title).first})"
+  end
+  echo "## not fighting with just a shield -- asking bigshot to rest"
+  $bigshot_should_rest = true
+  $rest_reason = "Disarmed"
+end
+
+# --- free-account silver cap ---------------------------------------------------
+
+HTROW_SILVER_CAP_MSG = /account is free, you cannot hunt while carrying/i unless defined?(HTROW_SILVER_CAP_MSG)
+
+# Notes when the game refuses a cast or swing over the silver cap. A hook rather
+# than reading each command's reply so it also catches the refusal of a command
+# bigshot sent itself between passes.
+# To remove it: ;e DownstreamHook.remove('htrow_silver_cap')
+DownstreamHook.add('htrow_silver_cap', proc { |server_string|
+  begin
+    $htrow_silver_capped_at = Time.now if server_string =~ HTROW_SILVER_CAP_MSG
+  rescue StandardError
+    nil
+  end
+  server_string
+}, persist: true)
+
+def silver_capped?
+  $htrow_silver_capped_at && (Time.now - $htrow_silver_capped_at) < 20
+end
+
+def rest_for_silver_cap
+  echo "########## carrying 5,000+ silver -- a free account can't hunt with that ##########"
+  echo "## asking bigshot to rest; Htrow-prerest banks it"
+  $htrow_silver_capped_at = nil
+  $bigshot_should_rest = true
+  $rest_reason = "Carrying 5,000+ silver"
+end
+
+# --- main ----------------------------------------------------------------
+
+foe = GameObj.targets.find { |t| t.id.to_i == XMLData.current_target_id.to_i } if XMLData.current_target_id
+foe ||= GameObj.targets.find { |t| t.status.to_s !~ /dead|gone/ }
+
+# nothing (live) to hit -- hand control straight back to bigshot, which loots
+exit if target_dead?(foe)
+
+fput "target ##{foe.id}" unless XMLData.current_target_id.to_i == foe.id.to_i
+
+waitrt?
+waitcastrt?
+
+exit if target_dead?(foe)
+
+if silver_capped?
+  rest_for_silver_cap
+  exit
+end
+
+# Empty sword hand: try GIRD once (the sword may only be in the cloak), and
+# only call it a disarm if that doesn't bring it back.
+if sword_hand_empty?
+  fput "gird"
+  pause 0.5
+  if sword_hand_empty?
+    handle_disarmed
+    exit
+  end
+end
+
+# A crash in the openers should cost one pass's spells, not the swing --
+# otherwise bigshot re-runs a crashing script in a tight loop (Felix, 10/27).
+begin
+  cast_openers(foe)
+rescue StandardError => e
+  echo "Htrow-attack: openers failed (#{e.class}: #{e.message}) -- swinging anyway"
+end
+
+finish_attack(foe)
+
+rest_for_silver_cap if silver_capped?
