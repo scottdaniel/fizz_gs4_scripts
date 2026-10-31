@@ -236,20 +236,49 @@ end
 #   The magic in your location is interfering with your <a>X</a> returning to you.
 #   You have no minor demon at this time.
 # @return { id:, noun:, name: } with the demon in the room, else nil.
+#
+# After a long fast trip the demon can be a minute behind (10.30: 50 rooms in 12 s, the demon
+# showed up ~35 s later), so a demon that "begins to travel" is waited for as long as the caller
+# allows, and the order is NOT repeated while it is still on its way (a second TELL MDEMON
+# RETURN may start its trip over): $reanim_demon_pending remembers it for two minutes.
 REANIM_RETURN_REPLY = /already here!|acknowledges your order|interfering with your|You have no minor demon at this time/i
 REANIM_DEMON_LINK   = %r{(?:[Bb]ut your|Your|your) <pushBold/><a exist="(\d+)" noun="([\w,'-]+)">([\w\-' ]+)</a><popBold/>}
+
+# How long ;reanim waits for a straggling demon before arming the animate (UserVars.reanim_demon_wait).
+def reanim_demon_wait
+	v = UserVars.reanim_demon_wait.to_s.strip
+	v =~ /\A\d+\z/ ? v.to_i : 45
+end
+
+def reanim_demon_arrived?(id, secs)
+	(secs * 2).times do
+		return true if GameObj.npcs.to_a.any? { |o| o && o.id.to_s == id.to_s }
+		sleep 0.5
+	end
+	GameObj.npcs.to_a.any? { |o| o && o.id.to_s == id.to_s }
+end
+
 def reanim_demon(arrive_secs = 6)
+	pend = $reanim_demon_pending
+	if pend && Time.now.to_f - pend[:at] < 120
+		d = pend[:demon]
+		if reanim_demon_arrived?(d[:id], arrive_secs)
+			$reanim_demon_pending = nil
+			return d
+		end
+		return nil
+	end
+	$reanim_demon_pending = nil
 	text = Lich::Util.quiet_command_xml("tell mdemon return", REANIM_RETURN_REPLY).to_a.join("\n")
 	return nil unless text =~ REANIM_DEMON_LINK
 	d = { id: $1, noun: $2, name: $3 }
-	here = text.include?("already here!")
-	if text.include?("begins to travel")
-		(arrive_secs * 2).times do
-			break if (here = GameObj.npcs.to_a.any? { |o| o && o.id.to_s == d[:id] })
-			sleep 0.5
-		end
+	return d if text.include?("already here!")
+	return nil unless text.include?("begins to travel")
+	if reanim_demon_arrived?(d[:id], arrive_secs)
+		return d
 	end
-	here ? d : nil
+	$reanim_demon_pending = { demon: d, at: Time.now.to_f }
+	nil
 rescue StandardError
 	nil
 end
@@ -280,14 +309,14 @@ def arm_animate(noun)
 
 	# 1) get a spare WEAPON onto the ground
 	unless weapon_on_ground(noun)
-		demon = reanim_demon
+		demon = reanim_demon(reanim_demon_wait)
 		if demon
 			r = reanim_tell(demon[:noun], "drop #{noun}",
 				/drops (?:a|an|the)/i,
 				/could not find|seems very confused|isn't holding|not holding|does(?:n't| not) have|not here/i)
 			debug("#{demon[:noun]} (your minor demon): #{r.strip[0, 80]}")
 		else
-			echo "[reanim] no minor demon here to hand over a #{noun}."
+			echo "[reanim] no minor demon here after #{reanim_demon_wait}s to hand over a #{noun}."
 		end
 		# GameObj.loot can lag the drop line by a beat -- give it a moment
 		15.times { break if weapon_on_ground(noun); sleep 0.2 }
