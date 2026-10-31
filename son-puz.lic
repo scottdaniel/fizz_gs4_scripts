@@ -9,6 +9,8 @@
 #                    OFFER 15000 soul shards twice if that didn't do it. Without `pay` it only says so
 #   ;son-puz         while you are sliding down the chute (any time, even if you just started
 #                    sliding): leans right/left at each "faint light" line until you are spat out
+#   ;son-puz summon  in the Den of the Fiend with no fiend about: touches the runes twice to call
+#                    it (Nety's words; the verb is a guess). It never fights.
 #
 # Where it works (everything below was read out of your logs):
 #   Graveyard Temporalis, at the mausoleum   go black mausoleum
@@ -27,8 +29,39 @@
 #                                            item from your containers, PUTs it in the door and
 #                                            goes through. The item is used up, and the drops
 #                                            (fang, caduceus ...) come from the creatures
-#   Grand Hall (first room)                  north, to the room with the stone door
-#   Courtyard                                the end of what the logs know
+#   Grand Hall (first room)                  JUMP TRAPDOOR over and over until it gives way and dumps you
+#                                            into the Subterrane (the north room's caduceus door only
+#                                            leads to the Courtyard, a side room, so from that room it
+#                                            walks you back south to the trapdoor)
+#
+# Everything from here on was read out of the 10/26 run with Nety's group. [typed] = you typed it
+# in that log, [text] = the game text was in the log but someone else did it, [map] = only the Lich
+# map has the command. It stops at each point where the group should be together.
+#   Subterrane                               GO FISSURE [map], then north x4 along the Dark Passageway
+#   Dead End (the abyss edge)                JUMP [typed] into the Void, a safe room where groups wait
+#   The Void                                 CRAWL CREVICE [typed] (a SEARCH first if it isn't there),
+#                                            then down x7 the Collapsed Tunnel [map] to the Cistern
+#   Cistern                                  SWIM [typed]: drops through a hatch that locks behind you
+#   Sunken Chamber                           south, then down x4 / north x5 to the Demon Wall [text]
+#   Demon Wall                               the monolithic stone door wants an ouroboros (door routine)
+#   Hollowlair, Dreadgrounds                 a shifting maze it can't solve; in the room with "the heavily
+#                                            carved door" it WHISPERs "door six" [typed], which sends you
+#                                            alone to the Dark Sanctuary
+#   Dark Sanctuary                           north to the Dark Shrine (the wall and pit are an optional
+#                                            blessing)
+#   Dark Shrine                              GO GATE up to 3 times [map]; the third knock strangles whoever
+#                                            opens it [text]
+#   Den of the Fiend                         SEARCH the dead fiend for the shadowglass effigy, then the door
+#                                            routine (the effigy opens the barbed stone door; it slams shut
+#                                            about a minute later)
+#   Demon Roost (safe room)                  GO GAP, up, GO TUNNEL [typed], north x2, up x2 the Bone Church
+#                                            to the Tower
+#   Tower                                    GO PORTAL once the rune ring is disarmed (a rogue's job)
+#   the ash field                            GO PATH, then run me again within 30 s to confirm [typed]: the
+#                                            point of no return
+#   the pool (boss room)                     LOOK IN POOL for the gateway, put the soulstone heart in it,
+#                                            GO GATEWAY. The boss fight is yours.
+#   The Veil of Solace                       the monstrosity: your reward pick is permanent, so no auto-pick
 #
 # Everything lives in the module: top-level defs/constants are shared by every Lich script.
 
@@ -42,6 +75,10 @@ module SonPuz
   CHUTE_LINES = /sliding downward|slide downward, picking up speed|faint light coming|keep sliding downward|missing your opportunity to navigate|spit out onto the ground/i
   CHUTE_END   = /spit out onto the ground/i
   OFFER_STOP  = /not enough|don't have|cannot afford|can't afford/i
+  GAVE_WAY    = /causing it to give way and dump you into the darkness|give way and dump you/i
+  DOOR_OPENS  = /causing the .*(?:door|gateway) to open/i
+  # the Bone Church on the way to the tower: the step to take in each room
+  CHURCH_STEP = [[/Narthex|Nave/i, 'north'], [/Altar/i, 'up'], [/Tower Approach/i, 'up']].freeze
   # loop room (by what its description says) => the step toward the Dead End
   LOOP_STEP = [
     [/Several torches are affixed upon the granite walls/i, 'northeast'],   # arrival crypt
@@ -63,20 +100,43 @@ module SonPuz
     t, d = title, descr
     if    t =~ /Graveyard Temporalis/i && d =~ /black marble mausoleum/i then :mausoleum_door
     elsif t =~ /Sonreeva, Mausoleum/i             then :mausoleum
-    elsif t =~ /Sonreeva, Dead End/i              then :dead_end
+    elsif t =~ /Sonreeva, Dead End/i              then(d =~ /abyss/i ? :abyss_edge : :dead_end)
     elsif t =~ /Sonreeva, Hall of the Dead/i      then :hall
     elsif t =~ /Sonreeva, Dais/i                  then :dais
     elsif t =~ /Sonreeva, Grand Hall/i            then(d =~ /trapdoor/i ? :grand_first : :grand_door)
     elsif t =~ /Sonreeva, Courtyard/i             then :courtyard
     elsif t =~ /Sonreeva, (?:Crypt|Voln Encampment)/i then :loop
+    elsif t =~ /Sonreeva, Subterrane/i            then :subterrane
+    elsif t =~ /Sonreeva, Dark Passageway/i       then :passage
+    elsif t =~ /Sonreeva, The Void/i              then :void
+    elsif t =~ /Sonreeva, Collapsed Tunnel/i      then :tunnel
+    elsif t =~ /Sonreeva, Cistern/i               then :cistern
+    elsif t =~ /Sonreeva, Sunken Chamber/i        then :sunken
+    elsif t =~ /Sonreeva, (?:Depths|Deepest Parts|Palisade)/i then :depths
+    elsif t =~ /Sonreeva, Demon Wall/i            then :demon_wall
+    elsif t =~ /Hollowlair, Dreadgrounds/i        then :dreadgrounds
+    elsif t =~ /Hollowlair, Dark Sanctuary/i      then :sanctuary
+    elsif t =~ /Hollowlair, Dark Shrine/i         then :shrine
+    elsif t =~ /Hollowlair, Den of the Fiend/i    then :den
+    elsif t =~ /Hollowlair, Demon Roost/i         then :roost
+    elsif t =~ /Hollowlair, Hellscape/i           then(d =~ /gap leads back/i ? :hellscape_low : :hellscape_high)
+    elsif t =~ /The Bone Church, Tower\b(?! Approach)/i then :tower
+    elsif t =~ /The Bone Church/i                 then :church
+    elsif t =~ /The Veil of Solace/i              then :veil
+    # these two have no title in the log (Lich's header is blank), so the description decides
+    elsif d =~ /pale, ash-covered earth/i         then :field
+    elsif d =~ /pool of stagnant water/i          then :boss_pool
     end
   end
+
+  def self.exits; Array(XMLData.room_exits).map(&:to_s); end
 
   # Send a command and wait for the room to change (title or description), up to secs.
   # @return true if it did
   def self.step(cmd, secs = 6)
     before = [title, descr]
     waitrt?
+    fput "stand" unless standing?       # falls and crawls (trapdoor, abyss, crevice) leave you down
     fput cmd
     deadline = Time.now + secs
     sleep 0.2 until [title, descr] != before || Time.now > deadline
@@ -186,9 +246,235 @@ module SonPuz
     end
   end
 
+  # The way on is the trapdoor in this room. Each `jump trapdoor` buckles it a little more but it
+  # springs back if you stop for ~20 s (10.26 19:29:10-12, then 19:29:34-37), so jump straight
+  # through; 6 jumps did it. (`jump on trapdoor` just says "That was fun.")
   def self.at_grand_first
-    say "-> north, to the stone door."
+    say "jumping on the trapdoor until it gives way."
+    20.times do
+      waitrt?
+      r = dothistimeout("jump trapdoor", 3, /buckle|give way|fun\b/i).to_s
+      break if r =~ GAVE_WAY
+    end
+    deadline = Time.now + 4
+    sleep 0.2 until where != :grand_first || Time.now > deadline
+    say(where == :subterrane ? "dropped into the Subterrane." : "the trapdoor didn't give way.")
+  end
+
+  # The north room's door only leads to the Courtyard (a side room, nothing recorded there), and
+  # the item is used up, so don't burn it: head back to the trapdoor.
+  def self.at_grand_north
+    say "this room's door only leads to the Courtyard. The way on is the trapdoor in the room to the south."
+    say "couldn't go south." unless step("south")
+    at_grand_first if where == :grand_first
+  end
+
+  # ---- the way down, from the Subterrane to the Demon Wall ---------------------
+
+  def self.at_subterrane
+    say "-> go fissure (the Lich map's command), then north along the Dark Passageway."
+    return say("couldn't go through the fissure.") unless step("go fissure")
+    at_passage
+  end
+
+  def self.at_passage
+    6.times do
+      break unless where == :passage
+      return say("couldn't go north.") unless step("north")
+    end
+    say "at the abyss; run me again to jump." if where == :abyss_edge
+  end
+
+  # leaps into the abyss -> the Void, a safe room where groups wait for each other
+  def self.at_abyss
+    say "-> jump into the abyss."
+    say "didn't land in the Void." unless step("jump")
+  end
+
+  # the crevice is found by SEARCHing (Nety "points at a low crevice"); CRAWL goes through one at a time
+  def self.at_void
+    unless step("crawl crevice")
+      say "no crevice yet -- searching."
+      waitrt?
+      fput "search"
+      sleep 2
+      return say("couldn't crawl into the crevice.") unless step("crawl crevice")
+    end
+    at_tunnel
+  end
+
+  def self.at_tunnel
+    8.times do
+      break unless where == :tunnel
+      return say("couldn't go down.") unless step("down")
+    end
+    say "at the Cistern; run me again to SWIM (the hatch locks behind you: no way back up)." if where == :cistern
+  end
+
+  def self.at_cistern
+    say "-> swim to the hatch (it locks behind you)."
+    say "the swim didn't take." unless step("swim", 12)
+  end
+
+  def self.at_sunken
+    say "-> south, into the Depths."
+    return say("couldn't go south.") unless step("south")
+    at_depths
+  end
+
+  # down while there is a way down (Depths, 4 rooms), then north (3 Deepest Parts, the Palisade)
+  def self.at_depths
+    14.times do
+      break unless where == :depths
+      cmd = exits.include?('down') ? 'down' : 'north'
+      return say("couldn't go #{cmd}.") unless step(cmd)
+    end
+    say "at the Demon Wall; run me again to put the ouroboros in its door." if where == :demon_wall
+  end
+
+  # ---- Hollowlair ----------------------------------------------------------------
+
+  # The maze shifts and wanders (Nety lost people here), so this only does the one thing that works
+  # in the right room: whisper "six" to the heavily carved door (10.26 19:53:58).
+  def self.at_dreadgrounds
+    unless descr =~ /heavily carved door/i
+      return say("not the room with the heavily carved door -- this maze can't be solved by script. Walk until the description mentions it, then run me again.")
+    end
+    say "whispering to the heavily carved door."
+    fput "whisper door six"
+    deadline = Time.now + 8
+    sleep 0.2 until where != :dreadgrounds || Time.now > deadline
+    say "the door didn't answer." if where == :dreadgrounds
+  end
+
+  def self.at_sanctuary
+    say "-> north, to the Dark Shrine."
     say "couldn't go north." unless step("north")
+  end
+
+  # Nety knocked twice and the third time the gate "bursts open, revealing dozens of ethereal
+  # tentacles that begin to strangle him": whoever opens it takes that. Unverified verb (the Lich
+  # map says GO GATE).
+  def self.at_shrine
+    3.times do |i|
+      say "-> go gate (try #{i + 1} of 3#{i == 2 ? ': this one strangles whoever opens it' : ''})."
+      break if step("go gate", 8)
+    end
+    say "didn't get through the gate." if where == :shrine
+  end
+
+  # The fiend is summoned by touching the rune twice; killing it is yours. Its corpse (an
+  # "ethereal fiend") is searched for the effigy, which then goes in the barbed stone door.
+  def self.at_den(summon)
+    fiends = GameObj.npcs.to_a.select { |n| n && n.name.to_s =~ /fiend/i }
+    live = fiends.reject { |n| n.status.to_s =~ /dead|gone/ }
+    if live.any?
+      return say("the fiend is alive -- kill it, then run me again.")
+    end
+    dead = fiends.find { |n| n.status.to_s =~ /dead|gone/ }
+    if dead
+      say "searching the dead fiend for the effigy."
+      waitrt?
+      fput "search ##{dead.id}"
+      sleep 1
+    elsif GameObj.loot.to_a.none? { |o| o && o.name.to_s =~ /effigy/i } && !holding?(/effigy/i)
+      unless summon
+        return say("no fiend here. `;son-puz summon` touches the runes twice to call one (you kill it).")
+      end
+      say "touching the runes twice to call the fiend."
+      2.times do
+        waitrt?
+        fput "touch rune"
+        sleep 2
+      end
+      return
+    end
+    door
+  end
+
+  def self.holding?(re)
+    %i[right_hand left_hand].any? { |h| (o = GameObj.send(h)) && o.name.to_s =~ re }
+  end
+
+  # ---- the final boss's side ----------------------------------------------------
+
+  def self.at_roost
+    say "Demon Roost (a safe room: rest and buff, the boss dispels a lot). -> go gap, up, then the tunnel."
+    return say("couldn't go through the gap.") unless step("go gap")
+    at_hellscape
+  end
+
+  def self.at_hellscape
+    4.times do
+      case where
+      when :hellscape_low  then return say("couldn't go up.") unless step("up")
+      when :hellscape_high then return say("couldn't crawl through the tunnel.") unless step("go tunnel", 8)
+      else break
+      end
+    end
+    at_church if where == :church
+  end
+
+  def self.at_church
+    10.times do
+      break unless where == :church
+      cmd = CHURCH_STEP.find { |re, _| title =~ re }&.last
+      return say("don't know the way from #{title.strip}.") unless cmd
+      return say("couldn't go #{cmd}.") unless step(cmd)
+    end
+    say "at the tower. The rune ring round the portal has to be disarmed (Nety did it; it explodes on a failure), then run me again." if where == :tower
+  end
+
+  def self.at_tower
+    say "-> go portal."
+    say "couldn't go through the portal -- is the rune ring still up?" unless step("go portal", 8)
+  end
+
+  # GO PATH asks you to confirm within 30 s; the second run of this script is the confirmation
+  def self.at_field
+    r = dothistimeout("go path", 5, /finite decision|GO path again|You (?:step|walk)|Deeper within/i).to_s
+    if r =~ /GO path again/i
+      say "that's the point of no return (no way out but the exit or death). Run me again within 30 seconds to go on."
+    else
+      sleep 1
+    end
+  end
+
+  # LOOK IN POOL prints "In the pool:" and then "Special [1]: a magical gateway" on the next line
+  def self.pool_has_gateway?
+    put "look in pool"
+    deadline = Time.now + 4
+    while Time.now < deadline
+      line = get?
+      if line.nil?
+        sleep 0.05
+      elsif line =~ /gateway/i
+        return true
+      elsif line =~ /nothing in the pool|You see nothing/i
+        return false
+      end
+    end
+    false
+  end
+
+  def self.at_boss_pool
+    unless pool_has_gateway?
+      return say("no gateway in the pool yet. Kill the boss (it starts when the sapling is uprooted), search it for the soulstone heart.")
+    end
+    g = dothistimeout("get heart", 4, /You (?:retrieve|pick up|remove|get|already have)|What were you referring to|could not find|Get what/i).to_s
+    if g =~ /What were you referring to|could not find|Get what/i && !holding?(/heart/i)
+      return say("no soulstone heart on you or in the room.")
+    end
+    p = dothistimeout("put heart in gateway", 5, Regexp.union(DOOR_OPENS, /accomplish nothing|What were you referring to|doesn't fit|nothing happens/i)).to_s
+    unless p =~ DOOR_OPENS
+      return say("the gateway said: #{p.strip[0, 160]} -- stopping (the heart is in your hand).")
+    end
+    say "gateway open."
+    say "the gateway didn't take me through." unless step("go gateway", 8)
+  end
+
+  def self.at_veil
+    say "The Veil of Solace. `ask monstrosity about reward`, then AS, DS, TD or CS (the same ask twice to confirm). It's permanent, so I won't choose."
   end
 
   # the door names the shape it wants; get that item, put it in, go through
@@ -206,8 +492,8 @@ module SonPuz
       say "no #{shape} on you or in the room. Kill things (the drops are your puzzle items), `look` on the floor for it, then run me again."
       return
     end
-    p = dothistimeout("put #{shape} in door", 5, /causing the (?:door|stone door) to open|accomplish nothing|What were you referring to|doesn't fit|nothing happens/i).to_s
-    unless p =~ /causing the .*door to open/i
+    p = dothistimeout("put #{shape} in door", 5, Regexp.union(DOOR_OPENS, /accomplish nothing|What were you referring to|doesn't fit|nothing happens/i)).to_s
+    unless p =~ DOOR_OPENS
       say "the door said: #{p.strip[0, 160]} -- stopping (the #{shape} is in your hand)."
       return
     end
@@ -216,13 +502,16 @@ module SonPuz
   end
 
   def self.at_courtyard
-    say "Courtyard: the logs end here (a fountain, gravestones, a mural of Old One Eye, the only exit is the door you came in by). Nothing recorded to do."
+    say "Courtyard: a side room (a fountain, gravestones, a mural of Old One Eye; the only exit is the door you came in by). The way on is the trapdoor in the Grand Hall's first room: -> back out and south."
+    return say("couldn't go back through the door.") unless step("go door")
+    at_grand_north if where == :grand_door
   end
 
-  def self.run(pay)
+  def self.run(arg)
+    pay, summon = arg == 'pay', arg == 'summon'
     return chute if sliding?
     spot = where
-    return say("don't recognize this room (#{title.strip}) -- stand in a Sonreeva room, the mausoleum door, or the Mausoleum.") unless spot
+    return say("don't recognize this room (#{title.strip}) -- stand in a Sonreeva or Hollowlair room, the mausoleum door, or the Mausoleum.") unless spot
     say "at #{spot}."
     case spot
     when :mausoleum_door then at_mausoleum_door
@@ -231,11 +520,32 @@ module SonPuz
     when :dead_end       then at_dead_end
     when :hall           then at_hall
     when :grand_first    then at_grand_first
-    when :dais, :grand_door then door
+    when :grand_door     then at_grand_north
+    when :dais           then door
     when :courtyard      then at_courtyard
+    when :subterrane     then at_subterrane
+    when :passage        then at_passage
+    when :abyss_edge     then at_abyss
+    when :void           then at_void
+    when :tunnel         then at_tunnel
+    when :cistern        then at_cistern
+    when :sunken         then at_sunken
+    when :depths         then at_depths
+    when :demon_wall     then door
+    when :dreadgrounds   then at_dreadgrounds
+    when :sanctuary      then at_sanctuary
+    when :shrine         then at_shrine
+    when :den            then at_den(summon)
+    when :roost          then at_roost
+    when :hellscape_low, :hellscape_high then at_hellscape
+    when :church         then at_church
+    when :tower          then at_tower
+    when :field          then at_field
+    when :boss_pool      then at_boss_pool
+    when :veil           then at_veil
     end
     say "done at #{where || 'somewhere new'}."
   end
 end
 
-SonPuz.run(script.vars[1].to_s.downcase == 'pay')
+SonPuz.run(script.vars[1].to_s.downcase)
