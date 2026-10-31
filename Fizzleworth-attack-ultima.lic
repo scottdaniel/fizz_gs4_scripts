@@ -176,9 +176,12 @@ def try_essence_harvest(foe)
   s = (Lich::Util.issue_command("appraise ##{foe.id}", /^The .+? is \w+ in size/,
         include_end: false, quiet: true, silent: true) rescue []).join(" ")
   return false unless s =~ FRAIL_RE
+  return true if target_dead?(foe)     # the DoT can land between the appraise and here (10.30)
   waitrt?
   waitcastrt?
-  dothistimeout("sacrifice ##{foe.id}", 5, SAC_DONE)
+  # A dead target answers with the SACRIFICE usage text, which SAC_DONE doesn't match --
+  # that sat out the whole 5s timeout.
+  dothistimeout("sacrifice ##{foe.id}", 5, Regexp.union(SAC_DONE, /SACRIFICE Usage/))
   waitrt?
   true
 end
@@ -486,9 +489,13 @@ SPELL_GRASP_MANA = (Spell[709].mana_cost.to_i.positive? ? Spell[709].mana_cost.t
 # At level 74, inciters (L66) and incubi (L68) give little exp and keep us from
 # a fried mind. Once the animate has been raised (or tried -- $ult_reanim_done),
 # DON'T fight them: step into a neighbouring room (not a hunting boundary) and
-# let bigshot's wander find visions / vereri instead. Skipped when stunned,
+# let bigshot's wander find vereri instead. Skipped when stunned,
 # webbed or under 50% health (then it just fights). Opt out with
 # `;vars set ult_avoid_low=off`.
+# 10.30 (L79): pestilent visions (L70) joined the list -- a night of them barely moved
+# the mind. They aren't the animate source, so they're avoided from the first pass,
+# not only after $ult_reanim_done. If a vereri is in the room too, fight that one
+# instead of walking away from it (worthwhile_instead).
 def avoid_low_on?
   v = UserVars.ult_avoid_low
   return true if v.nil?
@@ -497,7 +504,20 @@ def avoid_low_on?
 end
 
 def low_level?(foe)
-  foe && foe.name.to_s =~ /Ivasian inciter|dark-eyed incubus/i
+  foe && foe.name.to_s =~ /Ivasian inciter|dark-eyed incubus|pestilent vision/i
+end
+
+# Should this pass skip `foe` for being too low-level? Visions: always. Inciters and
+# incubi: only once the animate has been raised (an inciter is where it comes from).
+def avoiding?(foe)
+  avoid_low_on? && low_level?(foe) && ($ult_reanim_done || foe.name.to_s =~ /pestilent vision/i)
+end
+
+# A creature worth the mana (a vereri) in the room beats walking away from the one
+# bigshot happened to target; with nothing better here, `foe` stays.
+def worthwhile_instead(foe)
+  return foe unless avoiding?(foe)
+  hostiles.find { |t| !low_level?(t) } || foe
 end
 
 # Thrash cap (10.13 log: 19 bursts of 3+ leaves within 10s, e.g. bigshot flipping
@@ -582,6 +602,7 @@ $ult_grasp_at    = 0.0   unless defined?($ult_grasp_at)
 
 foe = GameObj.targets.find { |t| t.id.to_i == XMLData.current_target_id.to_i } if XMLData.current_target_id
 foe ||= GameObj.targets.find { |t| t.status.to_s !~ /dead|gone/ && t.name !~ /animated/ }
+foe = worthwhile_instead(foe)
 
 exit if target_dead?(foe)
 
@@ -640,8 +661,8 @@ if !$ult_essence_run && have_animate? &&
   exit
 end
 
-# After the animate: walk away from low-exp inciters / incubi.
-exit if $ult_reanim_done && avoid_low_on? && low_level?(foe) && leave_room(foe)
+# Walk away from low-exp visions (always) and inciters / incubi (after the animate).
+exit if avoiding?(foe) && leave_room(foe)
 
 # Crowd control first: disable everyone else in the room, Grasp a crowd.
 crowd_control(foe)
