@@ -39,7 +39,12 @@ MIN_STORE = 20
 RETURN_REPLY = /already here!|acknowledges your order|interfering with your|You have no minor demon at this time/i
 DEMON_LINK   = %r{(?:[Bb]ut your|Your|your) <pushBold/><a exist="(\d+)" noun="([\w,'-]+)">([\w\-' ]+)</a><popBold/>}
 ARRIVE_WAIT  = 60   # secs to wait for a called-back demon while resting; GET_WAIT in the middle of a hunt
-GET_WAIT     = 10
+# 10.30 overnight: an imp took 20-26s to catch up after the return order, so a 10s wait gave up on
+# 24 of 25 mid-hunt gets. A get that still misses its demon unlatches $demonmana_taken (attack-ultima
+# / sac4mana set it before calling us, once a hunt) and tries again after GET_RETRY_AFTER secs,
+# by which time the demon is usually here.
+GET_WAIT        = 30
+GET_RETRY_AFTER = 45
 
 def here?(id)
   (GameObj.npcs.to_a + GameObj.loot.to_a + GameObj.room_desc.to_a).any? { |o| o.id.to_s == id.to_s }
@@ -91,9 +96,18 @@ def send_mana
 end
 
 def get_mana
+  if $demonmana_missed_at && Time.now.to_f - $demonmana_missed_at < GET_RETRY_AFTER
+    $demonmana_taken = false   # too soon to call it again; keep the once-a-hunt latch open
+    return
+  end
   d = demon(GET_WAIT)
   return unless d
-  return echo("your #{d[:name]} isn't here -- can't ask it for mana.") unless d[:here]
+  unless d[:here]
+    $demonmana_missed_at = Time.now.to_f
+    $demonmana_taken = false
+    return echo("your #{d[:name]} isn't here -- can't ask it for mana yet (will call it again in #{GET_RETRY_AFTER}s).")
+  end
+  $demonmana_missed_at = nil
   return skip_note(d) if low_capacity?(d)
   waitrt?
   r = dothistimeout("tell mdemon send 50", 4, Regexp.union(GOT_MANA, GONE, /has no mana|any mana|nothing to send/i)).to_s
