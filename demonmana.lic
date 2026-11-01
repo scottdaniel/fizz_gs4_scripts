@@ -38,7 +38,10 @@ MIN_STORE = 20
 #   The magic in your location is interfering with your <a>X</a> returning to you.
 RETURN_REPLY = /already here!|acknowledges your order|interfering with your|You have no minor demon at this time/i
 DEMON_LINK   = %r{(?:[Bb]ut your|Your|your) <pushBold/><a exist="(\d+)" noun="([\w,'-]+)">([\w\-' ]+)</a><popBold/>}
-ARRIVE_WAIT  = 60   # secs to wait for a called-back demon while resting; GET_WAIT in the middle of a hunt
+# secs to wait for a called-back demon while resting; GET_WAIT in the middle of a hunt.
+# 11.01: from the Den of Rot to the rest room the demon took 65-67s on four sends in a row, none of
+# them hurried by the re-sent return order, so a 60s wait missed every time by 4-7s.
+ARRIVE_WAIT  = 90
 # 10.30 overnight: an imp took 20-26s to catch up after the return order, so a 10s wait gave up on
 # 24 of 25 mid-hunt gets. A get that still misses its demon unlatches $demonmana_taken (attack-ultima
 # / sac4mana set it before calling us, once a hunt) and tries again after GET_RETRY_AFTER secs,
