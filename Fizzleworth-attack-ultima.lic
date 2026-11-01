@@ -22,6 +22,12 @@
 #     pestilent vision           spellcasting ~15s. All three cast, so silencing
 #                                them is worth more than a web. 3 mana, once per
 #                                target ($ult_silenced_id).
+#   * The Rift, Plane One      -> Corrupt Essence (703) on naisirc (L75), seraceris
+#     (10.31)                    (L78) and vvrael witch (L80), same as the Den's
+#                                casters. The raving lunatic (L77, miniboss) is the
+#                                exception and gets Web (118) -- see rift_silence?.
+#                                The non-corporeal ones (naisirc, seraceris) are also
+#                                skipped for Grasp (709), like the visions.
 #   * anything unrecognised    -> Web (118), same as -base.
 #
 # CROWD CONTROL (2026-10-05): the disable above isn't just for the active target.
@@ -33,8 +39,8 @@
 # `;vars set ult_cc=off`.
 #
 # ONE-SHOT ANIMATE BUDDY: the first creature matching animate_target? of a
-# hunt (a magna vereri since 2026-10-03; was an incubus for one hunt, and the
-# Ivasian inciter before that), if we don't already have an animate up, is handed to `;reanim` (Pain 711 to death, then
+# hunt (the Ivasian inciter in the Den, the raving lunatic in the Rift -- see
+# animate_target?), if we don't already have an animate up, is handed to `;reanim` (Pain 711 to death, then
 # Animate Dead 730 the corpse into a buddy that tanks/attacks for us). Just
 # once per hunt -- $ult_reanim_done latches it, and reanim.lic clears that
 # latch from its `;reanim die` end-of-hunt teardown (Fizzleworth-prep clears
@@ -251,18 +257,29 @@ end
 #   athletic incubus ~0-9%   (3 of 32)  -- sings, but the weapon never connects
 #   magna vereri     ~0-2%   (0-1 of 44) -- ONLY ever swings, and misses
 # The vereri is "strongest" but it's useless offensively, so: inciter.
+# The Rift (10.31): the raving lunatic (L77 miniboss, living so it leaves a corpse) is the
+# animate target there; the Den and the Rift share no creatures, so both are listed. Whether
+# Animate Dead takes a miniboss corpse is untested -- reanim attempts it regardless, and the
+# latch ($ult_reanim_done) is spent either way.
 #
 # This is a METHOD, not a `FOO = ... unless defined?(FOO)` constant on purpose:
 # Lich keeps constants alive across script runs, so a guarded constant keeps
 # its OLD value until the whole Lich session restarts (10.03: the vereri
 # switch didn't apply to the next hunt for exactly that reason).
 def animate_target?(foe)
-  foe && foe.name.to_s =~ /Ivasian inciter/i
+  foe && foe.name.to_s =~ /Ivasian inciter|raving lunatic/i
 end
 
-# inciter / incubus / vision -- the three that cast and so get 703
+# The Rift, Plane One (gswiki The_Rift, 10.31): naisirc L75, raving lunatic L77, seraceris L78,
+# vvrael witch L80. All of them but the lunatic get 703 (the lunatic falls through to Web in the
+# main flow). A METHOD, not a constant, so edits apply to the next hunt without a Lich restart.
+def rift_silence?(foe)
+  foe && foe.name.to_s =~ /naisirc|seraceris|vvrael witch/i
+end
+
+# inciter / incubus / vision / Rift Plane One -- the ones that cast and so get 703
 def caster?(foe)
-  foe && (foe.name.to_s =~ INCITER_RE || foe.name.to_s =~ INCUBUS_RE || foe.name.to_s =~ VISION_RE)
+  foe && (foe.name.to_s =~ INCITER_RE || foe.name.to_s =~ INCUBUS_RE || foe.name.to_s =~ VISION_RE || rift_silence?(foe))
 end
 
 def have_animate?
@@ -440,7 +457,7 @@ end
 # dragged down (one vereri "avoids their clutches"); pestilent visions (noncorporeal
 # fliers) never appear in the 709 messages.
 def groundable?(t)
-  t.name.to_s !~ /pestilent vision/i
+  t.name.to_s !~ /pestilent vision|naisirc|seraceris/i   # the Rift's two non-corporeal undead, assumed to be like the visions
 end
 
 def others_with(foe)
