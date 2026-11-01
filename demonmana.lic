@@ -46,6 +46,11 @@ ARRIVE_WAIT  = 60   # secs to wait for a called-back demon while resting; GET_WA
 GET_WAIT        = 30
 GET_RETRY_AFTER = 45
 
+# How often the wait for a lagging demon repeats TELL MDEMON RETURN.
+def demonmana_recall_every
+  15
+end
+
 def here?(id)
   (GameObj.npcs.to_a + GameObj.loot.to_a + GameObj.room_desc.to_a).any? { |o| o.id.to_s == id.to_s }
 end
@@ -60,7 +65,14 @@ def demon(wait = ARRIVE_WAIT)
   d = { id: $1, noun: $2, name: $3, here: text.include?("already here!") }
   if text.include?("begins to travel")
     echo "your #{d[:name]} wasn't here -- waiting for it to arrive."
-    wait.times { break if (d[:here] = here?(d[:id])); sleep 1 }
+    wait.times do |i|
+      break if (d[:here] = here?(d[:id]))
+      if i > 0 && (i % demonmana_recall_every).zero?   # imps stray the most: call it again (11.01)
+        again = Lich::Util.quiet_command_xml("tell mdemon return", RETURN_REPLY).to_a.join("\n")
+        break if (d[:here] = again.include?("already here!"))
+      end
+      sleep 1
+    end
   end
   d
 end

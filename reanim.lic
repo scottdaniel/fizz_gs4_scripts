@@ -239,8 +239,10 @@ end
 #
 # After a long fast trip the demon can be a minute behind (10.30: 50 rooms in 12 s, the demon
 # showed up ~35 s later), so a demon that "begins to travel" is waited for as long as the caller
-# allows, and the order is NOT repeated while it is still on its way (a second TELL MDEMON
-# RETURN may start its trip over): $reanim_demon_pending remembers it for two minutes.
+# allows. A long wait (more than reanim_recall_every secs) re-sends TELL MDEMON RETURN every
+# reanim_recall_every secs (11.01, at Scott's request: imps stray the most); a short one never
+# repeats the order, and $reanim_demon_pending remembers an unfinished trip for two minutes so
+# the short callers don't start it over.
 REANIM_RETURN_REPLY = /already here!|acknowledges your order|interfering with your|You have no minor demon at this time/i
 REANIM_DEMON_LINK   = %r{(?:[Bb]ut your|Your|your) <pushBold/><a exist="(\d+)" noun="([\w,'-]+)">([\w\-' ]+)</a><popBold/>}
 
@@ -250,12 +252,21 @@ def reanim_demon_wait
 	v =~ /\A\d+\z/ ? v.to_i : 45
 end
 
+def reanim_recall_every
+	15
+end
+
 def reanim_demon_arrived?(id, secs)
-	(secs * 2).times do
-		return true if GameObj.npcs.to_a.any? { |o| o && o.id.to_s == id.to_s }
+	here = -> { GameObj.npcs.to_a.any? { |o| o && o.id.to_s == id.to_s } }
+	(secs * 2).times do |i|
+		return true if here.call
+		if secs > reanim_recall_every && i > 0 && (i % (reanim_recall_every * 2)).zero?
+			t = Lich::Util.quiet_command_xml("tell mdemon return", REANIM_RETURN_REPLY).to_a.join("\n")
+			return true if t.include?("already here!")
+		end
 		sleep 0.5
 	end
-	GameObj.npcs.to_a.any? { |o| o && o.id.to_s == id.to_s }
+	here.call
 end
 
 def reanim_demon(arrive_secs = 6)

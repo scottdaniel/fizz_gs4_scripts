@@ -66,13 +66,30 @@ SAC_FAIL = /impossible to forge a bond|unable to complete the link|thrown back i
 RETURN_REPLY = /already here!|acknowledges your order|interfering with your|You have no minor demon at this time/i unless defined?(RETURN_REPLY)
 DEMON_LINK   = %r{(?:[Bb]ut your|Your|your) <pushBold/><a exist="(\d+)" noun="([\w,'-]+)">([\w\-' ]+)</a><popBold/>} unless defined?(DEMON_LINK)
 
+# A wait longer than recall_every secs re-sends the order every recall_every secs (11.01: imps
+# stray the most, an imp took 20-26s to catch up in the 10.30 log). Methods, not constants,
+# so edits apply to the next hunt.
+def recall_every
+  15
+end
+
+# How long recover_weapon gives a straggling demon: the knob reanim.lic and buyweapon share.
+def demon_wait
+  v = UserVars.reanim_demon_wait.to_s.strip
+  v =~ /\A\d+\z/ ? v.to_i : 45
+end
+
 def my_demon(arrive_secs = 0)
   text = Lich::Util.quiet_command_xml("tell mdemon return", RETURN_REPLY).to_a.join("\n")
   return nil unless text =~ DEMON_LINK
   d = { id: $1, noun: $2, here: text.include?("already here!") }
   if text.include?("begins to travel")
-    (arrive_secs * 2).times do
+    (arrive_secs * 2).times do |i|
       break if (d[:here] = GameObj.npcs.to_a.any? { |o| o && o.id.to_s == d[:id] })
+      if arrive_secs > recall_every && i > 0 && (i % (recall_every * 2)).zero?
+        again = Lich::Util.quiet_command_xml("tell mdemon return", RETURN_REPLY).to_a.join("\n")
+        break if (d[:here] = again.include?("already here!"))
+      end
       sleep 0.5
     end
   end
@@ -257,7 +274,7 @@ def recover_weapon(id, noun)
   end
   return false unless got
   sleep 0.3
-  demon = my_demon(6)
+  demon = my_demon(demon_wait)
   if demon && demon[:here]
     dothistimeout("give #{noun} to #{demon[:noun]}", 3,
       /grudgingly accepts|hand(?:s)? .* to (?:a|an|the)|refuses|isn't interested|maximum capacity|To whom|could not find/i)
