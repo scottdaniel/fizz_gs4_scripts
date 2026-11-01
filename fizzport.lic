@@ -63,9 +63,10 @@
     ;vars set runebook=<name>         only search this book (e.g. blue.book); default: every
                                       book in the shiftsack
 
-  Verified from Fizzleworth's 10/27 log: READ, TURN and the kit's chalk names. From
-  gswiki logs: the DRAW messages and the cross-realm cast. Not seen yet: the same-realm
-  rift and GO RIFT from Fizzleworth's own casts. Anything that doesn't match is printed.
+  Verified in Fizzleworth's logs: READ, TURN, the chalk names, both DRAWs, backlashes and
+  a cross-realm cast with crystalline chalk (10/29, 11/01: "Your crystalline chalk
+  disintegrates!" after the pattern, then "At last, you arrive at your destination...").
+  Not seen yet: a same-realm rift and GO RIFT. Anything that doesn't match is printed.
 =end
 
 module Fizzport
@@ -164,6 +165,9 @@ module Fizzport
   DEMON         = /implodes upon itself|is standing around, surveying/i
   NO_TELEPORT   = /soft yellow light|peter out/i
   NOT_FOUND     = /could not find what you were referring to|What were you referring to/i
+  # The game refusing a command sent before roundtime ends, or typed too far ahead
+  TOO_SOON      = /\.\.\.wait (\d+) seconds?\.|Sorry, you may only type ahead/i
+  TOO_SOON_RETRIES = 3
   CAST_END      = /Cast Roundtime|Roundtime|You can't|Cast at what\?|#{NOT_FOUND}/i
   # TELL MDEMON RETURN replies (verified for fizzanim/reanim): "But your X is already here!",
   # "Your X acknowledges your order and begins to travel to your location.", "The magic in
@@ -283,9 +287,24 @@ module Fizzport
 
   # put, not fput: fput would swallow the first response line. Collects until terminator,
   # or until the game goes quiet for `idle` seconds (for text that isn't known yet).
+  # waitrt? can wake a moment before roundtime really ends (11/01: DRAW PATTERN right after
+  # the circle got "...wait 1 seconds."), so a refused command waits as long as the game
+  # says and is sent again.
   def self.collect_lines(action, terminator = nil, timeout: 6, idle: 1.0)
-    waitrt?
-    waitcastrt?
+    lines = []
+    (TOO_SOON_RETRIES + 1).times { |attempt|
+      waitrt?
+      waitcastrt?
+      lines = collect_once(action, terminator, timeout, idle)
+      refused = lines.find { |line| line =~ TOO_SOON }
+      return lines if refused.nil? || attempt == TOO_SOON_RETRIES
+
+      sleep((refused[/wait (\d+)/, 1] || 1).to_i + 0.25)
+    }
+    lines
+  end
+
+  def self.collect_once(action, terminator, timeout, idle)
     Script.current.clear
     put action
     lines = []
@@ -296,7 +315,7 @@ module Fizzport
       if line
         lines << line.strip
         last_line = Time.now
-        break if terminator && line =~ terminator
+        break if (terminator && line =~ terminator) || line =~ TOO_SOON
       else
         break if last_line && Time.now - last_line > idle
         break if Time.now > deadline
@@ -321,8 +340,8 @@ module Fizzport
 
   # Gets an item out of the sack by id; returns it in hand, or nil
   def self.take(item)
-    line = dothistimeout "get ##{item.id}", 5, /You remove|You get|You grab|You pull|Get what|What were you referring to|could not find/
-    return nil unless line =~ /You remove|You get|You grab|You pull/
+    lines = collect_lines("get ##{item.id}", /You remove|You get|You grab|You pull|Get what|What were you referring to|could not find/)
+    return nil unless lines.any? { |line| line =~ /You remove|You get|You grab|You pull/ }
 
     20.times {
       held = hands.find { |hand| hand.id == item.id }
@@ -514,8 +533,10 @@ module Fizzport
     (GameObj.loot.to_a + GameObj.room_desc.to_a).any? { |obj| obj.name =~ /summoning circle/i }
   end
 
+  # Waits for the "Roundtime:" line, not just the success line before it, so waitrt? knows
+  # how long the draw takes before the next command goes out
   def self.draw(what, success)
-    lines = collect_lines("draw #{what}", /Roundtime|#{success.source}|#{NOT_FOUND.source}/i, timeout: 8)
+    lines = collect_lines("draw #{what}", /Roundtime|#{NOT_FOUND.source}/i, timeout: 8)
     waitrt?
     return true if lines.any? { |line| line =~ success }
 
@@ -529,10 +550,10 @@ module Fizzport
     msg "Arrived: #{XMLData.room_title}"
     return unless Spell[725].known?
 
-    waitrt?
-    waitcastrt?
-    line = dothistimeout "tell mdemon return", 5, RETURN_REPLY
-    msg "Your minor demon can't reach you here; TELL MDEMON RETURN once you've moved on." if line =~ /interfering with your/
+    lines = collect_lines("tell mdemon return", RETURN_REPLY, timeout: 5)
+    if lines.any? { |line| line =~ /interfering with your/ }
+      msg "Your minor demon can't reach you here; TELL MDEMON RETURN once you've moved on."
+    end
   end
 
   def self.wait_for_mana
@@ -559,7 +580,7 @@ module Fizzport
   def self.cast_at_circle
     wait_for_mana
     fput "release" unless checkprep == "None"
-    dothistimeout "prepare 740", 5, /Your spell is ready|already have/
+    collect_lines("prepare 740", /Your spell is ready|already have/, timeout: 5)
     rooms_before = XMLData.room_count
     lines = collect_lines("cast circle", CAST_END)
     waitcastrt?
@@ -787,7 +808,11 @@ module Fizzport
     end
 
     exit unless draw('summoning circle', CIRCLE_DRAWN)
-    exit unless draw("pattern #{number}", PATTERN_DRAWN)
+    unless draw("pattern #{number}", PATTERN_DRAWN)
+      msg "The empty summoning circle is still here. To finish by hand: rune book in your right hand, " \
+          "#{CHALKS[chalk_kind][:what]} in your left, DRAW PATTERN #{number}, PREP 740, CAST CIRCLE."
+      exit
+    end
 
     # gswiki: the book and chalk aren't needed once the circle is drawn
     put_away(@chalk)
