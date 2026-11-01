@@ -8,6 +8,11 @@
   Run from Fizzleworth-prep.lic. No-op (a silent TELL MDEMON RETURN and one `look`)
   when the demon already has the weapon.
 
+  A demon that is off somewhere is called with TELL MDEMON RETURN, re-sent every 15s, for up to
+  reanim_demon_wait secs (default 45; an imp can take 20-26s). If it never arrives the script
+  buys NOTHING: it can't tell whether the demon has the weapon. Only "no minor demon at all"
+  buys one and keeps it, for reanim to hand over itself.
+
   Knobs (UserVars, so per-character):
     reanim_weapon         noun of the weapon (default "claidhmore")
     reanim_weapon_order   Wineberry catalog number (default 82 =
@@ -32,21 +37,52 @@ module FizzBuyWeapon
   RETURN_REPLY = /already here!|acknowledges your order|interfering with your|You have no minor demon at this time/i
   DEMON_LINK   = %r{(?:[Bb]ut your|Your|your) <pushBold/><a exist="(\d+)" noun="([\w,'-]+)">([\w\-' ]+)</a><popBold/>}
 
-  # @return the demon's noun once it is in the room, else nil
-  def demon_noun(arrive_secs = 6)
-    text = Lich::Util.quiet_command_xml("tell mdemon return", RETURN_REPLY).to_a.join("\n")
-    return nil unless text =~ DEMON_LINK
-    id, noun = $1, $2
-    here = text.include?("already here!")
-    if text.include?("begins to travel")
-      (arrive_secs * 2).times do
-        break if (here = GameObj.npcs.to_a.any? { |o| o && o.id.to_s == id })
+  # How long to give a straggling demon, and how often to call it again while we wait. An imp
+  # takes 20-26s to catch up after a return order (10.30 / 11.01 logs: the old 6s wait gave up on
+  # a demon that arrived at 21s and bought a second claidhmore). Same knob reanim.lic reads.
+  # Methods, not constants, so edits apply to the next hunt.
+  def demon_wait
+    v = UserVars.reanim_demon_wait.to_s.strip
+    v =~ /\A\d+\z/ ? v.to_i : 45
+  end
+
+  def recall_every
+    15
+  end
+
+  def demon_here?(id)
+    (GameObj.npcs.to_a + GameObj.loot.to_a + GameObj.room_desc.to_a).any? { |o| o && o.id.to_s == id.to_s }
+  end
+
+  # Find your minor demon and make sure it is with you, calling it with TELL MDEMON RETURN and
+  # re-sending that order every recall_every secs until it arrives or `wait` secs are up.
+  # @return [status, noun]: :here (in the room), :absent (it exists but didn't arrive in time --
+  #   its weapon is unknown), or :none (no minor demon, or no answer to the order)
+  def locate_demon(wait = demon_wait)
+    deadline = Time.now.to_f + wait
+    noun = nil
+    loop do
+      text = Lich::Util.quiet_command_xml("tell mdemon return", RETURN_REPLY).to_a.join("\n")
+      return [noun ? :absent : :none, noun] unless text =~ DEMON_LINK
+      id, noun = $1, $2
+      return [:here, noun] if text.include?("already here!") || demon_here?(id)
+      call_again = [Time.now.to_f + recall_every, deadline].min
+      while Time.now.to_f < call_again
+        return [:here, noun] if demon_here?(id)
         sleep 0.5
       end
+      return [:here, noun] if demon_here?(id)
+      return [:absent, noun] if Time.now.to_f >= deadline
     end
-    here ? noun : nil
-  rescue StandardError
-    nil
+  rescue StandardError => e
+    echo "[buyweapon] demon lookup error: #{e.class} #{e.message}"
+    [:absent, nil]       # fail safe: an unknown demon never triggers a purchase
+  end
+
+  # @return the demon's noun once it is in the room, else nil
+  def demon_noun(wait = demon_wait)
+    status, noun = locate_demon(wait)
+    status == :here ? noun : nil
   end
 
   # `look at <demon>` prints its fixed description, then -- only when it's carrying
@@ -54,9 +90,12 @@ module FizzBuyWeapon
   # One wearing the illusion you cast on it (10.30, gnoll): "Peering past the surface of the
   # illusion you have created, you can make out the faint form of a claidhmore suspended within
   # the gnoll." Read lines for a few seconds, stopping early once that line shows.
+  # @return true / false, or nil when the demon is out there but never reached us (we can't tell
+  #   whether it has the weapon, so the caller must NOT buy another). No demon at all is false.
   def demon_has_weapon?
-    noun = demon_noun
-    return false unless noun
+    status, noun = locate_demon
+    return nil if status == :absent
+    return false unless status == :here
     put "look at #{noun}"
     deadline = Time.now + 4
     txt = +""
@@ -69,8 +108,8 @@ module FizzBuyWeapon
       txt << line << "\n"
       break if line =~ /is holding|suspended within|could not find|don't see/i
     end
-    txt =~ /is holding\b[^.\n]*\b#{Regexp.escape(NOUN)}/i ||
-      txt =~ /faint form of\b[^.\n]*\b#{Regexp.escape(NOUN)}\b[^.\n]*suspended within/i
+    !!(txt =~ /is holding\b[^.\n]*\b#{Regexp.escape(NOUN)}/i ||
+       txt =~ /faint form of\b[^.\n]*\b#{Regexp.escape(NOUN)}\b[^.\n]*suspended within/i)   # false, never nil: nil means "demon unknown"
   end
 
   # Symbol of Blessing (Voln step 2+): blesses a weapon HELD IN THE RIGHT HAND so
@@ -144,7 +183,12 @@ module FizzBuyWeapon
   end
 
   def run
-    if demon_has_weapon?
+    has = demon_has_weapon?
+    if has.nil?
+      echo "[buyweapon] your demon didn't reach me in #{demon_wait}s, so I can't tell whether it has a #{NOUN} -- NOT buying another. Run ;Fizzleworth-buyweapon once it's with you."
+      return
+    end
+    if has
       echo "[buyweapon] the demon already has a #{NOUN} -- nothing to do."
       return
     end
