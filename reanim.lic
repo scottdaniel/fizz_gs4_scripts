@@ -247,8 +247,11 @@ REANIM_RETURN_REPLY = /already here!|acknowledges your order|interfering with yo
 REANIM_DEMON_LINK   = %r{(?:[Bb]ut your|Your|your) <pushBold/><a exist="(\d+)" noun="([\w,'-]+)">([\w\-' ]+)</a><popBold/>}
 
 # How long ;reanim waits for a straggling demon before arming the animate (UserVars.reanim_demon_wait).
-def reanim_demon_wait
-	v = UserVars.reanim_demon_wait.to_s.strip
+# Not named reanim_demon_wait: a top-level def lives on Lich::Common, which UserVars' method_missing
+# also reaches, so `UserVars.reanim_demon_wait` called the def and the def called itself (11.01:
+# stack level too deep, every reanim and buyweapon run from 11:45 on).
+def reanim_wait_secs
+	v = UserVars['reanim_demon_wait'].to_s.strip
 	v =~ /\A\d+\z/ ? v.to_i : 45
 end
 
@@ -320,14 +323,14 @@ def arm_animate(noun)
 
 	# 1) get a spare WEAPON onto the ground
 	unless weapon_on_ground(noun)
-		demon = reanim_demon(reanim_demon_wait)
+		demon = reanim_demon(reanim_wait_secs)
 		if demon
 			r = reanim_tell(demon[:noun], "drop #{noun}",
 				/drops (?:a|an|the)/i,
 				/could not find|seems very confused|isn't holding|not holding|does(?:n't| not) have|not here/i)
 			debug("#{demon[:noun]} (your minor demon): #{r.strip[0, 80]}")
 		else
-			echo "[reanim] no minor demon here after #{reanim_demon_wait}s to hand over a #{noun}."
+			echo "[reanim] no minor demon here after #{reanim_wait_secs}s to hand over a #{noun}."
 		end
 		# GameObj.loot can lag the drop line by a beat -- give it a moment
 		15.times { break if weapon_on_ground(noun); sleep 0.2 }

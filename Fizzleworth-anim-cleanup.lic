@@ -75,7 +75,7 @@ end
 
 # How long recover_weapon gives a straggling demon: the knob reanim.lic and buyweapon share.
 def demon_wait
-  v = UserVars.reanim_demon_wait.to_s.strip
+  v = UserVars['reanim_demon_wait'].to_s.strip
   v =~ /\A\d+\z/ ? v.to_i : 45
 end
 

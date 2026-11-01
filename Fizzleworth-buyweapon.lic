@@ -42,7 +42,7 @@ module FizzBuyWeapon
   # a demon that arrived at 21s and bought a second claidhmore). Same knob reanim.lic reads.
   # Methods, not constants, so edits apply to the next hunt.
   def demon_wait
-    v = UserVars.reanim_demon_wait.to_s.strip
+    v = UserVars['reanim_demon_wait'].to_s.strip
     v =~ /\A\d+\z/ ? v.to_i : 45
   end
 
