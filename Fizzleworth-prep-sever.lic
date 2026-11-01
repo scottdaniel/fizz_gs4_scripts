@@ -1,51 +1,11 @@
 #Fizzleworth-prep-sever.lic
+#
+# Prep for a spell-sever area (the Rift): every spell outside the 100s, 400s, 700s and 1700s is
+# stripped there. This is just `;Fizzleworth-prep sever` -- the whole prep (rubs, Crooked
+# Intent, the 1700s from scrolls, weapon, the per-hunt ultima resets, the demon follow order, the
+# helper scripts) without the walk to Icemule's weapon shop. It used to be a stripped copy of
+# prep from Oct 5 that missed everything added since (the ultima resets above all); one script
+# keeps the two from drifting apart again. Put `script Fizzleworth-prep-sever` in the profile's
+# hunting prep commands.
 
-module FizzleworthPrepSever
-
-# Stop playing before gearing up for combat -- kills the instrument along
-# with the script (playsongs.lic's before_dying stows it). Kill is async,
-# so wait for it to actually finish before "clear hands" below sends its
-# own fput commands, to avoid the two scripts racing on the same hands.
-if Script.running?("playsongs")
-  Script.kill("playsongs")
-  wait_while { Script.running?("playsongs") }
-end
-
-# clear hands -- "store weapon" routes the runestaff to the readied sheath per
-# the in-game STORE config (STORE SET WEAPON SHEATH); "stow all" mops up anything
-# left in the off-hand. Replaces the old hardcoded "put ... in my cloak" that
-# ignored the sheath and let stray items fall through to the backpack.
-fput "store weapon"
-fput "stow all"
-
-# rub stuff, but only if the spell isn't already active -- and only pause
-# after ones that actually ran, instead of always eating 3s per item
-unless Spell[1701].active?
-  Script.run("qverb", "rub gold coin")
-  pause 3
-end
-unless Spell[1712].active?
-  Script.run("qverb", "rub small statue")
-  pause 3
-end
-unless Spell[1705].active?
-  Script.run("qverb", "rub moonstone cube")
-  pause 3
-end
-unless Spell[509].active?
-  Script.run("qverb", "rub white crystal")
-  pause 3
-end
-unless GameObj.loot.find { |i| i.name =~ /#{Char.name} disk/ }
-  Script.run("qverb", "rub black crystal")
-  pause 3
-end
-
-# (The runestaff is permanently ensorcelled now -- the old per-hunt `prep 735` /
-# `evoke` check was removed 2026-10-05.)
-
-# Log mind saturation ("Field Exp: N/1220") right before the hunt for the
-# wings-compare analysis (see Fizzleworth-prep.lic).
-fput "exp"
-
-end #End of module
+Script.run("Fizzleworth-prep", "sever")
