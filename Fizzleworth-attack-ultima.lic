@@ -524,10 +524,12 @@ def low_level?(foe)
   foe && foe.name.to_s =~ /Ivasian inciter|dark-eyed incubus|pestilent vision/i
 end
 
-# Should this pass skip `foe` for being too low-level? Visions: always. Inciters and
-# incubi: only once the animate has been raised (an inciter is where it comes from).
+# Should this pass skip `foe` for being too low-level? Visions and incubi: always. Inciters:
+# only once the animate has been raised (an inciter is where the Den's animate comes from).
+# (Incubi waited for the animate too until 11.01, when 5 of a night's 23 incubus kills turned out
+# to have happened before it.)
 def avoiding?(foe)
-  avoid_low_on? && low_level?(foe) && ($ult_reanim_done || foe.name.to_s =~ /pestilent vision/i)
+  avoid_low_on? && low_level?(foe) && ($ult_reanim_done || foe.name.to_s !~ /Ivasian inciter/i)
 end
 
 # A creature worth the mana (a vereri) in the room beats walking away from the one
@@ -540,16 +542,24 @@ end
 # Thrash cap (10.13 log: 19 bursts of 3+ leaves within 10s, e.g. bigshot flipping
 # between rooms 28817 and 28819 once a second): once we've left 2 rooms in the
 # last 10 seconds, the next low-level target gets fought instead.
+# How many hops in 10s before the next low-level target is fought anyway. Was a fixed 2; the
+# 10.30 night log showed 22 of 27 inciter/incubus kills came right after that cap fired, because
+# bigshot walks straight back to the hub room (28817) where they gather. `;vars set ult_leave_cap=N`.
+def leave_cap
+  v = UserVars.ult_leave_cap.to_s.strip
+  v =~ /\A\d+\z/ && v.to_i >= 1 ? v.to_i : 3
+end
+
 def leaving_too_often?
   now = Time.now.to_f
   ($ult_leaves ||= []).select! { |t| now - t <= 10 }
-  $ult_leaves.size >= 2
+  $ult_leaves.size >= leave_cap
 end
 
 def leave_room(foe)
   return false if checkwebbed || checkstunned || (Char.percent_health.to_i rescue 100) < 50
   if leaving_too_often?
-    echo "[ultima] already left 2 rooms in 10s -- fighting #{foe.name.to_s.sub(/\A(?:an?|the) /i, '')} instead of hopping again."
+    echo "[ultima] already left #{leave_cap} rooms in 10s -- fighting #{foe.name.to_s.sub(/\A(?:an?|the) /i, '')} instead of hopping again."
     return false
   end
   bounds = (UserVars.op["hunting_boundaries"].to_s.split(/[,\s]+/).reject(&:empty?) rescue [])
