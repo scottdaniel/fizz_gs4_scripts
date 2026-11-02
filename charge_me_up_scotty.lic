@@ -134,6 +134,16 @@ module ChargeMeUpScotty
   APPRAISE_VALUE = /give you ([\d,]+) silvers?/
   APPRAISE_HIGH  = /not buying anything this valuable/
   APPRAISE_DONE  = Regexp.union(APPRAISE_VALUE, APPRAISE_HIGH, /not quite my field|I only deal in|worthless|not interested|^I could not find|^What were you referring to|must be holding/)
+  # RECALL on an item whose loresong is unlocked (Vonaq's, in the logs) lists what it is. A
+  # spell-charged item says, e.g.: "It is a magical item which could be imbedded with a spell."
+  # / "It is currently imbedded with the Elemental Wave spell." / "It has 0 charges.  It is
+  # rechargeable." / "It could be activated by waving it." / "It will persist after its last
+  # magical charge has been expended." An enhancive-only item has none of those. The block
+  # ends with "It has a temporarily (or permanently) unlocked loresong by ...".
+  RECALL_LORE    = /As you recall .+ song/
+  RECALL_MAGIC   = /It is a magical item|It is currently imbedded with|It has \d+ charges?\.|could be activated by (?:waving|rubbing|tapping|raising)|after its last magical charge/
+  RECALL_DONE    = /unlocked loresong|nothing seems notable|can't recall|don't recall|^I could not find|^What were you/
+
   # A gem marked unsellable gets this from the gem shop (verified 2026-11-02, a pink sapphire
   # at Zirconia's), the same answer as for a non-gem
   NOT_MY_FIELD   = /not quite my field/
@@ -484,7 +494,7 @@ module ChargeMeUpScotty
         # not in with the fresh wands bigshot draws from
         wand = obj.name.to_s.match?(/\bwand\b/i)
         to = (wand || kind == :item) ? dst : (charged || src)
-        { id: obj.id, name: obj.name, src: src, dst: to, kind: wand ? :wand : :item, rubs: 0 }
+        { id: obj.id, name: obj.name, type: obj.type, src: src, dst: to, kind: wand ? :wand : :item, rubs: 0 }
       }
     }
   end
@@ -493,13 +503,34 @@ module ChargeMeUpScotty
   # charged (2026-11-02: a pearl and white sunstone ring was skipped). Lich's types: wands
   # "wand", statues/quartz orbs/crystals "magic", rings and bracelets "jewelry"; the dagger
   # ("weapon") and scrolls ("scroll") stay out. The fresh container is wands only.
+  # Anything else left in the dead bag is a maybe: RECALL in the survey decides whether it's
+  # magic (scrolls, gems and containers are never chargeable, so they're skipped outright)
   def self.wand_bag_item?(obj, dead_bag)
     return true if obj.name =~ /\bwand\b/i
 
-    dead_bag && obj.type.to_s =~ /\b(?:magic|jewelry)\b/
+    dead_bag && obj.type.to_s !~ /\b(?:scroll|gem|herb|container|box)\b/
+  end
+
+  # Is this non-wand item magic? RECALL costs no mana, a 405 costs 5. With no loresong to
+  # read, fall back to Lich's type (rings/bracelets "jewelry", statues/orbs/crystals "magic").
+  def self.magic_by_recall?(rec)
+    lines = collect("recall ##{rec[:id]}", RECALL_DONE, 4)
+    # Only "recall <noun>" is seen in the logs; if the ID form isn't understood, use the noun
+    # (the item's in hand, so "my <noun>" finds it)
+    if lines.none? { |line| line =~ RECALL_LORE } && lines.any? { |line| line =~ /^I could not find|^What were you|^Usage/ }
+      lines = collect("recall my #{rec[:name].to_s.split.last}", RECALL_DONE, 4)
+    end
+    lines += more_lines(0.5)
+    text = lines.join("\n")
+    return true if text =~ RECALL_MAGIC
+    return false if text =~ RECALL_LORE
+
+    rec[:type].to_s =~ /\b(?:magic|jewelry)\b/ ? true : false
   end
 
   def self.status_for(rec)
+    return :not_magic if rec[:not_magic]
+
     if !rec[:mage]
       rec[:merchant] ? :merchant : :not_rechargeable
     elsif rec[:charges] >= rec[:target]
@@ -520,7 +551,7 @@ module ChargeMeUpScotty
   end
 
   def self.apply_cached(rec, entry)
-    %i[spell charges target mage empowered merchant wear].each { |key| rec[key] = entry[key.to_s] }
+    %i[spell charges target mage empowered merchant wear not_magic].each { |key| rec[key] = entry[key.to_s] }
     rec[:charges] = rec[:charges].to_i
     rec[:target] = rec[:target].to_i
     rec[:before] = rec[:charges]
@@ -533,7 +564,7 @@ module ChargeMeUpScotty
     @survey_cache[rec[:id].to_s] = {
       'name' => rec[:name], 'spell' => rec[:spell], 'charges' => rec[:charges], 'target' => rec[:target],
       'mage' => rec[:mage], 'empowered' => rec[:empowered], 'merchant' => rec[:merchant], 'wear' => rec[:wear],
-      'at' => Time.now.to_i
+      'not_magic' => rec[:not_magic], 'at' => Time.now.to_i
     }
   end
 
@@ -555,13 +586,22 @@ module ChargeMeUpScotty
       msg "Using your last check for #{reuse.size} item#{reuse.size == 1 ? '' : 's'} (--fresh to cast 405 at them again)."
     end
     to_detect = recs - reuse
-    msg "Checking #{to_detect.size} item#{to_detect.size == 1 ? '' : 's'} with Elemental Detection." unless to_detect.empty?
+    unless to_detect.empty?
+      others = to_detect.count { |rec| rec[:kind] != :wand }
+      msg "Checking #{to_detect.size} item#{to_detect.size == 1 ? '' : 's'} with Elemental Detection#{others.positive? ? " (RECALL first for the #{others} that aren't wands, to skip ones that aren't magic)" : ''}."
+    end
     to_detect.each do |rec|
       unless take(rec[:id], rec[:src])
         rec[:status] = :missing
         next
       end
-      detect(rec)
+      # Wands are always worth a 405; anything else has to RECALL as magic first
+      if rec[:kind] == :wand || magic_by_recall?(rec)
+        detect(rec)
+      else
+        rec[:not_magic] = true
+        rec[:mage] = false
+      end
       cache_record(rec)
       stash(rec[:id], rec[:src])
     end
@@ -995,6 +1035,7 @@ module ChargeMeUpScotty
     no_mana: 'not enough mana',
     unknown: 'stopped (unrecognized response)',
     not_rechargeable: 'not mage rechargeable or empowerable',
+    not_magic: 'not a magic item (RECALL)',
     merchant: 'merchant rechargeable only',
     missing: "couldn't pick it up",
   }.freeze
@@ -1119,7 +1160,9 @@ module ChargeMeUpScotty
     @emptied_hands = true
 
     survey
+    # Magic items (rings, bracelets, statues, ...) get the first and best orb, then the wands
     to_charge = @records.select { |rec| rec[:status] == :charge }
+                        .each_with_index.sort_by { |rec, i| [rec[:kind] == :wand ? 1 : 0, i] }.map(&:first)
     if check_only || to_charge.empty?
       msg "Nothing needs charging." if to_charge.empty? && !@records.empty?
       return
