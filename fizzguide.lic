@@ -1203,6 +1203,8 @@ QUEST_INFO_TRIGGER_MAP = {
   /Return the magnifying glass to the bellhop/i => "RETURN GLASS TO BELLHOP",
   # Chapter 4 -- Fate's Holding (skeleton convict/wine)
   /Look for the skeleton convict in Fate's Holding/i => "Be on the lookout for a skeleton convict somewhere in Fate",
+  # Chapter 4, skeleton asked (Salvi, 2026-11-02).
+  /Find the witch in Fate's Holding and ask for a drink/i => "Be on the lookout for a skeleton convict somewhere in Fate",
   # Chapter 5 -- Innocent's End (stuffed bear)
   /Visit an eyepatch-clad stuffed toy bear in Innocent's End/i => "An unlikely assistant you will find in Innocent",
   # Chapter 6 -- Vigil's End (legionnaire/monocle)
@@ -1355,6 +1357,39 @@ def guidebookquest_place_jack(jack)
     ref = "my jack" unless result =~ /less crowded area/i
   end
   false
+end
+
+# Chapter 4's witch, "a petite and waif-like gjenganger", is normally in The
+# Cauldron (u8083133): Picko, Davu and others all found her there. On
+# Salvi's run (2026-11-02, 14:45) the Cauldron held only a jack-o'-lantern,
+# and "ask gjeng about drink" got "Who are you trying to ask?" four passes
+# running. So she's looked for in the Cauldron, its two huts, the rest of
+# Fate's Holding and the forest trail with its hut, with a wait in the
+# Cauldron between laps.
+def guidebookquest_witch_rooms
+  %w[8083133 8084733 8084735 8083132 8083131 8083130 8083129 8083128 8083127
+     8083126 8083125 8083124 8083134 8083135 8083136 8083138 8083142 8083143
+     8083141 8083145 8083144 8083139 8083140 8083146 8083147 8083148]
+end
+
+def guidebookquest_witch
+  Array(GameObj.npcs).find { |npc| npc.name =~ /waif-like gjenganger/i }
+end
+
+def guidebookquest_find_witch
+  3.times do
+    guidebookquest_witch_rooms.each do |room|
+      Script.run("go2", go2_room("u#{room}"))
+      return guidebookquest_witch if guidebookquest_witch
+    end
+    echo "guidebookquest: no sign of the witch in Fate's Holding -- waiting in the Cauldron a minute for her."
+    Script.run("go2", go2_room("u8083133"))
+    60.times do
+      return guidebookquest_witch if guidebookquest_witch
+      sleep 1
+    end
+  end
+  nil
 end
 
 def guidebookquest_find_bellhop
@@ -1542,7 +1577,12 @@ def guidebookquest_dispatch(line)
     # Fate's Holding, The Cauldron -- asking the gjenganger about drink
     # hands over a corked bottle of wine directly.
     Script.run("go2", go2_room("u8083133"))
-    guidebookquest_capture_new_item("wine") { fput "ask gjeng about drink" }
+    witch = guidebookquest_witch || guidebookquest_find_witch
+    unless witch
+      echo "guidebookquest: couldn't find the witch (the waif-like gjenganger) anywhere in Fate's Holding after three laps -- try ;fizzguide again later."
+      exit
+    end
+    guidebookquest_capture_new_item("wine") { fput "ask ##{witch.id} about drink" }
     sleep 1
     Script.run("go2", go2_room("u8083134"))
     # Giving the wine prompts a 30-second confirmation window ("please do
