@@ -1,0 +1,34 @@
+=begin
+  wander_safe.lic
+  ;ewander on a leash -- what fizzsac and sac4mana call instead of ;ewander.
+
+  Runs ;ewander as a child and kills it after 60 seconds (UserVars['wander_safe_limit'] to change).
+  One step is normally a few seconds; a minute means it is stuck. 11.02 00:20 ;wander followed the
+  Abbey caravan master's wayto (inquire / order 1 / order confirm), got "not enough silver", never
+  returned, and fizzsac -> attack-ultima -> bigshot sat behind it with full mana until 08:41. The
+  boundary list that keeps ewander inside the hunting area is set by Fizzleworth-prep at the start
+  of every hunt; this is the backstop for a wayto that hangs anyway.
+=end
+
+module WanderSafe
+  def self.limit
+    v = UserVars['wander_safe_limit'].to_s.strip
+    v =~ /\A\d+\z/ && v.to_i >= 5 ? v.to_i : 60
+  end
+
+  def self.run
+    unless Script.start('ewander')
+      echo "[wander_safe] couldn't start ;ewander."
+      return
+    end
+    deadline = Time.now.to_f + limit
+    sleep 0.25 while Script.running?('ewander') && Time.now.to_f < deadline
+    if Script.running?('ewander')
+      Script.kill('ewander')
+      room = (Room.current.id rescue '?')
+      echo "[wander_safe] ;ewander ran #{limit}s without stopping (room #{room}) -- killed it so the hunt doesn't hang."
+    end
+  end
+end
+
+WanderSafe.run

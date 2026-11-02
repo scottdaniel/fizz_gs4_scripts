@@ -315,7 +315,7 @@ begin
     # room's dry -- move on
     break if room == MAX_ROOMS - 1
     fizzsac_step("room #{room + 1} dry (#{essence}/#{ESSENCE_MAX}) -- wandering.")
-    Script.run("wander")
+    Script.run("wander_safe")
   end
   echo "[fizzsac] done -- shadow essence #{essence}/#{ESSENCE_MAX}."
 ensure

@@ -67,6 +67,24 @@ def self.crooked_intent
   echo "[prep] thumb-ring TURN: #{r.strip.empty? ? 'no answer' : r.strip[0, 100]}" unless r =~ ok
 end
 
+# ewander (what fizzsac and sac4mana wander with) keeps its own boundary list, separate from
+# bigshot's hunting_boundaries, so make it match the loaded profile at the start of every hunt.
+# 11.02: with no Den boundary it left the Den by the portal, crossed the Abbey and hung at the
+# caravan master for 8 hours. `uNNNN` entries become room ids the way bigshot does it. No bigshot
+# settings loaded -> leave the list alone.
+def self.sync_ewander_boundaries
+  op = (UserVars.op rescue nil)
+  return unless op.is_a?(Hash)
+  ids = op['hunting_boundaries'].to_s.split(/[,\s]+/).reject(&:empty?).flat_map do |entry|
+    next [entry] if entry =~ /\A\d+\z/
+    found = entry =~ /\Au(-?\d+)\z/i ? Array(Map.ids_from_uid($1.to_i)).first : nil
+    echo "[prep] ewander boundary #{entry} isn't a room id or a mapped uid -- skipping it." unless found
+    found ? [found.to_s] : []
+  end.uniq
+  Script.run("ewander", "clear")
+  Script.run("ewander", "add #{ids.join(' ')}") unless ids.empty?
+end
+
 # Stop playing before gearing up for combat -- kills the instrument along
 # with the script (playsongs.lic's before_dying stows it). Kill is async,
 # so wait for it to actually finish before "clear hands" below sends its
@@ -166,6 +184,8 @@ $ult_reanim_done    = false
 $ult_essence_run    = false
 $demonmana_taken   = false   # the demon's mana store is refilled at rest; one ;demonmana get per hunt
 $reanim_animate_live = false
+
+sync_ewander_boundaries
 
 # Make sure the minor demon is set to follow -- ;reanim has verlok drop the
 # animate's spare weapon, which only works if it's in the room.

@@ -149,7 +149,7 @@ module Sac4Mana
 
   def self.find_worthy_target
     MAX_WANDER_SKIPS.times do
-      Script.run("wander")
+      Script.run("wander_safe")
 
       target = room_target
       return nil unless target
