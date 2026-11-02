@@ -4,6 +4,8 @@
   Fork of guidebookquest.lic (v1.54.0) by RuseofFools et al.
 
   fizzguide changes:
+    - Started outside Ebon Gate, it runs EVENT TRANSPORT EBON (twice, to
+      confirm) first.
     - Accepts the quest itself when QUEST still lists it as "Available".
       Without that, nobody in town reacts and Chapter 2 re-ran forever.
     - Chapter 1 (town hall) TURNs the guidebook back to page one, since
@@ -13,6 +15,10 @@
     - Stops (after re-checking that the quest is accepted) instead of
       looping when the same chapter reads as incomplete 4 times in a row,
       or the same QUEST INFO objective comes back a 4th time.
+    - Chapter 2 follows QUEST INFO's "You should go to the ___ next."
+    - Chapter 13 places the jack-o'-lantern by its #id (plain "jack" can
+      mean one already on display) and tries the Moorlyn rooms one by one
+      until one isn't too crowded, instead of pausing for you.
     - Pauses itself by its own name (so ;unpause fizzguide works).
   Messages still say "guidebookquest:" and the per-character data files
   keep their guidebookquest_* names, so a character can switch between
@@ -27,9 +33,9 @@
                          wherever QUEST INFO/the guidebook's own chapter
                          text says you left off.
 
-  Needs a shadowy leatherbound guidebook on hand or in an open container,
-  or a trip to the town hall clerk for one. Accepts the "Welcome to
-  Evermore Hollow" quest first if it hasn't been.
+  Can start anywhere: it transports to Ebon Gate, accepts "Welcome to
+  Evermore Hollow" if needed, and gets the free guidebook from the town
+  hall clerk if you don't carry one.
 
   Author: Claude Code(Creator and Feature Additions), Codex(Bug Fixes and Review), RuseofFools (Very Little)
   Required: Lich >= 5.20.0
@@ -160,6 +166,25 @@ def guidebookquest_accept_quest
   end
   @guidebookquest_slot = nil
   true
+end
+
+# Every room this quest uses has an Ebon Gate uid (u8083xxx, u8084xxx,
+# u8087xxx), so anywhere else means EVENT TRANSPORT EBON first. Confirmed
+# live (Picko from Icemule, 2026-11-02): the first one asks "Are you sure you
+# would like to transport to Ebon Gate?" and "[Please enter the command again
+# within the next 30 seconds.]"; the second ends "You step into the swirling
+# mist." and lands in Evermore Hollow, Inner Ring (u8083001).
+def guidebookquest_transport_to_ebon_gate
+  return if XMLData.room_id.to_s.start_with?("808")
+
+  echo "guidebookquest: not in Ebon Gate -- using EVENT TRANSPORT EBON first."
+  result = dothistimeout "event transport ebon", 5, /Are you sure you would like to transport|You step into the swirling mist/i
+  result = dothistimeout "event transport ebon", 5, /You step into the swirling mist/i if result =~ /Are you sure/i
+  unless result =~ /swirling mist/i
+    echo "guidebookquest: EVENT TRANSPORT EBON didn't take you to Ebon Gate -- get to Evermore Hollow, then run this again."
+    exit
+  end
+  sleep 1
 end
 
 # Called when the same step keeps coming back without progress. Re-checks
@@ -1118,7 +1143,7 @@ QUEST_INFO_TRIGGER_MAP = {
   # The clerk's step done, Chapter 1 not yet read (Davu, 2026-11-02).
   /Open and read Chapter 1 of your Guidebook To The Unliving/i => "You can't do that",
   # Chapter 2 -- Evermore Hollow Town Proper (merchant visits)
-  /FILL_IN_CHAPTER_2/i => "Seek out various merchants in Evermore Hollow and speak with them about a variety of topics",
+  /Take a stroll through Evermore Hollow and speak with the various merchants/i => "Seek out various merchants in Evermore Hollow and speak with them about a variety of topics",
   # Chapter 3 -- Evermore Hollow Hotel (bellhop/paintings)
   /Visit the bellhop at the Evermore Hotel/i => "The bellhop may have information that you want to hear",
   # Chapter 3 recovery -- the magnifying glass has already been handed
@@ -1218,6 +1243,73 @@ BELLHOP_GARDEN_ROOMS = %w[
   8087272 8087277 8087281 8087282 8087278 8087273 8087267 8087266
 ].freeze
 
+# Chapter 2's merchants, matched against QUEST INFO's hint, to the room each
+# one greets you in. QUEST INFO (Davu, 2026-11-02): "Take a stroll through
+# Evermore Hollow and speak with the various merchants to learn more about
+# the town.  You should go to the healer next." Only "healer" is confirmed
+# QUEST INFO wording; the others also match the guidebook's words and the
+# names the merchants use for each other ("visit Auris at the gemshop next",
+# "visiting Mortimer at the pawnshop", "Go bother the banker, Fydiron").
+def guidebookquest_merchant_rooms
+  [[/heal|herb/i, "u8084052"], [/gem|Auris/i, "u8084066"], [/pawn|Mortimer/i, "u8084071"],
+   [/alchem/i, "u8084056"], [/bank|Fydiron/i, "u8084062"], [/constab/i, "u8084077"]]
+end
+
+# Walks to whichever merchant QUEST INFO says is next, until it stops asking
+# for merchants. Each greets you on entry and the hint moves on; after the
+# constable: "Now that you've talked to everyone, you should check your
+# guidebook to review your progress and head to the next area listed."
+# Returns false (walk the fixed order instead) if there's no hint, it names
+# an unknown merchant, or the same one comes up twice.
+def guidebookquest_follow_merchant_hints
+  visited = []
+  7.times do
+    objective = guidebookquest_quest_objective(guidebookquest_quest_info_text)
+    return !visited.empty? unless objective =~ /speak with the various merchants/i
+
+    hint = objective[/You should go to the (.+?) next/i, 1]
+    room = hint && guidebookquest_merchant_rooms.find { |pattern, _| hint =~ pattern }&.last
+    return false if room.nil? || visited.include?(room)
+
+    echo "guidebookquest: QUEST INFO says to see the #{hint} next."
+    Script.run("go2", go2_room(room))
+    visited << room
+    # The greeting comes on entry; give it (and its roundtime) time to land
+    # before asking QUEST INFO again.
+    sleep 3
+  end
+  false
+end
+
+# Where Chapter 13's jack-o'-lantern gets placed. Confirmed live (Picko,
+# 2026-11-02): PLACE JACK in the Inner Ring got "This doesn't appear to be
+# your jack-o'-lantern." (plain "jack" picked one already on display) and
+# "Seeing that there are already a couple pumpkins on display, you decide to
+# look for a less crowded area for your jack-o'-lantern masterpiece."
+# (rooms with three of them); PLACE MY JACK in Moorlyn u8083055 took it:
+# "Finding this location to be a suitable place to display the burnt orange
+# jack-o'-lantern, you carefully set it on the ground...". The rest are the
+# other Moorlyn rooms (go2's own list of them), since other players fill
+# rooms up too.
+def guidebookquest_jack_rooms
+  %w[8083055 8083054 8083057 8083059 8083061 8083062 8083056 8083058
+     8083060 8083069 8083068 8083067 8083066 8083065 8083064 8083063]
+end
+
+def guidebookquest_place_jack(jack)
+  ref = jack ? "##{jack.id}" : "my jack"
+  guidebookquest_jack_rooms.each do |room|
+    Script.run("go2", go2_room("u#{room}"))
+    result = dothistimeout "place #{ref}", 5, /suitable place to display|less crowded area|doesn't appear to be your|could not find|what you were referring/i
+    return true if result =~ /suitable place to display/i
+
+    # Anything but "too crowded" means PLACE didn't take the #id; fall back
+    # to the wording that worked by hand.
+    ref = "my jack" unless result =~ /less crowded area/i
+  end
+  false
+end
+
 def guidebookquest_find_bellhop
   (BELLHOP_HOTEL_ROOMS + BELLHOP_GARDEN_ROOMS).each do |room|
     Script.run("go2", go2_room("u#{room}"))
@@ -1271,6 +1363,12 @@ def guidebookquest_dispatch(line)
   # CHAPTER 2 INCOMPLETE
   elsif line =~ /Seek out various merchants in Evermore Hollow and speak with them about a variety of topics/
     fput "stow my guidebook"
+    if guidebookquest_follow_merchant_hints
+      fput "get my guidebook"
+      fput "read my guidebook"
+      return
+    end
+
     Script.run("go2", go2_room("u8084052"))
     fput "ask witch about quest"
     Script.run("go2", go2_room("u8084066"))
@@ -1630,13 +1728,15 @@ def guidebookquest_dispatch(line)
 
     # A lily the character already has (handed over by another player, or
     # found on an earlier run) skips foraging entirely. Hands first, then
-    # the rest of the inventory -- "get my vampire lily" searches every
-    # worn container itself, so a stowed one comes out into hand.
+    # the rest of the inventory -- GET MY searches every worn container
+    # itself, so a stowed one comes out into hand. Confirmed live (Picko,
+    # 2026-11-02, lily in his cloak): "get my vampire lily" got "Get what?"
+    # while "get lily" brought out "a matte black vampire lily".
     find_held_lily = -> { [GameObj.right_hand, GameObj.left_hand].compact.find { |obj| obj.name =~ /vampire lily/i } }
     held_lily = find_held_lily.call
     unless held_lily
       saved_lily = guidebookquest_saved_item("lily")
-      ["#{saved_lily ? "##{saved_lily['id']}" : nil}", "my vampire lily"].reject(&:empty?).each do |ref|
+      ["#{saved_lily ? "##{saved_lily['id']}" : nil}", "my lily", "my vampire lily"].reject(&:empty?).each do |ref|
         dothistimeout "get #{ref}", 3, /You remove|You get|You pick up|You grab|Get what\?|What were you|could not find|already/i
         sleep 0.5
         held_lily = find_held_lily.call
@@ -1850,33 +1950,13 @@ def guidebookquest_dispatch(line)
     guidebookquest_capture_new_item("votive") { fput "get votive" }
     sleep 1
 
-    Script.run("go2", go2_room("exit"))
-    sleep 1
-
-    # PLACE JACK fails in a crowded spot ("...already a couple pumpkins
-    # on display, you decide to look for a less crowded area...") and
-    # succeeds in a quieter one -- confirmed live that the exit landing
-    # room is crowded but one room southeast of it isn't. Try the landing
-    # spot first, then that one fallback, before giving up to a manual
-    # pause (layout may differ from this recorded case).
-    placed = false
-    ["", "se"].each do |dir|
-      unless dir.empty?
-        fput dir
-        sleep 1
-      end
-      result = dothistimeout "place jack", 5, /suitable place to display|less crowded area/i
-      if result =~ /suitable place to display/i
-        placed = true
-        break
-      end
-    end
-
-    unless placed
+    jack = guidebookquest_hand_items.find { |obj| obj.name =~ /jack-o'-lantern/i }
+    unless guidebookquest_place_jack(jack)
       echo "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-      echo "  Go to any room in Evermore Hollow and attempt to  "
-      echo "                     PLACE JACK                     "
-      echo "    Once you do this, ;unpause all this script.     "
+      echo "  No Moorlyn room had space for the jack-o'-lantern."
+      echo "  Find a room with fewer jack-o'-lanterns and do   "
+      echo "                  PLACE MY JACK                     "
+      echo "     Once you do this, ;unpause fizzguide.          "
       echo "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
       pause_script Script.current.name
       # Pausing only sets a flag -- actually hold here until ;unpause.
@@ -1884,7 +1964,10 @@ def guidebookquest_dispatch(line)
     end
 
     votive = guidebookquest_item_ref("votive", "votive")
-    fput "put #{votive} in jack"
+    # By #id when there is one: a bare "jack" can mean someone else's
+    # jack-o'-lantern on display in the same room.
+    result = jack && dothistimeout("put #{votive} in ##{jack.id}", 5, /lower a small glass votive|could not find|what you were referring/i)
+    fput "put #{votive} in jack" unless result =~ /lower a small glass votive/i
     sleep 1
     fput "light #{votive}"
     sleep 1
@@ -1943,6 +2026,8 @@ end
 @guidebookquest_slot = nil
 @guidebookquest_reads = @guidebookquest_read_chapter = nil
 @guidebookquest_redirects = @guidebookquest_redirect_objective = nil
+
+guidebookquest_transport_to_ebon_gate
 
 # A just-accepted quest's objective is the town hall clerk, and Chapter 1
 # picks the guidebook up there itself.
