@@ -29,14 +29,18 @@
        pulsating orb, then casts 517 at the orb until it's humming (ready).
        A poured gem is remembered, so if a run stops before the orb is made,
        the next one uses that gem first without pouring again.
-    6. For each item: waits for enough mana to fill it in as few rubs as it can,
-       then RUBs the orb with the item in the right hand. Re-preps the orb when
-       it shrinks, makes a new orb when it implodes, and stops an item when it's
-       full, greened, or has had charge_maxrubs rubs (every rub past the first
-       couple raises the chance of greening it).
+    6. For each item: waits for enough mana to fill it in as few tries at the orb
+       as it can. Each try is the game's RUB command: you rub the pulsating orb
+       with the item in your right hand and the orb puts charges into it (it has
+       nothing to do with waving the wand). Re-preps the orb when it shrinks,
+       makes a new orb from the next gem when one implodes (even while being
+       prepared), and stops an item when it's full, greened, or has had
+       charge_maxrubs tries (each try past the first couple raises the chance of
+       greening it).
     7. Spent wands come from bigshot's dead wand container and go back to the
-       fresh wand container; magic items come from chargesack and go to
-       chargedsack. Items that aren't mage rechargeable stay where they were.
+       fresh wand container; magic items come from chargesack (or were left with
+       the dead wands) and go to chargedsack. Items that aren't mage rechargeable
+       stay where they were.
     8. Goes back where you started and prints a report.
 
   Candidates:
@@ -51,9 +55,9 @@
     ;vars set chargesack=<container>      used magic items to recharge (optional)
     ;vars set chargedsack=<container>     recharged magic items (default: chargesack)
     ;vars set greensack=<container>       greened items (default: where they'd go anyway)
-    ;vars set charge_maxrubs=<n>          most rubs per item per session (default 3)
+    ;vars set charge_maxrubs=<n>          most tries at the orb per item per session (default 3)
     ;vars set charge_symbol=false         never use Symbol of Mana (default true: while waiting
-                                          to rub, whenever it's off cooldown; it costs Voln
+                                          to charge, whenever it's off cooldown; it costs Voln
                                           favor, and one "not enough favor" stops it for the run)
 
   Usage:
@@ -302,7 +306,9 @@ module ChargeMeUpScotty
   end
 
   # symbol: true (rub waits only) also uses Symbol of Mana whenever it's off cooldown
-  def self.wait_for_mana(amount, reason = nil, symbol: false)
+  # stop_if: give up waiting early (a rub wait stops when the orb dies; on 2026-11-02 it sat
+  # three more minutes waiting for mana to use an orb that had already imploded)
+  def self.wait_for_mana(amount, reason = nil, symbol: false, stop_if: nil)
     amount = [amount.to_i, maxmana].min
     drain
     return if checkmana >= amount
@@ -310,6 +316,7 @@ module ChargeMeUpScotty
     msg "Waiting for #{amount} mana#{reason ? " #{reason}" : ''} (you have #{checkmana})."
     until checkmana >= amount
       drain
+      return if stop_if&.call
       symbol_of_mana if symbol && symbol_ready?
       sleep 0.5
     end
@@ -816,7 +823,9 @@ module ChargeMeUpScotty
         @orb_ready = true
         return true
       elsif lines.any? { |line| line =~ ORB_GONE }
-        return false
+        # "The pulsating orb quickly implodes into oblivion!" on a prep cast (2026-11-02, a
+        # fresh tiny pink pearl orb on its first cast). ensure_orb makes another.
+        return :imploded
       elsif lines.none? { |line| line =~ ORB_GROW || line =~ ORB_SHRINK }
         unknown += 1
         next if unknown < 3
@@ -844,15 +853,34 @@ module ChargeMeUpScotty
     @orb_id = nil
   end
 
+  # An orb that implodes while it's being prepared just means the next gem: on 2026-11-02 the
+  # run stopped here with 6 wands to go and 7 orb gems left. Only a run of implosions in a
+  # row, no gems left, or an orb that won't respond stops it.
+  ORB_RETRY_MAX = 3
+
   def self.ensure_orb
     return true if orb_alive? && @orb_ready
 
-    unless orb_alive?
-      msg "The pulsating orb is gone." if @orb_id
+    imploded = 0
+    loop do
+      unless orb_alive?
+        msg "The pulsating orb is gone." if @orb_id
+        @orb_id = nil
+        return false unless make_orb
+      end
+      result = prep_orb
+      return true if result == true
+      return false unless result == :imploded
+
+      imploded += 1
       @orb_id = nil
-      return false unless make_orb
+      @orb_ready = false
+      if imploded >= ORB_RETRY_MAX
+        msg "#{imploded} orbs in a row imploded while being prepared. Stopping."
+        return false
+      end
+      msg "That orb imploded while it was being prepared. Making another from the next gem."
     end
-    prep_orb
   end
 
   # === charging ==================================================================
@@ -869,13 +897,14 @@ module ChargeMeUpScotty
         stash(rec[:id], rec[:src])
         return :orb_lost
       end
-      unless @orb_ready || prep_orb
+      # == true: :imploded is truthy but means the orb's gone
+      unless @orb_ready || prep_orb == true
         stash(rec[:id], rec[:src])
         return :orb_lost
       end
 
       wanted = short_on_mana ? (maxmana * RUB_MANA_SHARE).floor : rub_mana(rec)
-      wait_for_mana(wanted, "to charge the #{rec[:name]}", symbol: true)
+      wait_for_mana(wanted, "to charge the #{rec[:name]}", symbol: true, stop_if: -> { !orb_alive? })
       next unless @orb_ready
 
       mana_before = checkmana
@@ -896,13 +925,13 @@ module ChargeMeUpScotty
         else
           detect(rec)
         end
-        msg "#{rec[:name]}: #{rec[:charges]}/#{rec[:target]} charges after rub #{rec[:rubs]}."
+        msg "#{rec[:name]}: #{rec[:charges]}/#{rec[:target]} charges after try #{rec[:rubs]} at the orb."
       elsif text =~ RUB_FULL
         rec[:status] = :full
         break
       elsif text =~ RUB_FLOWS
         rec[:rubs] += 1
-        msg "Couldn't channel the flows into the #{rec[:name]} (rub #{rec[:rubs]})."
+        msg "Couldn't channel the flows into the #{rec[:name]} (try #{rec[:rubs]} at the orb)."
       elsif text =~ RUB_NO_MANA
         if short_on_mana || mana_before >= (maxmana * RUB_MANA_SHARE).floor
           msg "Not enough mana to add a charge to the #{rec[:name]} even with #{mana_before}. Moving on."
@@ -985,7 +1014,9 @@ module ChargeMeUpScotty
                 else
                   "  #{rec[:before]} -> #{rec[:charges]}/#{rec[:target]} charges"
                 end
-      rubs = rec[:rubs].positive? ? ", #{rec[:rubs]} rub#{rec[:rubs] == 1 ? '' : 's'}" : ''
+      # "tries at the orb", not "rubs": RUB is the game's command for charging from the orb,
+      # but in a report it read like the wand had been used
+      rubs = rec[:rubs].positive? ? ", #{rec[:rubs]} #{rec[:rubs] == 1 ? 'try' : 'tries'} at the orb" : ''
       respond "    #{rec[:name]}#{spell}#{charges}  #{STATUS_TEXT[rec[:status]] || rec[:status]}#{rubs}"
       respond "        #{rec[:wear]}" if rec[:wear] && rec[:mage] && rec[:wear] !~ WEAR_FINE
       rec[:raw].to_a.each { |line| respond "        | #{line}" }
@@ -1017,8 +1048,8 @@ module ChargeMeUpScotty
     respond "  chargesack       #{setting(:chargesack) || '(not set)'}   used magic items to recharge"
     respond "  chargedsack      #{setting(:chargedsack) || '(chargesack)'}   recharged magic items"
     respond "  greensack        #{setting(:greensack) || '(not set)'}   greened items"
-    respond "  charge_maxrubs   #{max_rubs}   most rubs per item per session"
-    respond "  charge_symbol    #{symbol?}   use Voln's Symbol of Mana while waiting to rub (costs favor)"
+    respond "  charge_maxrubs   #{max_rubs}   most tries at the orb per item per session"
+    respond "  charge_symbol    #{symbol?}   use Voln's Symbol of Mana while waiting to charge (costs favor)"
     respond "  dead wands       #{op_setting('dead_wand_container', 'bag')}   from bigshot (dead_wand_container)"
     respond "  fresh wands      #{op_setting('fresh_wand_container', 'sack')}   from bigshot (fresh_wand_container)"
     respond
