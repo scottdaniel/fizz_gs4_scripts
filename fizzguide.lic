@@ -877,16 +877,55 @@ end
 # boatsman wants varies run to run. A plain "search" only ever finds an
 # item he's actually asked for ("Your diligence pays off, and you locate a
 # water reed."); anywhere else it's "you don't find anything of
-# interest". Add more entries here as further item/room pairs are
-# confirmed live.
-GLEYMINN_KNOWN_ITEM_ROOMS = {
-  "fishing net" => "8083405",
-  "lily pad" => "8083412",
-  "fuzzy moss" => "8083419",
-  "water reed" => "8083424",
-  "leaf skeleton" => "8083422",
-  "mournbloom" => "8083398"
-}.freeze
+# interest". Every room below matches Scott's river map (2026-11-02), and
+# all but nightshade were also found there live: pebble (Fizzleworth),
+# mushroom, moss and rope (Davu), lily pad, leaf skeleton and rope (Picko),
+# fishing net and moss (Fizzleworth). Nightshade's room is from the map
+# only: southwest then west of the leaf skeleton's junction.
+def guidebookquest_gleyminn_item_rooms
+  {
+    "pebble" => "8083384",
+    "mushroom" => "8083387",
+    "mournbloom" => "8083398",
+    "fishing net" => "8083405",
+    "frayed rope" => "8083411",
+    "lily pad" => "8083412",
+    "nightshade" => "8083417",
+    "fuzzy moss" => "8083419",
+    "leaf skeleton" => "8083422",
+    "water reed" => "8083424"
+  }
+end
+
+# Gets a carried item by its noun (the last word of its name) and returns it
+# if what came out matches the name; anything else that came out goes back.
+def guidebookquest_gleyminn_get_carried(name)
+  noun = guidebookquest_gleyminn_clean_name(name).split.last
+  before = guidebookquest_hand_items.map(&:id)
+  dothistimeout "get my #{noun}", 3, /You remove|You get|You pick up|You grab|You retrieve|Get what\?|could not find|what you were referring|hands are full/i
+  sleep 0.5
+  new_items = guidebookquest_hand_items.reject { |obj| before.include?(obj.id) }
+  held = new_items.find { |obj| guidebookquest_gleyminn_same_item?(obj.name, name) }
+  (new_items - [held]).each { |obj| fput "stow ##{obj.id}" }
+  held
+end
+
+# Items found before a relog are still carried, but their saved #ids are
+# gone -- ids are reassigned at every login. Davu, 2026-11-02: moss and
+# mushroom found at 13:41, relogged at 13:49, and at the hand-in "get
+# #1238743771" was "Get what?", so the script went searching the river for
+# both again. Anything still on the list is looked for in the inventory
+# first.
+def guidebookquest_gleyminn_claim_carried
+  guidebookquest_gleyminn_still_needed.each do |wanted|
+    held = guidebookquest_gleyminn_get_carried(wanted)
+    next unless held
+
+    echo "guidebookquest: already carrying #{held.name} for the boatsman."
+    guidebookquest_remember_item("river_item_#{guidebookquest_gleyminn_found.size + 1}", held)
+    fput "stow ##{held.id}"
+  end
+end
 
 # Searches the current room; a find lands in the right hand and is
 # captured by its #id, saved, and stowed by id.
@@ -913,7 +952,7 @@ end
 def guidebookquest_gleyminn_try_known_rooms
   return true if guidebookquest_gleyminn_done?
 
-  GLEYMINN_KNOWN_ITEM_ROOMS.each do |name, room|
+  guidebookquest_gleyminn_item_rooms.each do |name, room|
     needed = guidebookquest_gleyminn_still_needed
     next unless guidebookquest_gleyminn_request.empty? || needed.any? { |wanted| guidebookquest_gleyminn_same_item?(name, wanted) }
 
@@ -961,10 +1000,18 @@ end
 def guidebookquest_gleyminn_hand_in
   guidebookquest_saved_labels("river_item_").each do |label|
     item = guidebookquest_saved_item(label)
-    fput "get ##{item['id']}"
+    ref = "##{item['id']}"
+    result = dothistimeout "get #{ref}", 3, /You remove|You get|You retrieve|already|Get what\?|could not find|what you were referring/i
     sleep 0.5
-    fput "give ##{item['id']} to boatsman"
-    sleep 1
+    # A saved #id from before a relog is gone; get the item by name instead.
+    if result.nil? || result =~ /Get what\?|could not find|what you were referring/i
+      held = guidebookquest_gleyminn_get_carried(item['name'])
+      ref = held && "##{held.id}"
+    end
+    if ref
+      fput "give #{ref} to boatsman"
+      sleep 1
+    end
     guidebookquest_forget_item(label)
   end
   guidebookquest_forget_item("river_request")
@@ -1846,6 +1893,7 @@ def guidebookquest_dispatch(line)
     sleep 1
     Script.run("go2", go2_room("u8083384"))
     guidebookquest_gleyminn_ask_boatsman
+    guidebookquest_gleyminn_claim_carried
 
     # Confirmed live: the sailcloth sack puzzle (and its "observe") is
     # gone. The river itself is a real maze of fixed rooms reachable only
