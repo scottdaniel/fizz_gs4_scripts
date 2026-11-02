@@ -229,6 +229,7 @@ It picks the instrument in this order: the command line, then `;vars set instrum
 | Script | What it does | Bigshot |
 |---|---|---|
 | `fizzabyss.lic` | Ebon Gate Arena of the Abyss runner: fork of Hexbane's `abyssx`, but runs `Fizzleworth-attack-arena` directly each round instead of `;bigshot quick` (which re-ran the whole hunting setup every call and cost a minute mid-fight). Own settings file `fizzabyss.yaml`. | no bigshot |
+| `fizzguide.lic` | Ebon Gate "Welcome to Evermore Hollow" guidebook tour: fork of `guidebookquest.lic` (v1.54.0). Accepts the quest itself if QUEST still lists it as Available, restarts Chapter 1 at the town hall clerk, and stops instead of looping when a chapter keeps reading as incomplete. Shares the original's per-character data files. | no bigshot |
 | `fizzdusk.lic` | Duskruin arena runner: fork of Tysong's / Nylis' `tdusk`. Fights waves, loots, recovers from death, runs waggle / prep / rest between runs, appraises and lockers valuables. Setup: `;fizzdusk help`. Loads the per-character `*-duskattack.lic`. Shared by all characters. | can coexist (`using_bigshot`) |
 | `*-duskattack.lic` | Per-character arena attack routines: `Fizzleworth-`, `Salvi-`, `Picko-`, `Felixopedes-` (see the character sections). | - |
 | `dusk_locker.lic` | The locker logic `fizzdusk` uses, as a manual command. See [Gems](#gems). | - |

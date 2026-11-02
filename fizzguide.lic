@@ -1,0 +1,1962 @@
+=begin
+  fizzguide.lic
+
+  Fork of guidebookquest.lic (v1.54.0) by RuseofFools et al.
+
+  fizzguide changes:
+    - Accepts the quest itself when QUEST still lists it as "Available".
+      Without that, nobody in town reacts and Chapter 2 re-ran forever.
+    - Chapter 1 (town hall) picks the guidebook up in the clerk's room
+      and turns it back to page one if it was left open on a later page.
+    - Stops (after re-checking that the quest is accepted) instead of
+      looping when the same chapter reads as incomplete 4 times in a row,
+      or the same QUEST INFO objective comes back a 4th time.
+    - Pauses itself by its own name (so ;unpause fizzguide works).
+  Messages still say "guidebookquest:" and the per-character data files
+  keep their guidebookquest_* names, so a character can switch between
+  this and the original mid-quest.
+
+  ATTEMPTS to automate the Ebon Gate Festival "Welcome to Evermore Hollow" quest.
+
+	I'm not making new characters to test this for days.  It mostly works.
+
+  Commands:
+    ;fizzguide        - Start (or resume) the guidebook tour. Picks up
+                         wherever QUEST INFO/the guidebook's own chapter
+                         text says you left off.
+
+  Needs a shadowy leatherbound guidebook on hand or in an open container,
+  or a trip to the town hall clerk for one. Accepts the "Welcome to
+  Evermore Hollow" quest first if it hasn't been.
+
+  Author: Claude Code(Creator and Feature Additions), Codex(Bug Fixes and Review), RuseofFools (Very Little)
+  Required: Lich >= 5.20.0
+  Tags: eg, ebon gate, ebon, guidebook, guide, quest, evermore hollow
+  Version: 1.54.0
+
+  Recently changed:
+    v1.54.0  (2026-10-19)
+      - QUEST INFO "Return the magnifying glass to the bellhop" now goes straight to finding the bellhop and handing the glass in.
+    v1.53.0  (2026-10-19)
+      - Chapter 9 uses a lily already in hand or inventory, else forages up to 10 times, then pauses for one from another player; the veil-clad spirit is addressed by #id.
+    v1.52.0  (2026-10-19)
+      - Chapter 3's bellhop search now also covers the hotel's patio and all 24 garden maze rooms.
+    v1.51.0  (2026-10-18)
+      - Chapter 11 reads the boatsman's 3-item list, stops searching once all are found, and hands each in by #id.
+    v1.50.0  (2026-10-17)
+      - Chapter 8 walks the Moorlyn ring to find the wandering ghoul and asks him by #id before searching piles.
+    v1.49.0  (2026-10-16)
+      - Quest items (glass, wine, bear items, monocle, relics, paper, lily, votive) are tracked and used by their #id instead of by name.
+    v1.48.0  (2026-10-16)
+      - Chapter 8 now WEIGHs each pile item as it's found, logs it, and places the exact 10 lb combination (trial and error only as a fallback).
+    v1.47.0  (2026-10-11)
+      - Fixed the quest-complete exit not firing reliably: confirmed
+        live the script kept going past "You have completed Welcome to
+        Evermore Hollow!" all the way through another chapter's own
+        completion (Chapter 5, in the transcript that caught this) and
+        logged ITS quest info instead of stopping. Root cause:
+        Chapter 13's own "get"/"read" fputs right after "quest complete"
+        can advance the guidebook into a new chapter's own "You
+        completed this chapter." before the main dispatch loop ever
+        gets around to processing the quest-complete confirmation line
+        itself -- the CHAPTER 13 COMPLETED branch's exit was only ever
+        reached if that line got dispatched before anything else
+        overtook it, which isn't guaranteed. Now captures the response
+        to "quest complete" directly and exits immediately from inside
+        Chapter 13's own code instead of hoping the confirmation surfaces
+        later through the normal line-by-line dispatch.
+=end
+
+# Resolves a room target for go2: a bare Integer/numeric String is treated
+# as a Lich internal room id (LN) and converted to "u<uid>" via Room[].uid;
+# anything else (an existing "uNNNN" string, a tag like "town"/"exit") is
+# passed through unchanged. Falls back to the bare LN (with a warning) if
+# the room isn't in the local map database -- go2 may not path correctly
+# from an LN in that case, but it's better than silently going nowhere.
+def go2_room(target)
+  return target.to_s unless target.to_s =~ /\A\d+\z/
+
+  ln = target.to_i
+  room = Room[ln]
+  uid = room && Array(room.uid).first
+  return "u#{uid}" if uid
+
+  echo "guidebookquest: no uid mapped for room #{ln} (not in the local map database) -- falling back to the Lich room id, go2 may not path correctly."
+  ln.to_s
+end
+
+QUEST_NAME = 'Welcome to Evermore Hollow'
+
+# QUEST/QUEST INFO tracking, ported from intotherift.lic's own pattern:
+# the guidebook's own chapter flavor text is what actually drives this
+# script (it's reliably specific per chapter), but the game's own QUEST
+# INFO objective line is the authoritative ground truth for what the
+# quest thinks you should be doing right now -- worth surfacing
+# alongside the guidebook text rather than trusting the guidebook's
+# wording alone, especially since the two don't always say the same
+# thing (confirmed live: QUEST INFO said "Visit the bellhop at the
+# Evermore Hotel and ask if he has any quests for you." right after
+# Chapter 3 completed, which doesn't resemble any guidebook chapter text
+# at all). Lich::Util.issue_command is used instead of a hand-rolled
+# DownstreamHook capture since it's the same proven utility
+# intotherift.lic relies on for this exact purpose.
+# Confirmed live via the raw XML stream: bare "quest" shows generic
+# command usage/help (not the table at all -- "Usage: QUEST {option}
+# {args}" with LIST/ACCEPT/INFO/etc. listed as options), and intotherift
+# .lic's own bare "quest" only ever "works" for that script by accident
+# (its quest defaults to slot 1 when the row lookup fails, and "Into the
+# Rift" happens to always BE slot 1 for that character, masking the same
+# bug). "Welcome to Evermore Hollow" is not reliably any particular
+# slot, so that fallback would silently pull the wrong quest's info for
+# us. The actual confirmed-working command is "quest list all".
+#
+# usexml: false is used throughout -- confirmed live that the default
+# (usexml: true) capture comes back as just the trailing prompt marker
+# ("&gt;") with none of the real multi-line text, almost certainly
+# because the response's XML tags (<pushBold/>, <output .../>, etc.)
+# don't line up cleanly with issue_command's line-by-line start/end
+# pattern matching. The plain-text downstream Lich provides via
+# usexml: false doesn't have that problem.
+def guidebookquest_quest_row
+  lines = Lich::Util.issue_command('quest list all', /Quest Name|Realm|available|not currently/i,
+                                    /<prompt/, timeout: 6, silent: true, quiet: true, usexml: false) rescue []
+  Array(lines).map(&:to_s)
+              .find { |l| l =~ /\d+\)\s+#{Regexp.escape(QUEST_NAME)}/i }
+end
+
+def guidebookquest_quest_slot
+  @guidebookquest_slot ||= begin
+    row = guidebookquest_quest_row
+    (row && row[/(\d+)\)/, 1]) ? row[/(\d+)\)/, 1].to_i : nil
+  end
+end
+
+# QUEST LIST ALL's status column for this quest. Confirmed live on Davu and
+# Picko (2026-11-02): "  1) Welcome to Evermore Hollow      Available     Ebon
+# Gate Festival   Mechanical" until QUEST ACCEPT.
+def guidebookquest_quest_status
+  row = guidebookquest_quest_row
+  row && row[/#{Regexp.escape(QUEST_NAME)}\s+(\S+)/, 1]
+end
+
+# Confirmed live (Davu, 2026-11-02): with the quest only "Available", the
+# clerk still hands out a guidebook and Chapter 1 still reads as completed,
+# but no NPC reacts ("Hello.  I hope you are enjoying your stay in Naidem."),
+# so Chapter 2 never completes and its branch re-ran for 14 minutes. QUEST
+# ACCEPT's reply (Picko, same day) is "-~-", the quest name, then "Travel to
+# Town Hall and speak with the skeletal town hall clerk.", then "-~-".
+# Returns true when it just accepted the quest.
+def guidebookquest_accept_quest
+  return false unless guidebookquest_quest_status =~ /\AAvailable\z/i
+
+  slot = guidebookquest_quest_slot
+  echo "guidebookquest: #{QUEST_NAME} hasn't been accepted yet (QUEST lists it as Available) -- accepting it."
+  result = dothistimeout "quest accept #{slot}", 5, /Travel to Town Hall and speak with the skeletal town hall clerk/i
+  unless result
+    echo "guidebookquest: QUEST ACCEPT #{slot} didn't start the quest -- check QUEST INFO #{slot}, then run this again."
+    exit
+  end
+  @guidebookquest_slot = nil
+  true
+end
+
+# Called when the same step keeps coming back without progress. Re-checks
+# that the quest is still accepted (and starts over at the town hall if it
+# wasn't); otherwise stops with QUEST INFO's objective rather than looping.
+def guidebookquest_stuck(reason)
+  if guidebookquest_accept_quest
+    @guidebookquest_reads = 0
+    @guidebookquest_redirects = 0
+    guidebookquest_dispatch("You can't do that")
+    return
+  end
+
+  objective = guidebookquest_quest_objective(guidebookquest_quest_info_text)
+  echo "guidebookquest: #{reason} -- stopping instead of looping. QUEST INFO says: #{objective}"
+  exit
+end
+
+# Counts reads of the same chapter (its "Chapter N" header) that didn't end
+# in "You completed this chapter." -- the main loop resets the count on that
+# line. Each chapter branch reads the book once at its end, so 4 reads is 3
+# failed passes.
+def guidebookquest_note_chapter_read(chapter)
+  @guidebookquest_reads = chapter == @guidebookquest_read_chapter ? @guidebookquest_reads.to_i + 1 : 1
+  @guidebookquest_read_chapter = chapter
+  return if @guidebookquest_reads < 4
+
+  guidebookquest_stuck("Chapter #{chapter} has read as incomplete #{@guidebookquest_reads} times in a row")
+end
+
+# Same idea for QUEST INFO redirects: the same objective sent to its chapter
+# a 4th time in a row means that chapter keeps finishing without the quest
+# moving on.
+def guidebookquest_note_redirect(objective)
+  @guidebookquest_redirects = objective == @guidebookquest_redirect_objective ? @guidebookquest_redirects.to_i + 1 : 1
+  @guidebookquest_redirect_objective = objective
+  return true if @guidebookquest_redirects < 4
+
+  guidebookquest_stuck("QUEST INFO has sent this back to \"#{objective}\" #{@guidebookquest_redirects} times in a row")
+  false
+end
+
+def guidebookquest_quest_info_text
+  slot = guidebookquest_quest_slot
+  return '' unless slot
+
+  lines = Lich::Util.issue_command("quest info #{slot}", /Name:|You are|not currently|no active/i,
+                                    /<prompt/, timeout: 6, silent: true, quiet: true, usexml: false) rescue []
+  Array(lines).map(&:to_s).join("\n")
+end
+
+# The real objective is specifically the first non-blank line after
+# "You are currently undertaking this quest." -- NOT just "the last
+# non-blank line of the captured text". Confirmed live that capture can
+# include ambient game output that happened to arrive in the same
+# window as the "quest info" response (chat spam, NPC/spirit flavor
+# text, other players' messages, etc.), and if any of that lands after
+# the real objective line but before the end-of-response prompt, taking
+# the last line grabbed the ambient text instead ("Vapor churns on the
+# air as the vaporous spirit sinks into itself...", "[Merchant]
+# Archales: ..." -- neither of which is an actual quest objective).
+def guidebookquest_quest_objective(text)
+  match = text.match(/You are currently undertaking this quest\.\s*\n+\s*(.+?)\s*(?:\n|\z)/)
+  return match[1].strip if match
+
+  text.lines.map(&:strip).reject(&:empty?).last.to_s
+end
+
+# Called after every "CHAPTER N COMPLETED" guidebook transition -- echoes
+# the live QUEST INFO objective so progress can be cross-checked against
+# the game's own tracking instead of the guidebook text alone.
+def guidebookquest_log_quest_info
+  # Confirmed live: this installs its own capture hook for
+  # "quest info #{slot}", and that hook swallows whatever's still in
+  # flight when it goes up -- not just its own response, but any trailing
+  # game output arriving in the same window. Calling this BEFORE
+  # "flip"/"read my guidebook" (every "CHAPTER N COMPLETED" branch does
+  # now) keeps that hook's window clear of the next chapter's text, which
+  # used to get vacuumed into it and never reach the main dispatch loop,
+  # freezing the script until the guidebook was read again by hand. The
+  # sleep here is just a safety margin for the current chapter's own
+  # trailing confirmation text ("You completed this chapter.") to land
+  # first.
+  sleep 1
+  text = guidebookquest_quest_info_text
+  return if text.empty?
+
+  echo "guidebookquest: QUEST INFO -- #{guidebookquest_quest_objective(text)}"
+end
+
+# Chapter 8's debris piles pull a random item from this pool (confirmed
+# live) -- several pairs share a noun ("dirty dice" vs "hollow dice",
+# "purple bottle" vs "fuzzy bottle", "purple bottle" vs "purple plate"),
+# so GET/PUT commands always use the full two-word descriptor, never just
+# the trailing noun, to stay unambiguous if a colliding pair both turn up
+# in the same run.
+# Confirmed live; not necessarily exhaustive -- a "fractured cup" showed
+# up that isn't in the set this was first built from, so new pile item
+# names may still turn up and need adding here.
+MOORLYN_PILE_ITEM_POOL = [
+  "red ewer", "dirty dice", "fractured file", "damaged monocle", "black flask",
+  "mildewed knife", "mildewed lockpick", "hollow lever", "purple bottle",
+  "hollow dice", "fuzzy bottle", "hollow urn", "deformed vial",
+  "crystal fishhook", "purple plate", "fractured cup"
+].freeze
+
+require 'yaml'
+require 'fileutils'
+
+# Chapter 8's scale wants exactly this many pounds on the right pan (the
+# quest's own spoiler text: "load it up with *exactly* 10 lbs").
+MOORLYN_SCALE_TARGET = 10
+
+# Every pile item pulled this chapter, persisted per character as
+# [{ "id", "name", "noun", "weight", "exact" }, ...] so an interrupted run
+# resumes with its weights intact. Tracked by GameObj id, never by name --
+# confirmed live the item names are random per character (Kighte got "red
+# ewer"/"dirty dice", Jymondow "mildewed cup"/"split ewer", Daenamaryllis
+# "chunky brooch"/"dirty fork"), so no fixed name list can recognize them.
+def guidebookquest_moorlyn_state_path
+  dir = File.join($data_dir.to_s, XMLData.game.to_s, Char.name.to_s)
+  FileUtils.mkdir_p(dir) unless Dir.exist?(dir)
+  File.join(dir, "guidebookquest_moorlyn.yaml")
+end
+
+def guidebookquest_load_moorlyn_items
+  path = guidebookquest_moorlyn_state_path
+  data = File.exist?(path) ? YAML.load_file(path) : []
+  Array(data).select { |item| item.is_a?(Hash) && item["id"] }
+rescue StandardError
+  []
+end
+
+def guidebookquest_save_moorlyn_items(items)
+  File.write(guidebookquest_moorlyn_state_path, items.to_yaml)
+rescue StandardError => e
+  echo "guidebookquest: couldn't save Moorlyn item weights (#{e.message})."
+end
+
+def guidebookquest_clear_moorlyn_items
+  path = guidebookquest_moorlyn_state_path
+  File.delete(path) if File.exist?(path)
+rescue StandardError
+  nil
+end
+
+# Appends every WEIGH result (raw game text included) to a per-character
+# log, so the exact wording and each item's weight are on record.
+def guidebookquest_log_weight(item, raw)
+  dir = File.join($data_dir.to_s, XMLData.game.to_s, Char.name.to_s)
+  File.open(File.join(dir, "guidebookquest_weights.log"), "a") do |f|
+    f.puts "#{Time.now.strftime('%Y-%m-%d %H:%M:%S')} | #{item['name']} | ##{item['id']} | #{item['weight'].inspect} lb | #{item['exact'] ? 'exact' : 'approx'} | #{raw.to_s.strip}"
+  end
+rescue StandardError
+  nil
+end
+
+
+CONTAINER_NOUN_REGEX = /pack|bag|pouch|case|sack|satchel|box|chest|coffer|robe|mandelion/i.freeze
+
+# Captures the full multi-line response to a command (e.g. "look in my
+# pack") instead of just one line -- dothistimeout only ever returns the
+# single line matching its own pattern, which isn't enough for a
+# container listing.
+def guidebookquest_capture_block(command, timeout: 5)
+  lines = []
+  done = false
+  hook_name = "guidebookquest_capture_#{Time.now.to_f}"
+  DownstreamHook.add(hook_name, proc { |raw|
+    done = true if raw =~ /<prompt/
+    lines << raw
+    raw
+  })
+  fput command
+  deadline = Time.now + timeout
+  sleep 0.1 until done || Time.now > deadline
+  DownstreamHook.remove(hook_name)
+  lines.join("\n")
+rescue StandardError
+  DownstreamHook.remove(hook_name) rescue nil
+  ""
+end
+
+# Resume safety: if the script got interrupted and restarted mid-Chapter-8,
+# whatever pile items are already being carried are recovered here instead
+# of being silently forgotten -- hands, plus actually looking inside every
+# worn/held container (GameObj alone only sees a stowed container's own
+# name, not its contents, until something looks inside it).
+def guidebookquest_held_pile_items
+  found = []
+
+  [GameObj.right_hand, GameObj.left_hand].compact.each do |item|
+    MOORLYN_PILE_ITEM_POOL.each { |descriptor| found << descriptor if item.name.to_s.include?(descriptor) }
+  end
+
+  Array(GameObj.inv).each do |container|
+    next unless container.respond_to?(:noun) && container.noun.to_s =~ CONTAINER_NOUN_REGEX
+
+    text = guidebookquest_capture_block("look in my #{container.noun}")
+    MOORLYN_PILE_ITEM_POOL.each do |descriptor|
+      found << descriptor if text.include?(descriptor)
+    end
+  end
+
+  found.uniq
+end
+
+# Once the overall quest is complete, the Moorlyn pile items are junk --
+# confirmed live, just GETting one each produces its own disintegration
+# message ("Since there's no reason to hold onto the lever any longer, it
+# disintegrates into a fine dust."), no drop/stow needed afterward.
+# Tracked items are fetched by id; the name scan below is a fallback for
+# anything carried over from before items were tracked by id.
+def guidebookquest_discard_pile_items
+  tracked = guidebookquest_load_moorlyn_items
+  tracked.each do |item|
+    fput "get ##{item['id']}"
+    sleep 0.3
+  end
+  guidebookquest_clear_moorlyn_items
+  File.delete(guidebookquest_items_path) if File.exist?(guidebookquest_items_path)
+
+  items = guidebookquest_held_pile_items
+  items.each do |item|
+    fput "get #{item}"
+    sleep 0.3
+  end
+  total = tracked.size + items.size
+  echo "guidebookquest: discarded #{total} leftover Moorlyn pile item(s) now that the quest is complete." if total.positive?
+end
+
+# Chapter 8's scale puzzle: a large silver ingot sits on the left pan and
+# the right pan needs some subset of the items pulled from Moorlyn's debris
+# piles to land exactly on "BALANCED". Each item is WEIGHed the moment it
+# comes out of a pile, so the right subset can be worked out on paper
+# (guidebookquest_scale_solution) and placed in one go, instead of trying
+# combinations on the scale itself. Known wording (confirmed live):
+# "positioned to the left/right of the "BALANCED" indicator" and "There is
+# too much/not enough weight on the right pan." -- treated as balanced only
+# when "BALANCED" appears WITHOUT either of those.
+def guidebookquest_scale_balanced?(result)
+  text = result.to_s
+  text =~ /BALANCED/i && text !~ /to the (?:left|right) of|too much weight|not enough weight/i
+end
+
+# Pulls the pound figure out of a WEIGH response. Normal gear only ever
+# gives an estimate ("determine that the weight is about 99 pounds", "less
+# than 2 pounds" -- confirmed live), while eg_docent.lic expects these
+# quest items to say "exactly N pounds". Both are handled: only a bare
+# number or "exactly" counts as exact; anything else is kept, but flagged
+# approximate so the solver prefers exact weights when it has them.
+def guidebookquest_parse_weight(raw)
+  match = raw.to_s.match(/\b(exactly|about|roughly|approximately|around|less than|more than|over|under)?\s*(\d+)\s+pounds?\b/i)
+  return [nil, false] unless match
+
+  qualifier = match[1].to_s.downcase
+  weight = match[2].to_i
+  weight = [weight - 1, 1].max if qualifier == "less than" || qualifier == "under"
+  [weight, qualifier.empty? || qualifier == "exactly"]
+end
+
+# Smallest-first subset sum over the item weights (all small positive
+# integers, so a reachable-sums table up to the target is instant).
+# Exact weights are tried on their own first; approximate ones only join in
+# if the exact ones can't reach the target alone.
+def guidebookquest_scale_solution(items, target = MOORLYN_SCALE_TARGET)
+  solve = lambda do |pool|
+    reachable = { 0 => [] }
+    pool.each do |item|
+      weight = item["weight"]
+      next unless weight.is_a?(Integer) && weight.positive?
+
+      reachable.to_a.each do |sum, subset|
+        new_sum = sum + weight
+        next if new_sum > target || reachable.key?(new_sum)
+
+        reachable[new_sum] = subset + [item]
+      end
+    end
+    reachable[target]
+  end
+
+  solve.call(items.select { |item| item["exact"] }) || solve.call(items)
+end
+
+def guidebookquest_describe_items(items)
+  items.map { |item| "#{item['name']} (#{item['weight'] || '?'} lb#{item['exact'] ? '' : ' approx'})" }.join(', ')
+end
+
+# Puts one tracked item on the scale by id. Returns the game's response,
+# which already says where the pointer landed.
+def guidebookquest_place_on_scale(item)
+  fput "get ##{item['id']}"
+  sleep 0.3
+  result = dothistimeout "put ##{item['id']} on scale", 5, /onto the right pan|What were you|could not find|can't/i
+  sleep 0.3
+  result
+end
+
+# Takes one tracked item back off the scale and stows it. By id first; the
+# bare trailing noun is the confirmed-live fallback ("get knife from scale"
+# works where the full descriptor "get mildewed knife from scale" doesn't).
+def guidebookquest_remove_from_scale(item)
+  result = dothistimeout "get ##{item['id']}", 3, /You lift|Get what|What were you|could not find|already/i
+  unless result =~ /You lift/i
+    fput "get #{item['noun'].to_s.empty? ? guidebookquest_scale_removal_noun(item['name']) : item['noun']} from scale"
+  end
+  sleep 0.3
+  fput "stow ##{item['id']}"
+  sleep 0.3
+end
+
+# The game's own removal phrasing only parses with the bare trailing noun.
+def guidebookquest_scale_removal_noun(name)
+  name.to_s.split.last
+end
+
+# Trial-and-error fallback, used only when the weights can't produce a
+# solution (WEIGH was approximate, or the target isn't really 10). Items
+# are added depth-first; since every weight is positive, a branch that
+# overshoots ("too much weight") is pruned immediately, and a branch that
+# finds nothing backtracks and retries without that item.
+def guidebookquest_search_scale(items)
+  on_scale = []
+  solved = false
+
+  search = lambda do |index|
+    next false if solved
+    next false if index >= items.size
+
+    item = items[index]
+    result = guidebookquest_place_on_scale(item)
+    on_scale << item
+
+    if guidebookquest_scale_balanced?(result)
+      solved = true
+      next true
+    elsif result.to_s =~ /too much weight|to the right of/i
+      guidebookquest_remove_from_scale(on_scale.pop)
+    else
+      next true if search.call(index + 1)
+
+      guidebookquest_remove_from_scale(on_scale.pop)
+    end
+
+    search.call(index + 1)
+  end
+
+  search.call(0)
+  solved ? on_scale : nil
+end
+
+def guidebookquest_balance_scale(items)
+  if items.empty?
+    echo "guidebookquest: no pile items were found to try on the scale."
+    return false
+  end
+
+  solution = guidebookquest_scale_solution(items)
+  if solution
+    echo "guidebookquest: weights add up to #{MOORLYN_SCALE_TARGET} lb with #{guidebookquest_describe_items(solution)} -- placing them."
+    result = nil
+    solution.each { |item| result = guidebookquest_place_on_scale(item) }
+    result = dothistimeout("look on scale", 5, /BALANCED|pan\./i) unless guidebookquest_scale_balanced?(result)
+
+    if guidebookquest_scale_balanced?(result)
+      echo "guidebookquest: scale balanced on the first try."
+      guidebookquest_clear_moorlyn_items
+      return true
+    end
+
+    echo "guidebookquest: the weighed combination didn't balance (#{result.to_s.strip}) -- clearing the scale and falling back to trial and error."
+    solution.reverse_each { |item| guidebookquest_remove_from_scale(item) }
+  else
+    echo "guidebookquest: no combination of the weighed items makes #{MOORLYN_SCALE_TARGET} lb (#{guidebookquest_describe_items(items)}) -- falling back to trial and error."
+  end
+
+  balanced_with = guidebookquest_search_scale(items)
+  if balanced_with
+    echo "guidebookquest: scale balanced with #{guidebookquest_describe_items(balanced_with)}."
+    guidebookquest_clear_moorlyn_items
+    true
+  else
+    echo "guidebookquest: no combination of #{guidebookquest_describe_items(items)} balanced the scale."
+    false
+  end
+end
+
+# Pulls whatever's in the current room's debris pile, if anything, then
+# WEIGHs it while it's still in hand, logs it, and stows it. Confirmed live
+# "get pile" is a no-op ("Get what?") in every room without a pile, and
+# ("You already found something from this debris pile. There must be others
+# around somewhere.") in a room that's already been searched. Returns the
+# tracked item hash, or nil.
+def guidebookquest_moorlyn_search_room
+  pile_result = dothistimeout "get pile", 3, /pull out|Get what\?|already found something/i
+  return nil unless pile_result =~ /pull out (?:a|an|some) ([a-z][a-z' -]*)\./i
+
+  name = Regexp.last_match(1).strip
+  noun = name.split.last
+  held = nil
+  20.times do
+    held = [GameObj.right_hand, GameObj.left_hand].compact.find { |obj| obj.noun.to_s == noun && obj.name.to_s !~ /guidebook/i }
+    break if held
+
+    sleep 0.1
+  end
+
+  unless held
+    echo "guidebookquest: pulled a #{name} from the pile but couldn't find it in hand to weigh it."
+    fput "stow right"
+    return nil
+  end
+
+  raw = dothistimeout "weigh ##{held.id}", 6, /pounds?\b|gauging its weight|Weigh what|What were you/i
+  waitrt?
+  weight, exact = guidebookquest_parse_weight(raw)
+  item = { "id" => held.id.to_s, "name" => name, "noun" => held.noun.to_s, "weight" => weight, "exact" => exact }
+  guidebookquest_log_weight(item, raw)
+  echo "guidebookquest: #{name} weighs #{weight ? "#{weight} lb" : 'an unknown amount'}#{exact ? '' : ' (approximate)'}."
+
+  fput "stow ##{held.id}"
+  sleep 0.3
+  item
+end
+
+# Steps once around Moorlyn's ring. go2 can't path inside this zone and
+# the ring's layout varies per character/run (confirmed live), so this
+# reads XMLData.room_exits_string at each room and always leaves by the
+# exit it didn't arrive from -- every ring room has exactly two exits.
+def guidebookquest_moorlyn_step(came_from)
+  exits = guidebookquest_room_exits
+  next_dir = exits.find { |dir| dir != came_from } || exits.first
+  return nil unless next_dir
+
+  fput next_dir
+  sleep 1
+  next_dir
+end
+
+# Moorlyn's wandering ghoul (Chapter 8's quest giver) roams the ring
+# rather than staying put -- confirmed live the ring is one 16-room loop
+# out of River's End (u8083054), two exits per room:
+#   River's End -se-> Hope Village -se-> Honor's Row -se-> 8083060
+#   -se-> Faith's Juncture -w-> Tree of Justice (scale) -w-> 8083067
+#   -w-> 8083066 -w-> Dignity Point -w-> 8083064 -w-> Bravery's Plight
+#   -w-> 8083062 -w-> Loyal Point -ne-> 8083059 -ne-> 8083057
+#   -ne-> 8083055 -ne-> River's End
+# Walks it (same exit-following as the pile search) until the ghoul is in
+# the room. Two full laps, since he can wander ahead of us.
+MOORLYN_RING_SIZE = 16
+
+def guidebookquest_moorlyn_ghoul
+  GameObj.npcs.find { |npc| npc.noun.to_s =~ /ghoul/i }
+end
+
+def guidebookquest_moorlyn_find_ghoul(max_steps: MOORLYN_RING_SIZE * 2)
+  came_from = nil
+  max_steps.times do
+    ghoul = guidebookquest_moorlyn_ghoul
+    return ghoul if ghoul
+
+    dir = guidebookquest_moorlyn_step(came_from)
+    return nil unless dir
+
+    came_from = GLEYMINN_OPPOSITE_DIRECTION[dir]
+  end
+  guidebookquest_moorlyn_ghoul
+end
+
+# Confirmed live the ghoul takes two asks: the first only gets "...Weigh
+# dem opshuns." and the second "...Weigh dem opshuhs 'n bring some balance
+# back.", which is what opens the pile search. Re-finds him between asks
+# in case he wanders off mid-conversation.
+def guidebookquest_moorlyn_ask_ghoul
+  4.times do
+    ghoul = guidebookquest_moorlyn_find_ghoul
+    unless ghoul
+      echo "guidebookquest: couldn't find the wandering ghoul after two laps of Moorlyn."
+      return false
+    end
+
+    result = dothistimeout "ask ##{ghoul.id} about quest", 5, /ghoul|balance|opshu|What were you|could not find/i
+    sleep 1
+    return true if result =~ /balance back/i
+  end
+  echo "guidebookquest: asked the ghoul several times without getting his \"bring some balance back\" line -- trying the piles anyway."
+  true
+end
+
+def guidebookquest_moorlyn_scale_room?
+  XMLData.room_id.to_i == 8083068
+end
+
+# Walks the ring searching each pile, weighing as it goes, and stops as
+# soon as both the scale's room has been seen AND the weights collected so
+# far can make the target -- or after one full lap (back at the starting
+# room), since every pile only gives one item per character. Then keeps
+# walking forward to the scale's room (Tree of Justice, u8083068 -- the one
+# fixed point confirmed across runs).
+def guidebookquest_moorlyn_walk_ring(items, max_steps: 40)
+  start_room = XMLData.room_id.to_i
+  seen_scale = guidebookquest_moorlyn_scale_room?
+  came_from = nil
+
+  add_item = lambda do
+    item = guidebookquest_moorlyn_search_room
+    return unless item
+
+    items << item
+    guidebookquest_save_moorlyn_items(items)
+  end
+
+  add_item.call
+  max_steps.times do |step|
+    break if seen_scale && guidebookquest_scale_solution(items)
+
+    dir = guidebookquest_moorlyn_step(came_from)
+    break unless dir
+
+    came_from = GLEYMINN_OPPOSITE_DIRECTION[dir]
+    seen_scale ||= guidebookquest_moorlyn_scale_room?
+    break if step.positive? && XMLData.room_id.to_i == start_room && seen_scale
+
+    add_item.call
+  end
+
+  max_steps.times do
+    break if guidebookquest_moorlyn_scale_room?
+
+    dir = guidebookquest_moorlyn_step(came_from)
+    break unless dir
+
+    came_from = GLEYMINN_OPPOSITE_DIRECTION[dir]
+  end
+
+  guidebookquest_moorlyn_scale_room?
+end
+
+# Chapter 8's pile search, weighing, and scale balance -- shared between the
+# normal INCOMPLETE branch (after it goes to Moorlyn and asks the ghoul) and
+# the CHAPTER 8 RECOVERY branch (QUEST INFO's "Thoroughly look around
+# Moorlyn for a way to balance the scales." means the character is already
+# there). Items weighed on an earlier, interrupted run are reloaded from
+# disk, so they aren't weighed or searched for again.
+def guidebookquest_moorlyn_resume
+  items = guidebookquest_load_moorlyn_items
+  echo "guidebookquest: resuming with #{items.size} item(s) already weighed: #{guidebookquest_describe_items(items)}." unless items.empty?
+
+  unless guidebookquest_moorlyn_walk_ring(items)
+    echo "guidebookquest: couldn't find the scale's room after walking Moorlyn -- stopping here instead of risking getting stuck."
+    return
+  end
+
+  guidebookquest_balance_scale(items)
+
+  fput "get my guidebook"
+  sleep 1
+  fput "flip my guidebook"
+  sleep 1
+  fput "read my guidebook"
+  sleep 1
+end
+
+# Chapter 12's hide-and-seek: each move/get needs its own pause -- firing
+# fputs back-to-back outran movement and roundtime, so commands arrived
+# before the room (or the hat) was ready and were silently dropped.
+# Confirmed live: "get hat on/behind <target>" finds the hat (and puts it
+# in hand) at exactly one spot along the whole route; once that happens
+# you TAP it ("tap my felt hat") to send it flying back to the scarecrow
+# and complete the chapter -- every other spot has no hat to get at all.
+# Returns :found and stops early the moment that happens.
+def guidebookquest_tap_hat_step(*commands)
+  commands.each do |command|
+    fput command
+    waitrt?
+    sleep 1
+    if command =~ /\Aget hat\b/ && [GameObj.right_hand, GameObj.left_hand].compact.any? { |item| item.name =~ /hat/i }
+      fput "tap my felt hat"
+      waitrt?
+      sleep 1
+      return :found
+    end
+  end
+  nil
+end
+
+GLEYMINN_OPPOSITE_DIRECTION = {
+  "north" => "south", "south" => "north",
+  "east" => "west", "west" => "east",
+  "northeast" => "southwest", "southwest" => "northeast",
+  "northwest" => "southeast", "southeast" => "northwest"
+}.freeze
+
+# Confirmed live: the Gleyminn Anni River (Chapter 11) is a real maze of
+# fixed rooms reachable only by pushing a punted gondola in whichever
+# directions that room actually lists -- go2 only knows the boatsman's
+# own room, not anywhere past it ("No known route: I cannot find your
+# current room (Gleyminn Anni River) on the map."), and a hardcoded
+# direction list recorded on one run doesn't hold up ("You can't push a
+# lantern-lit gondola that way." on several of the old recorded steps).
+def guidebookquest_room_exits
+  XMLData.room_exits_string.to_s.scan(/northeast|northwest|southeast|southwest|north|south|east|west/)
+end
+
+# Chapter 11's request: the boatsman names exactly which items he wants
+# when asked ("I need you to get me three items.  Bring me a fishing net,
+# a lily pad, and a bit of fuzzy moss." -- confirmed live), and it differs
+# per character. QUEST INFO lists the same items ("  - a water reed (1
+# remaining)"), but keeps saying "remaining" for every one of them until
+# they're actually handed in -- confirmed live that waiting for it to stop
+# kept the search going forever after all three were found. So the
+# request is read once, saved, and the search stops once every item on it
+# has been found.
+GLEYMINN_ITEM_ARTICLES = /\A(?:a bit of|a piece of|some|an|a|the)\s+/i.freeze
+
+def guidebookquest_gleyminn_clean_name(name)
+  name.to_s.strip.sub(GLEYMINN_ITEM_ARTICLES, '').strip
+end
+
+def guidebookquest_gleyminn_parse_request(text)
+  if (match = text.to_s.match(/Bring me (.+?)\.?"/i))
+    return match[1].split(/,\s*(?:and\s+)?|\s+and\s+/).map { |name| guidebookquest_gleyminn_clean_name(name) }.reject(&:empty?)
+  end
+
+  text.to_s.scan(/^\s*-\s*(.+?)\s*\(\d+ remaining\)/).flatten.map { |name| guidebookquest_gleyminn_clean_name(name) }
+end
+
+def guidebookquest_gleyminn_request
+  saved = guidebookquest_saved_item("river_request")
+  saved && saved["list"].is_a?(Array) ? saved["list"] : []
+end
+
+def guidebookquest_gleyminn_save_request(list)
+  items = guidebookquest_saved_items
+  items["river_request"] = { "list" => list }
+  File.write(guidebookquest_items_path, items.to_yaml)
+  echo "guidebookquest: the boatsman wants #{list.join(', ')}."
+rescue StandardError
+  nil
+end
+
+def guidebookquest_gleyminn_found
+  guidebookquest_saved_labels("river_item_").map { |label| guidebookquest_saved_item(label) }
+end
+
+# True when a found item satisfies a requested one -- a match either way
+# round, so "fuzzy moss" covers "bit of fuzzy moss" and "mournbloom" covers
+# "velvety black mournbloom".
+def guidebookquest_gleyminn_same_item?(found, wanted)
+  a = guidebookquest_gleyminn_clean_name(found).downcase
+  b = guidebookquest_gleyminn_clean_name(wanted).downcase
+  return false if a.empty? || b.empty?
+
+  a.include?(b) || b.include?(a)
+end
+
+def guidebookquest_gleyminn_still_needed
+  found = guidebookquest_gleyminn_found.map { |item| item["name"].to_s }
+  guidebookquest_gleyminn_request.reject { |wanted| found.any? { |name| guidebookquest_gleyminn_same_item?(name, wanted) } }
+end
+
+# Done once everything on his list is found -- or, if his list was never
+# captured, once three items (what he always asks for) are in hand.
+def guidebookquest_gleyminn_done?
+  return guidebookquest_gleyminn_found.size >= 3 if guidebookquest_gleyminn_request.empty?
+
+  guidebookquest_gleyminn_still_needed.empty?
+end
+
+# Asks the boatsman and saves his list. Falls back to QUEST INFO's own
+# item list if he's already handed the quest out ("I don't need any help
+# right now.").
+def guidebookquest_gleyminn_ask_boatsman
+  2.times do
+    result = dothistimeout "ask boatsman about quest", 5, /Bring me|don't need any help/i
+    sleep 1
+    list = guidebookquest_gleyminn_parse_request(result)
+    unless list.empty?
+      guidebookquest_gleyminn_save_request(list)
+      return
+    end
+  end
+
+  list = guidebookquest_gleyminn_parse_request(guidebookquest_quest_info_text)
+  guidebookquest_gleyminn_save_request(list) unless list.empty?
+end
+
+# Confirmed live: each item's room is fixed -- only WHICH items the
+# boatsman wants varies run to run. A plain "search" only ever finds an
+# item he's actually asked for ("Your diligence pays off, and you locate a
+# water reed."); anywhere else it's "you don't find anything of
+# interest". Add more entries here as further item/room pairs are
+# confirmed live.
+GLEYMINN_KNOWN_ITEM_ROOMS = {
+  "fishing net" => "8083405",
+  "lily pad" => "8083412",
+  "fuzzy moss" => "8083419",
+  "water reed" => "8083424",
+  "leaf skeleton" => "8083422",
+  "mournbloom" => "8083398"
+}.freeze
+
+# Searches the current room; a find lands in the right hand and is
+# captured by its #id, saved, and stowed by id.
+def guidebookquest_gleyminn_search_room
+  label = "river_item_#{guidebookquest_gleyminn_found.size + 1}"
+  result = nil
+  item = guidebookquest_capture_new_item(label) do
+    result = dothistimeout "search", 5, /you locate|don't find anything|What were you/i
+    waitrt?
+  end
+  sleep 0.5
+  if item
+    left = guidebookquest_gleyminn_still_needed
+    echo "guidebookquest: found #{item.name} -- #{left.empty? ? 'that was the last one' : "still need #{left.join(', ')}"}."
+    fput "stow ##{item.id}"
+  elsif result =~ /you locate/i
+    fput "stow right"
+  end
+  sleep 0.5
+end
+
+# Visits the known room for each item still on the boatsman's list via go2
+# first -- much faster than the full maze search below when it's enough.
+def guidebookquest_gleyminn_try_known_rooms
+  return true if guidebookquest_gleyminn_done?
+
+  GLEYMINN_KNOWN_ITEM_ROOMS.each do |name, room|
+    needed = guidebookquest_gleyminn_still_needed
+    next unless guidebookquest_gleyminn_request.empty? || needed.any? { |wanted| guidebookquest_gleyminn_same_item?(name, wanted) }
+
+    Script.run("go2", go2_room("u#{room}"))
+    sleep 1
+    guidebookquest_gleyminn_search_room
+    return true if guidebookquest_gleyminn_done?
+  end
+  false
+end
+
+# Depth-first search: push an unexplored direction, recurse, and push the
+# opposite direction right back if that branch dead-ends or loops back to
+# an already-visited room -- until every requested item has been found.
+def guidebookquest_gleyminn_explore(visited = [])
+  visited << XMLData.room_id
+  guidebookquest_gleyminn_search_room
+  return true if guidebookquest_gleyminn_done?
+
+  guidebookquest_room_exits.each do |dir|
+    result = dothistimeout "push #{dir}", 5, /push a lantern-lit gondola|can't push a lantern-lit gondola/i
+    next if result =~ /can't push/i
+    waitrt?
+    sleep 1
+
+    if visited.include?(XMLData.room_id)
+      fput "push #{GLEYMINN_OPPOSITE_DIRECTION[dir]}"
+      waitrt?
+      sleep 1
+      next
+    end
+
+    return true if guidebookquest_gleyminn_explore(visited)
+
+    fput "push #{GLEYMINN_OPPOSITE_DIRECTION[dir]}"
+    waitrt?
+    sleep 1
+  end
+  false
+end
+
+# Confirmed live the boatsman takes one item per GIVE ("Grabbing at the
+# net you offer, a hunchbacked boatsman yanks it from your hands..."), so
+# each found item is handed over separately, by its own #id.
+def guidebookquest_gleyminn_hand_in
+  guidebookquest_saved_labels("river_item_").each do |label|
+    item = guidebookquest_saved_item(label)
+    fput "get ##{item['id']}"
+    sleep 0.5
+    fput "give ##{item['id']} to boatsman"
+    sleep 1
+    guidebookquest_forget_item(label)
+  end
+  guidebookquest_forget_item("river_request")
+end
+
+# Confirmed live: which room is correct for which item is NOT fixed --
+# it varies run to run (one run placed the pendant where the toqua went
+# on an earlier run, and vice versa), so there's no reliable per-item
+# room worth hardcoding. What IS consistent: every room that's ever
+# accepted a placement has "grave", "gravestone(s)", or "graveyard" in
+# its own room description, and every room without that wording in its
+# description always answers "This doesn't look like the right spot..."
+# (and just drops the item on the ground) -- so only cycle through
+# those rooms instead of the full graveyard. ("gravel" in a couple of
+# other rooms' descriptions is coincidental and deliberately excluded.)
+GRAVEYARD_TEMPORALIS_GRAVE_ROOMS = %w[
+  8083322 8083323 8083325 8083326 8083327 8083331 8083334 8083337 8083338
+  8083339 8083340 8083341 8083343 8083346 8083348 8083349 8083351 8083352
+  8083354 8083357
+].freeze
+
+# Quest items are referred to by their GameObj id ("#12345"), never by
+# adjective + noun. Confirmed live that names break: "get sash" grabbed an
+# unrelated "pewter-pinned auroralaen sash", and "pony pendant" didn't
+# resolve to the "cracked agate pony pendant" at all. Each item's id is
+# captured the moment it lands in hand and saved per character
+# (guidebookquest_items.yaml), so a restarted run still knows it.
+def guidebookquest_items_path
+  dir = File.join($data_dir.to_s, XMLData.game.to_s, Char.name.to_s)
+  FileUtils.mkdir_p(dir) unless Dir.exist?(dir)
+  File.join(dir, "guidebookquest_items.yaml")
+end
+
+def guidebookquest_saved_items
+  path = guidebookquest_items_path
+  data = File.exist?(path) ? YAML.load_file(path) : {}
+  data.is_a?(Hash) ? data : {}
+rescue StandardError
+  {}
+end
+
+def guidebookquest_remember_item(label, obj)
+  return unless label && obj&.id
+
+  items = guidebookquest_saved_items
+  items[label.to_s] = { "id" => obj.id.to_s, "name" => obj.name.to_s }
+  File.write(guidebookquest_items_path, items.to_yaml)
+  echo "guidebookquest: tracking #{obj.name} as ##{obj.id}."
+rescue StandardError => e
+  echo "guidebookquest: couldn't save item #{label} (#{e.message})."
+end
+
+def guidebookquest_forget_item(label)
+  items = guidebookquest_saved_items
+  return unless items.delete(label.to_s)
+
+  File.write(guidebookquest_items_path, items.to_yaml)
+rescue StandardError
+  nil
+end
+
+def guidebookquest_saved_item(label)
+  guidebookquest_saved_items[label.to_s]
+end
+
+# "#<id>" for a saved item, or the given fallback text when its id was
+# never captured (e.g. a run started before ids were tracked).
+def guidebookquest_item_ref(label, fallback)
+  item = guidebookquest_saved_item(label)
+  item ? "##{item['id']}" : fallback
+end
+
+def guidebookquest_saved_labels(prefix)
+  guidebookquest_saved_items.keys.select { |label| label.start_with?(prefix) }.sort
+end
+
+def guidebookquest_hand_items
+  [GameObj.right_hand, GameObj.left_hand].compact.select { |obj| obj.id }
+end
+
+# Runs the block, then returns whichever item showed up in hand that wasn't
+# there before it ran (guidebook excluded), saving its id under label.
+def guidebookquest_capture_new_item(label = nil, timeout: 3)
+  before = guidebookquest_hand_items.map(&:id)
+  yield
+  item = nil
+  (timeout * 10).to_i.times do
+    item = guidebookquest_hand_items.find { |obj| !before.include?(obj.id) && obj.name.to_s !~ /guidebook/i }
+    break if item
+
+    sleep 0.1
+  end
+  guidebookquest_remember_item(label, item) if label && item
+  item
+end
+
+# Confirmed live wording for the graveyard item-placement puzzle: a wrong
+# spot either rejects outright ("This doesn't look like the right spot
+# to place...", "You decide not to disturb this particular grave, as it
+# looks a bit fresh.") or just drops the item on the ground, while the
+# correct spot has an NPC spirit immediately take it ("With the utmost
+# care and respect, you place a ... beside ...").
+def guidebookquest_graveyard_try_place(ref)
+  fput "get #{ref}"
+  sleep 0.3
+  result = dothistimeout "place #{ref}", 5, /With the utmost care and respect|doesn't look like the right spot|decide not to disturb/i
+  result =~ /With the utmost care and respect/i
+end
+
+def guidebookquest_graveyard_place_item(ref, name = ref)
+  GRAVEYARD_TEMPORALIS_GRAVE_ROOMS.each do |room|
+    Script.run("go2", go2_room("u#{room}"))
+    sleep 1
+    return true if guidebookquest_graveyard_try_place(ref)
+  end
+  echo "guidebookquest: couldn't find a resting spot for the #{name} in any known grave/gravestone room -- leaving it for a manual PLACE."
+  false
+end
+
+# Confirmed live from a cold start: a character whose hands are already
+# full (e.g. a drawn weapon and shield) can't just "get guidebook" --
+# "Both of your hands are full.  You'll need to put something away
+# before you can pick anything up." -- stow everything and retry.
+def guidebookquest_guidebook_in_hand?
+  [GameObj.right_hand, GameObj.left_hand].compact.any? { |item| item.name =~ /guidebook/i }
+end
+
+# A carried guidebook answers GET with "You remove a shadowy leatherbound
+# guidebook from in your fleece-lined cloak." (Davu, 2026-11-02). In the
+# clerk's room GET may answer for her counter instead, so if no guidebook
+# reached a hand, GET MY GUIDEBOOK fetches the carried one.
+def guidebookquest_ensure_guidebook_in_hand
+  return if guidebookquest_guidebook_in_hand?
+
+  result = dothistimeout "get guidebook", 5, /which attunes to you|You remove|Both of your hands are full|Get what\?/i
+  if result =~ /Both of your hands are full/i
+    fput "stow all"
+    sleep 1
+    fput "get guidebook"
+  end
+  sleep 1
+  fput "get my guidebook" unless result =~ /Get what\?/i || guidebookquest_guidebook_in_hand?
+end
+
+# Confirmed live (Davu, 2026-11-02): OPEN on a book that's already open
+# stays on its current page ("Your leatherbound guidebook is already
+# open."), so a guidebook left open on a later chapter is closed and
+# reopened to get back to Chapter 1.
+def guidebookquest_open_to_first_page
+  result = dothistimeout "open my guidebook", 5, /You open your|already open|What were you referring to/i
+  return unless result =~ /already open/i
+
+  fput "close my guidebook"
+  fput "open my guidebook"
+end
+
+# Maps a QUEST INFO objective's own wording (left) to the matching
+# guidebook INCOMPLETE trigger text (right, copy-pasted verbatim from
+# that chapter's own "elsif line =~ /.../ " in guidebookquest_dispatch
+# below) -- once an objective is mapped, that chapter's existing
+# dispatch logic handles it regardless of whether the script arrived
+# there via the book or via QUEST INFO. Entries below are pre-filled
+# with each chapter's trigger_line; only the left-hand placeholder
+# regex (/FILL_IN_CHAPTER_N/) needs replacing once that chapter's real
+# QUEST INFO wording is confirmed live -- leave a placeholder as-is
+# (it can never accidentally match real game text) for any chapter not
+# yet confirmed.
+QUEST_INFO_TRIGGER_MAP = {
+  # Chapter 1 -- Welcome to the Unliving (Town Hall / get the guidebook).
+  # Low value to map -- this step happens before QUEST INFO is even
+  # meaningful -- but left in for completeness.
+  /Travel to Town Hall and speak with the skeletal town hall clerk/i => "You can't do that",
+  # Chapter 2 -- Evermore Hollow Town Proper (merchant visits)
+  /FILL_IN_CHAPTER_2/i => "Seek out various merchants in Evermore Hollow and speak with them about a variety of topics",
+  # Chapter 3 -- Evermore Hollow Hotel (bellhop/paintings)
+  /Visit the bellhop at the Evermore Hotel/i => "The bellhop may have information that you want to hear",
+  # Chapter 3 recovery -- the magnifying glass has already been handed
+  # out at this point, so this skips straight to the painting-waving
+  # (see the CHAPTER 3 RECOVERY branch in guidebookquest_dispatch below)
+  # instead of re-running the whole bellhop hunt for a second glass.
+  /Investigate the three paintings in the Evermore Hotel/i => "WAVE GLASS AT PAINTINGS",
+  # Chapter 3, last step -- paintings already done, only the glass is left
+  # to hand back (see the CHAPTER 3 HAND-IN branch in guidebookquest_dispatch).
+  /Return the magnifying glass to the bellhop/i => "RETURN GLASS TO BELLHOP",
+  # Chapter 4 -- Fate's Holding (skeleton convict/wine)
+  /Look for the skeleton convict in Fate's Holding/i => "Be on the lookout for a skeleton convict somewhere in Fate",
+  # Chapter 5 -- Innocent's End (stuffed bear)
+  /Visit an eyepatch-clad stuffed toy bear in Innocent's End/i => "An unlikely assistant you will find in Innocent",
+  # Chapter 6 -- Vigil's End (legionnaire/monocle)
+  /Speak to the legionnaire in Vigil's End to see if she has any quests she needs completed/i => "Speak with the legionnaire in Vigil's End",
+  # Chapter 6 recovery -- confirmed live the book can keep flipping
+  # forward through every later chapter while this never gets resolved,
+  # if the final "give legionnaire" silently failed earlier (see the
+  # CHAPTER 6 RECOVERY branch in guidebookquest_dispatch below). Doesn't
+  # re-run the whole hunt/placement sequence -- just finishes handing in
+  # the monocle.
+  /Return the monocle to the legionnaire in Vigil's End/i => "RETURN MONOCLE TO LEGIONNAIRE",
+  # Chapter 7 -- snowman/paper
+  /Find a friendly snowman in Winterbriar and ask if it has any quests for you./i => 'Find a "snowkin", of sorts, with a welcoming personality',
+  # Chapter 8 -- Moorlyn (ghoul/scale)
+  /Head to Moorlyn and find the wandering ghoul to ask if he needs any assistance with a quest./i => "Head to Moorlyn and search for the truth",
+  # Chapter 8, further along -- already in the swamp with the ghoul
+  # asked, just need the pile search and scale (see the CHAPTER 8
+  # RECOVERY branch in guidebookquest_dispatch below).
+  /Thoroughly look around Moorlyn for a way to balance the scales/i => "MOORLYN SCALE RESUME",
+  # Chapter 9 -- Graveyard Temporalis (spirit/lily)
+  /Find the spirit in the Graveyard Temporalis./i => "Graves and tombstones in graveyards hold information, and the ones in the Graveyard Temporalis are no exception",
+  # Chapter 10 -- Bittermere Woods (wandering spirit/lily)
+  /Find the luminous cyan-hued spirit in Bittermere Woods and ask if she has any quests for you./i => "This quest begins with a luminous cyan-hued spirit in Bittermere Woods",
+  # Chapter 11 -- Gleyminn Anni River (boatsman)
+  /Ask the boatsman in the Gleyminn Anni River area if he has any quests for you.|The boatsman requested that you find the following items/i => "This quest begins with a hunchbacked boatsman in the Gleyminn Anni River area",
+  # Chapter 12 -- Ember Ridge Orchard (hide-and-seek hat hunt)
+  /Find the scarecrow in Ember Ridge Orchard.|Thoroughly look around Ember Ridge Orchard for the hat./i => "Don't let it scare you away",
+  # Chapter 13 -- Ember Ridge Orchard (pumpkin carving/PLACE JACK)
+  /Visit the pumpkin patch in Ember Ridge Orchard./i => "You can find all you need in Ember Ridge Orchard",
+  # Chapter 14 -- Epilogue/merchant listing
+  /FILL_IN_CHAPTER_14/i => "This quest is incomplete"
+}.freeze
+
+# QUEST INFO is checked FIRST, ahead of the guidebook, both at startup
+# and after every chapter completion -- confirmed live its wording for
+# the same step doesn't always match the guidebook's own text, and a
+# repeat questor (quest completed in a prior year) finds every chapter
+# of the guidebook reads back as already complete, sometimes cascading
+# through several already-complete pages in a row via the generic "You
+# completed this chapter" trigger with no useful INCOMPLETE text at all.
+# QUEST_INFO_TRIGGER_MAP maps a QUEST INFO objective's own wording to
+# the guidebook INCOMPLETE trigger text for the SAME chapter, so once an
+# objective is mapped here, that chapter's existing dispatch logic
+# handles it either way the script arrives there -- add more entries as
+# further QUEST INFO wording gets confirmed live. Only once nothing here
+# matches does the caller fall back to reading the book and letting its
+# own per-chapter triggers take it from there.
+def guidebookquest_quest_info_redirect
+  text = guidebookquest_quest_info_text
+  return false if text.empty?
+
+  objective = guidebookquest_quest_objective(text)
+  QUEST_INFO_TRIGGER_MAP.each do |regex, trigger_line|
+    next unless objective =~ regex
+    return true unless guidebookquest_note_redirect(objective)
+
+    echo "guidebookquest: QUEST INFO objective -- #{objective} -- resuming at the matching chapter."
+    guidebookquest_dispatch(trigger_line)
+    return true
+  end
+  false
+end
+
+# Chapter 3's bellhop wanders rather than sitting in a fixed room, so he's
+# found by visiting each of these rooms in order and stopping at the first
+# one he's in. Inside the hotel (every uid seen on a full circuit: Foyer,
+# Hallway, Grand Hall, Sitting Room, Lounge, Restaurant, Solarium,
+# Platform, Bar, Dressing Room, the upstairs Hallway, Basement, Wine
+# Cellar, Mud Baths, Stair Base) -- and, confirmed live, he also roams out
+# through the Solarium's ebonwood doors onto the patio and through the
+# garden maze behind the Black Gate (seen in Gardens u8087278).
+BELLHOP_HOTEL_ROOMS = %w[
+  8083011 8087101 8087102 8087163 8087124 8087149 8087128 8087162 8087126
+  8087103 8087125 8087160 8087165 8087166 8087167 8087161
+].freeze
+
+# Walking order through the grounds, starting from the Solarium's doors:
+# Garden Patio, west and east Patio, Black Gate, then the west half of the
+# maze (in via the western pathway), then the east half (northeast loop,
+# the eastern-pathway branch, and the southeast loop where he was seen).
+BELLHOP_GARDEN_ROOMS = %w[
+  8087283 8087299 8087297 8087276
+  8087270 8087264 8087269 8087275 8087280 8087279 8087274 8087268 8087262 8087263
+  8087260 8087258 8087261 8087259 8087265 8087271
+  8087272 8087277 8087281 8087282 8087278 8087273 8087267 8087266
+].freeze
+
+def guidebookquest_find_bellhop
+  (BELLHOP_HOTEL_ROOMS + BELLHOP_GARDEN_ROOMS).each do |room|
+    Script.run("go2", go2_room("u#{room}"))
+    return true if GameObj.npcs.any? { |npc| npc.name =~ /bellhop/i }
+  end
+  false
+end
+
+def guidebookquest_dispatch(line)
+  ##############################################################################
+  # CHAPTER 1 INCOMPLETE
+  if line =~ /You can't do that/
+    # A guidebook that's already in hand goes away first (once per run), so
+    # it gets picked up in the clerk's room the way a new character does it
+    # (Picko, 2026-11-02: "Ah, I see you've got your hands on one of our
+    # guidebooks.  Excellent!" right after GET GUIDEBOOK there).
+    if !@guidebookquest_regot_book && guidebookquest_guidebook_in_hand?
+      fput "stow my guidebook"
+      @guidebookquest_regot_book = true
+    end
+    Script.run("go2", go2_room("u8084004"))
+    guidebookquest_ensure_guidebook_in_hand
+    guidebookquest_open_to_first_page
+    fput "read my guidebook"
+  # CHAPTERS 1-12 COMPLETED (generic)
+  #
+  # Each chapter used to be matched on its own unique bit of completed
+  # flavor text (e.g. Chapter 1's was literally "By now you have noticed
+  # our twilight skies and cobbled streets"). That's risky: some of those
+  # lines read exactly like an ordinary room description (Chapter 8's old
+  # trigger, "Positioned on the outskirts of Bittermere Woods, Moorlyn",
+  # is basically indistinguishable from one), so the script could flip
+  # the guidebook forward from a line that had nothing to do with the
+  # chapter actually being finished. "You completed this chapter." is
+  # the one confirmed-live phrase that's never ambiguous -- it's the
+  # game's own confirmation, not narrative text -- so that's the only
+  # thing allowed to trigger a flip now. (Chapter 13's completion uses
+  # its own separate trigger below, since it also needs to run
+  # guidebookquest_discard_pile_items.)
+  elsif line =~ /You completed this chapter/
+    guidebookquest_log_quest_info
+    fput "flip my guidebook"
+    sleep 1
+    # Always check QUEST INFO first now, rather than trusting whatever
+    # page the book landed on: confirmed live its wording can differ
+    # from the guidebook's own text for the same step, and for a repeat
+    # questor the book can cascade through several already-complete
+    # pages in a row with no useful INCOMPLETE text at all. A known
+    # QUEST INFO objective dispatches straight to the matching chapter
+    # (see QUEST_INFO_TRIGGER_MAP/guidebookquest_quest_info_redirect) --
+    # only fall back to reading the book, and letting its own per-
+    # chapter triggers handle whatever it shows, when QUEST INFO doesn't
+    # match anything mapped yet.
+    unless guidebookquest_quest_info_redirect
+      fput "read my guidebook"
+      sleep 1
+    end
+  ##############################################################################
+  # CHAPTER 2 INCOMPLETE
+  elsif line =~ /Seek out various merchants in Evermore Hollow and speak with them about a variety of topics/
+    fput "stow my guidebook"
+    Script.run("go2", go2_room("u8084052"))
+    fput "ask witch about quest"
+    Script.run("go2", go2_room("u8084066"))
+    fput "ask spectre about quest"
+    Script.run("go2", go2_room("u8084071"))
+    fput "ask zombie about quest"
+    Script.run("go2", go2_room("u8084056"))
+    fput "ask cailleach about quest"
+    Script.run("go2", go2_room("u8084061"))
+    fput "ask korrigan about quest"
+    Script.run("go2", go2_room("u8084062"))
+    fput "ask korrigan about quest"
+    Script.run("go2", go2_room("u8084076"))
+    fput "ask skeleton about quest"
+    Script.run("go2", go2_room("u8084077"))
+    fput "ask skeleton about quest"
+    fput "get my guidebook"
+    fput "read my guidebook"
+  ##############################################################################
+  # CHAPTER 3 INCOMPLETE
+  elsif line =~ /The bellhop may have information that you want to hear/
+    fput "stow my guidebook"
+    # The bellhop wanders the hotel rather than sitting in a fixed room,
+    # so this walks the hotel's own rooms (every uid seen on a full
+    # circuit: Foyer, Hallway, Grand Hall, Sitting Room, Lounge,
+    # Restaurant, Solarium, Platform, Bar, Dressing Room, the upstairs
+    # Hallway, Basement, Wine Cellar, Mud Baths, Stair Base) checking for
+    # it at each stop, instead of the old fixed list of (wrong) room ids
+    # that assumed it was in all 14 at once. Used twice below: once to
+    # find it for the initial ask (which hands over a magnifying glass),
+    # once more afterward to hand the glass back in, since it may have
+    # wandered off in between.
+    if guidebookquest_find_bellhop
+      guidebookquest_capture_new_item("glass") { fput "ask bellhop about quest" }
+    else
+      echo "guidebookquest: bellhop not found anywhere in the hotel, patio, or gardens."
+    end
+
+    # Three rooms confirmed live to have a paintable painting: the
+    # bellhop's own upstairs Hallway, the Stair Base, and the Lounge.
+    # "wave glass at painting" is harmless to repeat ("You already
+    # investigated that painting."), so revisiting one already done from
+    # an earlier partial run isn't a problem.
+    painting_rooms = %w[8087160 8087161 8087149]
+    glass = guidebookquest_item_ref("glass", "my glass")
+    painting_rooms.each do |room|
+      Script.run("go2", go2_room("u#{room}"))
+      # Make sure the glass is actually in hand before waving it.
+      fput "get #{glass}"
+      fput "wave #{glass} at painting"
+    end
+
+    if guidebookquest_find_bellhop
+      glass = guidebookquest_item_ref("glass", "my glass")
+      fput "get #{glass}"
+      fput "give #{glass} to bellhop"
+    else
+      echo "guidebookquest: bellhop not found for the magnifying glass hand-in."
+    end
+
+    fput "stow all"
+    fput "get my guidebook"
+    fput "read my guidebook"
+  ##############################################################################
+  # CHAPTER 3 RECOVERY (QUEST INFO only -- see QUEST_INFO_TRIGGER_MAP)
+  #
+  # QUEST INFO's "Investigate the three paintings..." objective means
+  # the magnifying glass has already been handed out -- re-running the
+  # full Chapter 3 branch above would send the script hunting for the
+  # bellhop to ask for a SECOND glass it doesn't need. This skips
+  # straight to waving it at the three known painting rooms and handing
+  # it back in.
+  elsif line == "WAVE GLASS AT PAINTINGS"
+    fput "stow my guidebook"
+    painting_rooms = %w[8087160 8087161 8087149]
+    glass = guidebookquest_item_ref("glass", "my glass")
+    painting_rooms.each do |room|
+      Script.run("go2", go2_room("u#{room}"))
+      # Make sure the glass is actually in hand before waving it.
+      fput "get #{glass}"
+      fput "wave #{glass} at painting"
+    end
+
+    if guidebookquest_find_bellhop
+      glass = guidebookquest_item_ref("glass", "my glass")
+      fput "get #{glass}"
+      fput "give #{glass} to bellhop"
+    else
+      echo "guidebookquest: bellhop not found for the magnifying glass hand-in."
+    end
+
+    fput "stow all"
+    fput "get my guidebook"
+    fput "read my guidebook"
+  ##############################################################################
+  # CHAPTER 3 HAND-IN (QUEST INFO only -- see QUEST_INFO_TRIGGER_MAP)
+  #
+  # QUEST INFO's "Return the magnifying glass to the bellhop at the
+  # Evermore Hotel." means all three paintings are already investigated --
+  # skip straight to finding the bellhop and handing the glass back.
+  elsif line == "RETURN GLASS TO BELLHOP"
+    fput "stow my guidebook"
+    if guidebookquest_find_bellhop
+      glass = guidebookquest_item_ref("glass", "my glass")
+      fput "get #{glass}"
+      fput "give #{glass} to bellhop"
+    else
+      echo "guidebookquest: bellhop not found for the magnifying glass hand-in."
+    end
+
+    fput "stow all"
+    fput "get my guidebook"
+    fput "read my guidebook"
+  ##############################################################################
+  # CHAPTER 4 INCOMPLETE
+  elsif line =~ /Be on the lookout for a skeleton convict somewhere in Fate|Look for the skeleton convict in Fate\'s Holding/
+    fput "stow my guidebook"
+    sleep 1
+    # Fate's Holding, The Cell -- the skeleton convict asks for wine from
+    # "the witch" (the gjenganger next door) in exchange for pages.
+    Script.run("go2", go2_room("u8083134"))
+    fput "ask skeleton about quest"
+    sleep 1
+    # Fate's Holding, The Cauldron -- asking the gjenganger about drink
+    # hands over a corked bottle of wine directly.
+    Script.run("go2", go2_room("u8083133"))
+    guidebookquest_capture_new_item("wine") { fput "ask gjeng about drink" }
+    sleep 1
+    Script.run("go2", go2_room("u8083134"))
+    # Giving the wine prompts a 30-second confirmation window ("please do
+    # so again in the next 30 seconds") before the skeleton actually
+    # takes it and drinks it -- the second give below satisfies that.
+    # He ends up too distracted to hand over the promised pages either
+    # way; this step is still "the chapter's done" per the guidebook, not
+    # a failure to recover from.
+    fput "give #{guidebookquest_item_ref('wine', 'my bottle')} to skeleton"
+    sleep 1
+    fput "give #{guidebookquest_item_ref('wine', 'my bottle')} to skeleton"
+    sleep 1
+    fput "get my guidebook"
+    sleep 1
+    # No blind flip here -- let the generic "You completed this chapter"
+    # trigger decide whether this actually finished; flipping
+    # unconditionally risked skipping the chapter even when it hadn't
+    # (confirmed live elsewhere: Chapter 10's copy of this same pattern
+    # flipped straight past an unfinished chapter into the next one).
+    fput "read my guidebook"
+    sleep 1
+  ##############################################################################
+  # CHAPTER 5 INCOMPLETE
+  elsif line =~ /An unlikely assistant you will find in Innocent|Visit an eyepatch\-clad stuffed toy bear in Innocent\'s End and ask about the quest/
+    fput "stow my guidebook"
+    sleep 1
+    # Innocent's End, The Carefree -- Stuffy (the stuffed toy bear) hands
+    # out this chapter's three tasks one at a time, each handing the
+    # needed item straight into your right hand (no separate GET needed).
+    # Only one "ask bear about quest" per visit is needed; the second ask
+    # in the old version just got "I don't need any help right now."
+    bear_room = "u8083123"
+    Script.run("go2", go2_room(bear_room))
+    guidebookquest_capture_new_item("seeds") { fput "ask bear about quest" }
+    sleep 1
+
+    # Task 1: plant the seeds by the otter-shaped fountain in The
+    # Zoophilist.
+    Script.run("go2", go2_room("u8083119"))
+    fput "bury #{guidebookquest_item_ref('seeds', 'seeds')}"
+    waitrt?
+    Script.run("go2", go2_room(bear_room))
+    guidebookquest_capture_new_item("flag") { fput "ask bear about quest" }
+    sleep 1
+
+    # Task 2: wave the flag at the ship-shaped buildings in The
+    # Adventurers to get the cannon-firing children to cease fire.
+    # Waving it anywhere else along the way is a harmless no-op ("You
+    # wave your white flag around.") -- only this room actually
+    # completes the task.
+    Script.run("go2", go2_room("u8083122"))
+    fput "wave #{guidebookquest_item_ref('flag', 'flag')}"
+    waitrt?
+    Script.run("go2", go2_room(bear_room))
+    guidebookquest_capture_new_item("boat") { fput "ask bear about quest" }
+    sleep 1
+
+    # Task 3: wave the toy boat in The Destroyed to coax the hiding
+    # children out.
+    Script.run("go2", go2_room("u8083116"))
+    fput "wave #{guidebookquest_item_ref('boat', 'my boat')}"
+    waitrt?
+
+    fput "get my guidebook"
+    sleep 1
+    fput "read my guidebook"
+    sleep 1
+  ##############################################################################
+  # CHAPTER 6 INCOMPLETE
+  elsif line =~ /Speak with the legionnaire in Vigil\'s End|Speak to the legionnaire in Vigil\'s End to see if she has any quests she needs completed/
+    fput "stow my guidebook"
+    sleep 1
+    # Vigil's End, Armistice Avenue -- the legionnaire hands over a
+    # mithril-edged monocle directly; only one ask is needed.
+    Script.run("go2", go2_room("u8083102"))
+    guidebookquest_capture_new_item("monocle") { fput "ask legion about quest" }
+    sleep 1
+
+    # "Observe mithril monocle" at each of these five rooms finds one
+    # specific hidden item (confirmed live -- a much larger set of rooms
+    # were tried along the way and all came back "you don't see anything
+    # of note," these five are the only ones that actually have
+    # something): a bloodstained torn linen toqua, a fire-scorched
+    # leather headband, a sodden elesine sash, a cracked agate pony
+    # pendant, and a fractured vultite armband. The game itself announces
+    # "You found all the items" after the fifth.
+    monocle_item_rooms = %w[8083101 8083098 8083089 8083096 8083097]
+    monocle_item_rooms.each_with_index do |room, idx|
+      Script.run("go2", go2_room("u#{room}"))
+      relic = guidebookquest_capture_new_item("relic_#{idx + 1}") do
+        fput "observe #{guidebookquest_item_ref('monocle', 'mithril monocle')}"
+      end
+      sleep 1
+      fput "stow ##{relic.id}" if relic
+      sleep 1
+    end
+
+    # Confirmed live: each item has its own correct grave/marker in the
+    # Graveyard Temporalis -- a spirit NPC shows up and takes it the
+    # moment it's placed in the right spot (see
+    # GRAVEYARD_TEMPORALIS_GRAVE_ROOMS above for why which room is which
+    # isn't hardcoded). Each relic is placed by its own id; a relic
+    # that's been laid to rest is forgotten so a rerun doesn't go hunting
+    # for it again. The two-word descriptors are only a fallback for a run
+    # that found its relics before ids were tracked.
+    relic_labels = guidebookquest_saved_labels("relic_")
+    if relic_labels.empty?
+      ["vultite armband", "elesine sash", "pony pendant", "linen toqua", "leather headband"].each do |descriptor|
+        guidebookquest_graveyard_place_item(descriptor)
+      end
+    else
+      relic_labels.each do |label|
+        relic = guidebookquest_saved_item(label)
+        guidebookquest_forget_item(label) if guidebookquest_graveyard_place_item("##{relic['id']}", relic['name'])
+      end
+    end
+
+    Script.run("go2", go2_room("u8083102"))
+    sleep 1
+    # Confirmed live: without this, "give legionnaire" can silently fail
+    # or give the wrong item if the monocle got stowed away at some
+    # point during the graveyard placement loop above (which repeatedly
+    # swaps hands for other items) -- make sure it's actually in hand
+    # first.
+    monocle = guidebookquest_item_ref("monocle", "my mithril monocle")
+    fput "get #{monocle}"
+    sleep 1
+    fput "give #{monocle} to legionnaire"
+    fput "get my guidebook"
+    sleep 1
+    fput "read my guidebook"
+    sleep 1
+  ##############################################################################
+  # CHAPTER 6 RECOVERY (QUEST INFO only -- see QUEST_INFO_TRIGGER_MAP)
+  #
+  # Confirmed live: a character can end up with the guidebook already
+  # flipped all the way to Chapter 14 while QUEST INFO still says
+  # "Return the monocle to the legionnaire in Vigil's End." -- the
+  # monocle hunt and graveyard placements from Chapter 6 above had
+  # already been done, but the final "give legionnaire" silently failed
+  # (the monocle wasn't in hand -- see the fix above), and the book kept
+  # right on advancing through every later chapter regardless, with
+  # nothing in their own INCOMPLETE text ever pointing back at this.
+  # Re-running the whole Chapter 6 sequence from scratch would be wrong
+  # at that point (the hunt/placements are already done); this just
+  # finishes the one actual remaining step.
+  elsif line == "RETURN MONOCLE TO LEGIONNAIRE"
+    Script.run("go2", go2_room("u8083102"))
+    sleep 1
+    monocle = guidebookquest_item_ref("monocle", "my mithril monocle")
+    fput "get #{monocle}"
+    sleep 1
+    fput "give #{monocle} to legionnaire"
+    sleep 1
+  ##############################################################################
+  # CHAPTER 7 INCOMPLETE
+  elsif line =~ /Find a "snowkin", of sorts, with a welcoming personality/
+    fput "stow my guidebook"
+    sleep 1
+    # If a snow white piece of paper is already on hand (hands or
+    # inventory -- e.g. the script got interrupted and restarted
+    # mid-chapter), skip dropping it and asking the snowman for a fresh
+    # one; just re-whisper every answer onto the one we've already got
+    # and go straight to the hand-in.
+    already_have_paper = [GameObj.right_hand, GameObj.left_hand, *Array(GameObj.inv)]
+                          .compact.any? { |item| item.name.to_s =~ /white paper/i || item.noun.to_s =~ /paper/i }
+
+    if already_have_paper
+      Script.run("go2", go2_room("u8083070"))
+    else
+      fput "drop my white paper"
+      sleep 1
+      Script.run("go2", go2_room("u8083070"))
+      guidebookquest_capture_new_item("paper") { fput "ask snowman about quest" }
+      sleep 1
+    end
+    fput "whisper my white paper 1 snowman"
+    sleep 1
+    fput "whisper my white paper 2 garden of shadows"
+    sleep 1
+    fput "whisper my white paper 3 ten"
+    sleep 1
+    fput "whisper my white paper 4 ianthine"
+    sleep 1
+    fput "whisper my white paper 5 unicorn"
+    sleep 1
+    fput "whisper my white paper 6 aconite"
+    sleep 1
+    fput "give #{guidebookquest_item_ref('paper', 'my white paper')} to snowman"
+    fput "get my guidebook"
+    sleep 1
+    fput "read my guidebook"
+    sleep 1
+  ##############################################################################
+  # CHAPTER 8 INCOMPLETE
+  elsif line =~ /Head to Moorlyn and search for the truth/
+    fput "stow my guidebook"
+    sleep 1
+    Script.run("go2", go2_room("u8083054"))
+    sleep 1
+    guidebookquest_moorlyn_ask_ghoul
+    guidebookquest_moorlyn_resume
+  ##############################################################################
+  # CHAPTER 8 RECOVERY (QUEST INFO only -- see QUEST_INFO_TRIGGER_MAP)
+  #
+  # QUEST INFO's "Thoroughly look around Moorlyn for a way to balance
+  # the scales." means the character is already in the swamp -- skips
+  # the entrance/go2/ask-ghoul bootstrap above and goes straight to the
+  # pile search and scale balancing.
+  elsif line == "MOORLYN SCALE RESUME"
+    guidebookquest_moorlyn_resume
+  ##############################################################################
+  # CHAPTER 9 INCOMPLETE
+  elsif line =~ /Graves and tombstones in graveyards hold information, and the ones in the Graveyard Temporalis are no exception/
+    fput "tell spirit to leave" if Spell[218].active?
+    fput "stow my guidebook"
+    sleep 1
+    # Confirmed live: just the one spirit, in the Graveyard Temporalis
+    # itself (RN 8083327) -- the earlier 5-room LN loop was unconfirmed
+    # guesswork and wrong.
+    Script.run("go2", go2_room("u8083327"))
+    # Confirmed live: a plain "spirit" can hit a vaporous spirit (spell 218
+    # servant or another player's) sharing the room instead of the quest's
+    # veil-clad spirit ("Maybe you shouldn't be giving your things to
+    # vaporous spirits that you don't know?") -- always address her by id.
+    veil = GameObj.npcs.find { |npc| npc.name =~ /veil-clad/i }
+    veil_ref = veil ? "##{veil.id}" : "veil-clad spirit"
+    fput "ask #{veil_ref} about quest"
+    sleep 1
+
+    # A lily the character already has (handed over by another player, or
+    # found on an earlier run) skips foraging entirely. Hands first, then
+    # the rest of the inventory -- "get my vampire lily" searches every
+    # worn container itself, so a stowed one comes out into hand.
+    find_held_lily = -> { [GameObj.right_hand, GameObj.left_hand].compact.find { |obj| obj.name =~ /vampire lily/i } }
+    held_lily = find_held_lily.call
+    unless held_lily
+      saved_lily = guidebookquest_saved_item("lily")
+      ["#{saved_lily ? "##{saved_lily['id']}" : nil}", "my vampire lily"].reject(&:empty?).each do |ref|
+        dothistimeout "get #{ref}", 3, /You remove|You get|You pick up|You grab|Get what\?|What were you|could not find|already/i
+        sleep 0.5
+        held_lily = find_held_lily.call
+        break if held_lily
+      end
+    end
+    if held_lily
+      echo "guidebookquest: already have a #{held_lily.name} -- skipping the forage."
+      guidebookquest_remember_item("lily", held_lily)
+    end
+
+    lily_found = !held_lily.nil?
+    unless lily_found
+      guidebookquest_capture_new_item("lily", timeout: 2) do
+        # Confirmed live command is "forage black lily" (the item that comes
+        # back is "a matte black vampire lily"). Foraging skill decides it --
+        # a low-skill character can fail every try ("You forage around but
+        # find nothing of interest." / "You stumble about in a fruitless
+        # attempt at foraging.").
+        10.times do
+          result = dothistimeout "forage black lily", 5, /nothing of interest|fruitless attempt|manage to find a matte black vampire lily/
+          waitrt?
+          if result =~ /manage to find a matte black vampire lily/
+            lily_found = true
+            break
+          end
+        end
+      end
+    end
+
+    if lily_found
+      # Giving the lily by its own id sidesteps which hand it's in (a plain
+      # "give spirit" with the guidebook in the other hand gives the
+      # GUIDEBOOK instead -- confirmed live).
+      lily = guidebookquest_item_ref("lily", "my black lily")
+      fput "get #{lily}"
+      sleep 0.3
+      fput "give #{lily} to #{veil_ref}"
+      sleep 1
+    else
+      echo "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+      echo "  Couldn't forage a black vampire lily after 10 tries "
+      echo "  -- foraging skill is likely too low.               "
+      echo "  Get a matte black vampire lily from another player,"
+      echo "  then GIVE OTHER SPIRIT (the veil-clad spirit here). "
+      echo "  Once she has it, ;unpause fizzguide.               "
+      echo "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+      pause_script Script.current.name
+      # Pausing only sets a flag -- actually hold here until ;unpause.
+      sleep 0.5 while Script.current.paused?
+    end
+    fput "get my guidebook"
+    sleep 1
+    # No blind flip here -- see the note on this same removed pattern in
+    # Chapter 4; let the generic "You completed this chapter" trigger
+    # decide whether this actually finished.
+    fput "read my guidebook"
+    sleep 1
+  ##############################################################################
+  # CHAPTER 10 INCOMPLETE
+  elsif line =~ /This quest begins with a luminous cyan-hued spirit in Bittermere Woods/
+    fput "tell spirit to leave" if Spell[218].active?
+    fput "stow my guidebook"
+    sleep 1
+    # Confirmed live: the spirit wanders Bittermere Woods rather than
+    # sitting still at Convergence (RN 8083262, where it was first seen)
+    # -- walk the zone's known rooms checking for it, same pattern as
+    # Chapter 3's wandering bellhop, instead of assuming it's always at
+    # one fixed spot.
+    bittermere_spirit_rooms = %w[8083262 8083253 8083250 8083247 8083256 8083259
+                                  8083258 8083255 8083252 8083248 8083251 8083268
+                                  8083271 8083275 8083278 8083283 8083276 8083267
+                                  8083270 8083273 8083277 8083279 8083272]
+    find_spirit = lambda do
+      bittermere_spirit_rooms.each do |room|
+        Script.run("go2", go2_room("u#{room}"))
+        return true if GameObj.npcs.any? { |npc| npc.name =~ /spirit/i }
+      end
+      false
+    end
+
+    if find_spirit.call
+      fput "ask spirit about quest"
+      sleep 1
+    end
+
+    # The azure calla lily room itself is fixed (RN 8083275) regardless
+    # of where the spirit was found; asking it tells you to drink from
+    # the magic, and a plain "get lily" there does the drinking itself
+    # (no separate "drink lily" needed -- that failed live with "But you
+    # are not holding an oversized azure calla lily.").
+    Script.run("go2", go2_room("u8083275"))
+    fput "get lily"
+    sleep 1
+    fput "get my guidebook"
+    sleep 1
+    # No blind flip here -- this was exactly the bug confirmed live: it
+    # flipped straight past Chapter 10 into Chapter 11 even when "get
+    # lily" hadn't actually finished the chapter. Let the generic "You
+    # completed this chapter" trigger decide.
+    fput "read my guidebook"
+    sleep 1
+  ##############################################################################
+  # CHAPTER 11 INCOMPLETE
+  elsif line =~ /This quest begins with a hunchbacked boatsman in the Gleyminn Anni River area/
+    fput "stow my guidebook"
+    sleep 1
+    Script.run("go2", go2_room("u8083384"))
+    guidebookquest_gleyminn_ask_boatsman
+
+    # Confirmed live: the sailcloth sack puzzle (and its "observe") is
+    # gone. The river itself is a real maze of fixed rooms reachable only
+    # by pushing the gondola -- no hardcoded direction list survives a
+    # replay. Each item's own room IS fixed, though (only which items the
+    # boatsman currently wants varies), so try the growing list of known
+    # item rooms directly first (GLEYMINN_KNOWN_ITEM_ROOMS) before falling
+    # back to the full depth-first search for anything still missing.
+    unless guidebookquest_gleyminn_try_known_rooms
+      Script.run("go2", go2_room("u8083384"))
+      sleep 1
+      guidebookquest_gleyminn_explore
+    end
+    echo "guidebookquest: all of the boatsman's items found -- heading back." if guidebookquest_gleyminn_done?
+
+    Script.run("go2", go2_room("u8083384"))
+    waitrt?
+    sleep 1
+    Script.run("go2", go2_room("u8083384"))
+    waitrt?
+    sleep 1
+    guidebookquest_gleyminn_hand_in
+    fput "get my guidebook"
+    sleep 1
+    fput "read my guidebook"
+    sleep 1
+  ##############################################################################
+  # CHAPTER 12 INCOMPLETE
+  elsif line =~ /Don't let it scare you away/
+    fput "stow my guidebook"
+    sleep 1
+    Script.run("go2", go2_room("u8083174"))
+    sleep 1
+    # The hide-and-seek scavenger hunt: a fixed walk-and-search route
+    # recorded for this layout. Like Chapter 11's sailcloth sack, this
+    # doesn't adapt to a reshuffled layout -- fall back to exploring and
+    # searching by hand if it stops matching. The hat only turns up at
+    # one spot; guidebookquest_tap_hat_step detects it, taps it, and
+    # returns :found, so the route stops as soon as that happens instead
+    # of walking the rest of it pointlessly.
+    hat_hunt_route = [
+      ["tap hat on scarecrow", "get hat on sign", "get hat behind sign"],
+      ["nw", "get hat", "get hat on bench"],
+      ["se", "sw", "get hat", "get hat on patch"],
+      ["sw", "get hat", "get hat on table", "get hat on bench", "get hat on gazebo"],
+      ["ne", "ne", "ne", "get hat", "get hat on leaves"],
+      ["ne", "get hat"],
+      ["nw", "get hat", "get hat on bench"],
+      ["se", "ne", "get hat", "get hat on sign", "get hat on basket"],
+      ["e", "get hat"],
+      ["e", "get hat"],
+      ["s", "get hat"],
+      ["s", "get hat"],
+      ["n", "n", "e", "get hat"],
+      ["e", "get hat"],
+      ["se", "get hat"],
+      ["ne", "get hat"],
+      ["sw", "se", "get hat"],
+      ["se", "get hat"],
+      ["ne", "get hat"],
+      ["sw", "se", "get hat"],
+      ["se", "get hat"]
+    ]
+    hat_hunt_route.each do |commands|
+      break if guidebookquest_tap_hat_step(*commands) == :found
+    end
+
+    fput "get my guidebook"
+    sleep 1
+    fput "read my guidebook"
+    sleep 1
+  ##############################################################################
+  # CHAPTER 13 INCOMPLETE
+  elsif line =~ /You can find all you need in Ember Ridge Orchard/
+    fput "stow my guidebook"
+    sleep 1
+    # Confirmed live: the pumpkin patch is u8083177 ("go patch" then
+    # "get pump"); the carving table/tool/votive are at the Gazebo,
+    # u8083179. You must be kneeling before "carve pump" works
+    # ("It'd be a lot easier to carve your bright orange pumpkin if you
+    # were sitting down.") -- get the tool first, then kneel, then carve.
+    # The carved jack-o'-lantern ends up straight in hand; no separate
+    # "get jack" is needed or possible ("I could not find what you were
+    # referring to.").
+    Script.run("go2", go2_room("u8083177"))
+    sleep 1
+    fput "go patch"
+    sleep 1
+    fput "get pump"
+    sleep 1
+
+    Script.run("go2", go2_room("u8083179"))
+    sleep 1
+    fput "get tool"
+    sleep 1
+    fput "kneel"
+    sleep 1
+    fput "carve pump"
+    waitrt?
+    fput "stand"
+    sleep 1
+    guidebookquest_capture_new_item("votive") { fput "get votive" }
+    sleep 1
+
+    Script.run("go2", go2_room("exit"))
+    sleep 1
+
+    # PLACE JACK fails in a crowded spot ("...already a couple pumpkins
+    # on display, you decide to look for a less crowded area...") and
+    # succeeds in a quieter one -- confirmed live that the exit landing
+    # room is crowded but one room southeast of it isn't. Try the landing
+    # spot first, then that one fallback, before giving up to a manual
+    # pause (layout may differ from this recorded case).
+    placed = false
+    ["", "se"].each do |dir|
+      unless dir.empty?
+        fput dir
+        sleep 1
+      end
+      result = dothistimeout "place jack", 5, /suitable place to display|less crowded area/i
+      if result =~ /suitable place to display/i
+        placed = true
+        break
+      end
+    end
+
+    unless placed
+      echo "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+      echo "  Go to any room in Evermore Hollow and attempt to  "
+      echo "                     PLACE JACK                     "
+      echo "    Once you do this, ;unpause all this script.     "
+      echo "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+      pause_script Script.current.name
+      # Pausing only sets a flag -- actually hold here until ;unpause.
+      sleep 0.5 while Script.current.paused?
+    end
+
+    votive = guidebookquest_item_ref("votive", "votive")
+    fput "put #{votive} in jack"
+    sleep 1
+    fput "light #{votive}"
+    sleep 1
+    fput "light #{votive}"
+    sleep 1
+    waitrt?
+    # The game doesn't auto-claim this -- confirmed live: "Welcome to
+    # Evermore Hollow is finished!  Use QUEST COMPLETE to claim rewards."
+    # Confirmed live: waiting for the main dispatch loop to see
+    # "You have completed..." as its own later line wasn't reliable --
+    # the "get"/"read" fputs below can end up advancing the guidebook
+    # into a brand new chapter (even showing that NEW chapter's own
+    # "You completed this chapter.") before the main loop ever gets
+    # around to processing the quest-complete confirmation at all, so
+    # the CHAPTER 13 COMPLETED exit below never fired. Capturing the
+    # response to "quest complete" directly here and exiting immediately
+    # removes that race entirely instead of trusting it'll turn up later.
+    result = dothistimeout "quest complete", 5, /You have completed|Welcome to Evermore Hollow is finished|not currently|no active/i
+    if result =~ /You have completed/i
+      guidebookquest_discard_pile_items
+      echo "guidebookquest: quest complete -- stopping."
+      exit
+    end
+
+    fput "get my guidebook"
+    sleep 1
+    fput "read my guidebook"
+    sleep 1
+  # CHAPTER 13 COMPLETED
+  elsif line =~ /You completed this quest/ || line =~ /You have completed #{Regexp.escape(QUEST_NAME)}/i
+    guidebookquest_log_quest_info
+    fput "flip my guidebook"
+    fput "read my guidebook"
+    guidebookquest_discard_pile_items
+    echo "guidebookquest: quest complete -- stopping."
+    exit
+  ##############################################################################
+  # CHAPTER 14 INCOMPLETE
+  elsif line =~ /This quest is incomplete/
+    fput "flip my guidebook"
+    sleep 1
+    fput "read my guidebook"
+    sleep 1
+  # CHAPTER 14 COMPLETED
+  elsif line =~ /MERCHANT NAME/
+    guidebookquest_log_quest_info
+    fput "flip my guidebook"
+    fput "read my guidebook"
+  end
+end
+
+# A just-accepted quest's objective is the town hall clerk, and Chapter 1
+# picks the guidebook up there itself.
+guidebookquest_ensure_guidebook_in_hand unless guidebookquest_accept_quest
+unless guidebookquest_quest_info_redirect
+  # Confirmed live: reading a freshly-gotten guidebook before opening it
+  # just shows the title page ("*-* Guidebook To The Unliving *-*") with
+  # no chapter text -- "open my guidebook" first is required.
+  fput "open my guidebook"
+  sleep 0.3
+  fput "read my guidebook"
+  sleep 1
+end
+
+while (line = get)
+  # "Chapter 2" / "Chapter 1, Part 1" is each read's first header line;
+  # later parts of the same read ("Chapter 1, Part 2") don't count again.
+  if line =~ /^\s*Chapter (\d+)(?:, Part 1)?\s*$/
+    guidebookquest_note_chapter_read(Regexp.last_match(1).to_i)
+  elsif line =~ /You completed this chapter/
+    @guidebookquest_reads = 0
+  end
+  guidebookquest_dispatch(line)
+end
