@@ -158,7 +158,15 @@ module ChargeMeUpScotty
   # you are unable to call forth enough power."
   SYMBOL_OK       = /surge of mana flow through you|special blessing from Koar/
   SYMBOL_NO_FAVOR = /unable to call forth enough power/
-  SYMBOL_DONE     = Regexp.union(/surge of mana flow through you/, SYMBOL_NO_FAVOR, /^You can't|^You don't|^You are not|^What were you/)
+  # Verified 2026-11-02, a second SYMBOL OF MANA half a second after one worked (Lich hadn't
+  # shown the cooldown yet): "You must CONFIRM that you wish to use this symbol during its
+  # recovery period." It's still recovering: try later, and never CONFIRM (that costs extra).
+  SYMBOL_RECOVERY = /CONFIRM that you wish to use this symbol during its recovery period/
+  SYMBOL_DONE     = Regexp.union(/surge of mana flow through you/, SYMBOL_NO_FAVOR, SYMBOL_RECOVERY, /^You can't|^You don't|^You are not|^What were you/)
+  # It gave +50 (55 -> 105, 11/02). Only use it with room for at least half of that.
+  SYMBOL_MIN_ROOM = 25
+  # Never try again sooner than this after an attempt, whatever Effects::Cooldowns says
+  SYMBOL_RETRY    = 15
   ORB_READY     = /humming tones of enchantment|already prepared for charging/
   ORB_GROW      = /It grows in size/
   ORB_SHRINK    = /pulsating orb shrinks somewhat|^The orb shrinks/
@@ -327,7 +335,10 @@ module ChargeMeUpScotty
     until checkmana >= amount
       drain
       return if stop_if&.call
-      symbol_of_mana if symbol && symbol_ready?
+      # Once charging has started, every wait is worth a symbol: the mana carries over to
+      # the next try at the orb. The survey's small 405 waits don't count (a ;check run
+      # shouldn't spend favor).
+      symbol_of_mana if (symbol || @charging) && symbol_ready?
       sleep 0.5
     end
   end
@@ -342,7 +353,11 @@ module ChargeMeUpScotty
   end
 
   def self.symbol_ready?
-    symbol? && !@symbol_off && Spell[9813].known? && !Effects::Cooldowns.active?('Symbol of Mana')
+    return false unless symbol? && !@symbol_off && Spell[9813].known?
+    return false if @symbol_next && Time.now < @symbol_next
+    return false if maxmana - checkmana < SYMBOL_MIN_ROOM
+
+    !Effects::Cooldowns.active?('Symbol of Mana')
   end
 
   def self.symbol_of_mana
@@ -351,12 +366,18 @@ module ChargeMeUpScotty
     before = checkmana
     text = collect("symbol of mana", SYMBOL_DONE).join("\n")
     waitrt?
+    @symbol_next = Time.now + SYMBOL_RETRY
     if text =~ SYMBOL_NO_FAVOR
       @symbol_off = true
       msg "Not enough Voln favor for Symbol of Mana; not trying it again this run."
     elsif text =~ SYMBOL_OK
       wait_for(2) { checkmana > before }
+      # Give Lich time to show the cooldown, so the next check doesn't fire straight into it
+      wait_for(5) { Effects::Cooldowns.active?('Symbol of Mana') }
       msg "Symbol of Mana: #{before} -> #{checkmana} mana."
+    elsif text =~ SYMBOL_RECOVERY
+      # Not ready after all: leave it alone a minute; never CONFIRM (it costs extra)
+      @symbol_next = Time.now + 60
     else
       # Unrecognized: don't keep spamming it
       @symbol_off = true
@@ -1111,6 +1132,8 @@ module ChargeMeUpScotty
     @cleaned_up = false
     @emptied_hands = false
     @symbol_off = false
+    @symbol_next = nil
+    @charging = false
     @unmarked = []
     @survey_cache = recall('charge_survey', {})
     @gem_values = recall('charge_gem_values', {})
@@ -1184,6 +1207,7 @@ module ChargeMeUpScotty
     go_to_workshop unless here
     adopt_orb unless orb_ids.empty?
 
+    @charging = true
     to_charge.each do |rec|
       result = charge(rec)
       result = charge(rec) while result == :orb_lost
