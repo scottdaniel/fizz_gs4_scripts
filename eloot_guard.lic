@@ -37,6 +37,27 @@
 #    (`stuck: false` in exp_check.yaml mutes it).
 #While it does this out hunting, bigshot is paused (its attacks fail anyway).
 #
+#Second job: a box nothing could take is also what stops go2 on the way to town.
+#11/2, Picko, Icemule trench: `loot room` picked up a mithril box and eloot paused
+#at 09:14:07, but bigshot's looting_watch killed eloot and ordered a rest in that
+#same second -- before the two polls above -- so nothing here ran. go2 then walked
+#to the trench wall holding the box, got "You can't climb the wall with your hands
+#full.", tried every container (none had room), and looped on that for 21 minutes
+#under attack until Picko died. So when the game says "with your hands full" and a
+#box is in hand outside town, it goes on the disk if there is one, else it's dropped
+#and posted to the webhook. go2 carries on by itself.
+#
+#Safety first: a box held outside town while eloot isn't running (bigshot killed it)
+#is never legitimate, so after ORPHAN_GRACE_SECONDS it goes on the disk or is dropped,
+#without waiting for a climb to fail. Aliveness over loot.
+#
+#Third job, same incident: eloot had put the runestaff in the sheath ("store weapon")
+#before it looted the box, and nothing took it out again, so Picko spent those 21
+#minutes unarmed with a box in one hand and the other empty. A box is never to be
+#held without a weapon: outside town, whenever a box is in hand, no weapon is, and a
+#hand is free, this sends `ready weapon` (at most every ARM_RETRY_SECONDS, since go2
+#may stash it again while it tries to clear its hands).
+#
 #It leaves eloot alone in the locksmith pool room, where eloot has its own
 #recovery pause ("Could not set the box on a disk").
 #
@@ -50,6 +71,8 @@ require 'yaml'
 module ElootGuard
 
 POLL_SECONDS = 0.5 unless defined?(POLL_SECONDS)
+ARM_RETRY_SECONDS = 5 unless defined?(ARM_RETRY_SECONDS)
+ORPHAN_GRACE_SECONDS = 3 unless defined?(ORPHAN_GRACE_SECONDS)
 
 # The item leaving your hand is what counts; this only ends the wait early.
 # Verified on 10/28: "You put a blue crystal in your deerskin backpack." and
@@ -78,6 +101,10 @@ def self.alert(text)
 rescue StandardError => e
   echo "eloot_guard: webhook failed (#{e.class}: #{e.message})"
   false
+end
+
+def self.hands_full!
+  @hands_full = true
 end
 
 def self.hand_items
@@ -210,6 +237,63 @@ def self.park(item)
   nil
 end
 
+def self.boxed?
+  hand_items.any? { |o| o.type.to_s =~ /\bbox\b/ }
+end
+
+def self.weapon_in_hand?
+  ready = ready_ids
+  hand_items.any? { |o| ready.include?(o.id) || o.type.to_s =~ /weapon/ }
+end
+
+# Never stand around with a box in hand and no weapon. The pool room and town are
+# left alone: eloot sets the weapon down on purpose for the sell.
+def self.arm_if_boxed
+  return if town? || pool_room? || dead?
+  return unless boxed? && !weapon_in_hand?
+  return if hand_items.length >= 2
+  return if Time.now.to_f - @armed_at.to_f < ARM_RETRY_SECONDS
+
+  @armed_at = Time.now.to_f
+  settle
+  fput "ready weapon"
+  say(weapon_in_hand? ? "Box in hand, so the weapon is out again." : "Box in hand and `ready weapon` didn't put a weapon in the other hand.")
+end
+
+# A box in hand that go2 can't travel with (it said "with your hands full"). Not
+# in town: there the locksmith pool takes it, and that's where it was headed.
+def self.free_hands_for_travel(why = "go2 couldn't travel with hands full")
+  return if town? || pool_room?
+
+  box = hand_items.find { |o| o.type.to_s =~ /\bbox\b/ }
+  return unless box
+
+  if (disk = my_disk) && put_into(box, disk)
+    say "#{why}, so the #{box.name} is on your disk now."
+  elsif drop_item(box)
+    msg = "Dropped the #{box.name}: #{why} and no container or disk had room."
+    say msg
+    alert(msg)
+  else
+    msg = "Still holding the #{box.name}: #{why}, and it wouldn't drop."
+    say msg
+    alert(msg)
+  end
+end
+
+# A box in hand outside town with no eloot running: nothing is going to store it.
+def self.drop_orphan_box
+  unless boxed? && !Script.running?("eloot") && !town? && !pool_room? && !dead?
+    @orphan_since = nil
+    return
+  end
+  @orphan_since ||= Time.now.to_f
+  return if Time.now.to_f - @orphan_since < ORPHAN_GRACE_SECONDS
+
+  @orphan_since = nil
+  free_hands_for_travel("eloot is gone and the box is still in hand")
+end
+
 def self.with_bigshot_paused
   paused_it = !town? && Script.running?("bigshot") && !Script.paused?("bigshot") && Script.pause("bigshot")
   yield
@@ -283,8 +367,25 @@ end
 @given_up = []
 @paused_polls = 0
 @told_unknown = false
+@hands_full = false
+@armed_at = 0.0
+@orphan_since = nil
+
+HANDS_FULL_HOOK = "eloot_guard_hands_full" unless defined?(HANDS_FULL_HOOK)
+DownstreamHook.remove(HANDS_FULL_HOOK) rescue nil
+DownstreamHook.add(HANDS_FULL_HOOK, proc { |line|
+  ElootGuard.hands_full! if line.to_s =~ /with your hands full/i
+  line
+})
+before_dying { DownstreamHook.remove(HANDS_FULL_HOOK) rescue nil }
 
 loop do
+  if @hands_full
+    @hands_full = false
+    free_hands_for_travel
+  end
+  arm_if_boxed
+  drop_orphan_box
   if !Script.running?("eloot")
     finish_waiting
     @before_ids = hand_items.map(&:id)
