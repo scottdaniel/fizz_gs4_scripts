@@ -130,6 +130,15 @@ module ChargeMeUpScotty
   APPRAISE_VALUE = /give you ([\d,]+) silvers?/
   APPRAISE_HIGH  = /not buying anything this valuable/
   APPRAISE_DONE  = Regexp.union(APPRAISE_VALUE, APPRAISE_HIGH, /not quite my field|I only deal in|worthless|not interested|^I could not find|^What were you referring to|must be holding/)
+  # A gem marked unsellable gets this from the gem shop (verified 2026-11-02, a pink sapphire
+  # at Zirconia's), the same answer as for a non-gem
+  NOT_MY_FIELD   = /not quite my field/
+  # Verified in the logs: "You remove the unsellable mark from your coral wand." / "Your burnt
+  # scroll is not marked as unsellable." / "You carefully mark your pink pearl as unsellable."
+  # MARK needs the item in hand ("You must be holding the item you wish to mark as unsellable.")
+  UNMARK_OK      = /You remove the unsellable mark/
+  MARK_OK        = /You carefully mark your .+ as unsellable/
+  MARK_DONE      = Regexp.union(UNMARK_OK, MARK_OK, /is not marked as unsellable|already marked|You must be holding|^I could not find|^What were you/)
   # Verified in Picko's logs: "You call upon a special blessing from Koar." / "You feel a surge
   # of mana flow through you." and, short on favor, "You strain to perform the symbol of mana but
   # you are unable to call forth enough power."
@@ -459,12 +468,28 @@ module ChargeMeUpScotty
       fput "open ##{src.id}"
       contents(src).select { |obj|
         next false if seen[obj.id]
-        next false if kind == :wand && obj.name !~ /\bwand\b/i
+        next false if kind == :wand && !wand_bag_item?(obj, src == dead)
         next false if obj.type.to_s =~ /gem/ || obj.name =~ /grot t'kel/i
 
         seen[obj.id] = true
-      }.map { |obj| { id: obj.id, name: obj.name, src: src, dst: dst, kind: kind, rubs: 0 } }
+      }.map { |obj|
+        # A magic item that was left with the dead wands goes back there (or to chargedsack),
+        # not in with the fresh wands bigshot draws from
+        wand = obj.name.to_s.match?(/\bwand\b/i)
+        to = (wand || kind == :item) ? dst : (charged || src)
+        { id: obj.id, name: obj.name, src: src, dst: to, kind: wand ? :wand : :item, rubs: 0 }
+      }
     }
+  end
+
+  # From the dead wand container: wands, plus magic items and jewelry left there to be
+  # charged (2026-11-02: a pearl and white sunstone ring was skipped). Lich's types: wands
+  # "wand", statues/quartz orbs/crystals "magic", rings and bracelets "jewelry"; the dagger
+  # ("weapon") and scrolls ("scroll") stay out. The fresh container is wands only.
+  def self.wand_bag_item?(obj, dead_bag)
+    return true if obj.name =~ /\bwand\b/i
+
+    dead_bag && obj.type.to_s =~ /\b(?:magic|jewelry)\b/
   end
 
   def self.status_for(rec)
@@ -585,6 +610,17 @@ module ChargeMeUpScotty
       next unless take(gem.id, @gemsack)
 
       text = collect("appraise ##{gem.id}", APPRAISE_DONE).join("\n")
+      # Marked unsellable (to keep eloot off it): lift the mark just long enough to
+      # appraise, then mark it again while it's still in hand
+      if text =~ NOT_MY_FIELD && collect("mark ##{gem.id} remove", MARK_DONE).join("\n") =~ UNMARK_OK
+        @unmarked << gem.id.to_s
+        text = collect("appraise ##{gem.id}", APPRAISE_DONE).join("\n")
+        if collect("mark ##{gem.id}", MARK_DONE).join("\n") =~ MARK_OK
+          @unmarked.delete(gem.id.to_s)
+        else
+          msg "Couldn't mark the #{gem.name} unsellable again. Mark it yourself (MARK) so it isn't sold."
+        end
+      end
       if text =~ APPRAISE_VALUE
         @gem_values[gem.id.to_s] = Regexp.last_match(1).delete(',').to_i
       elsif text =~ APPRAISE_HIGH
@@ -1003,6 +1039,7 @@ module ChargeMeUpScotty
     @cleaned_up = false
     @emptied_hands = false
     @symbol_off = false
+    @unmarked = []
     @survey_cache = recall('charge_survey', {})
     @gem_values = recall('charge_gem_values', {})
     @poured = recall('charge_poured', [])
@@ -1089,7 +1126,13 @@ module ChargeMeUpScotty
 
     @cleaned_up = true
     fput "release" unless checkprep == 'None'
+    # Stopped between unmarking a gem and marking it again: mark it now (it has to be held)
+    @unmarked.to_a.each { |id|
+      fput "get ##{id}" unless held?(id)
+      fput "mark ##{id}" if held?(id)
+    }
     @held.to_a.each { |id, from| fput "put ##{id} in ##{from.id}" if held?(id) }
+    @unmarked.to_a.each { |id| fput "put ##{id} in ##{@gemsack.id}" if held?(id) }
     fill_hands if @emptied_hands
     report
   end
