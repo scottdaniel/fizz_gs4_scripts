@@ -1936,6 +1936,14 @@ def guidebookquest_dispatch(line)
   end
 end
 
+# These instance variables outlive the script (Lich reuses the same
+# top-level object), so each run starts them fresh. Davu, 2026-11-02: the
+# previous run's Chapter 2 count of 4 made the next run stop on its first
+# read.
+@guidebookquest_slot = nil
+@guidebookquest_reads = @guidebookquest_read_chapter = nil
+@guidebookquest_redirects = @guidebookquest_redirect_objective = nil
+
 # A just-accepted quest's objective is the town hall clerk, and Chapter 1
 # picks the guidebook up there itself.
 guidebookquest_ensure_guidebook_in_hand unless guidebookquest_accept_quest
