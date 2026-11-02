@@ -6,8 +6,10 @@
   fizzguide changes:
     - Accepts the quest itself when QUEST still lists it as "Available".
       Without that, nobody in town reacts and Chapter 2 re-ran forever.
-    - Chapter 1 (town hall) picks the guidebook up in the clerk's room
-      and turns it back to page one if it was left open on a later page.
+    - Chapter 1 (town hall) TURNs the guidebook back to page one, since
+      a book left open on a later page would otherwise read that page.
+      It also gets the guidebook you carry first: the clerk's counter
+      charges 100 soul shards for a second one.
     - Stops (after re-checking that the quest is accepted) instead of
       looping when the same chapter reads as incomplete 4 times in a row,
       or the same QUEST INFO objective comes back a 4th time.
@@ -1065,33 +1067,36 @@ def guidebookquest_guidebook_in_hand?
   [GameObj.right_hand, GameObj.left_hand].compact.any? { |item| item.name =~ /guidebook/i }
 end
 
-# A carried guidebook answers GET with "You remove a shadowy leatherbound
-# guidebook from in your fleece-lined cloak." (Davu, 2026-11-02). In the
-# clerk's room GET may answer for her counter instead, so if no guidebook
-# reached a hand, GET MY GUIDEBOOK fetches the carried one.
-def guidebookquest_ensure_guidebook_in_hand
-  return if guidebookquest_guidebook_in_hand?
-
-  result = dothistimeout "get guidebook", 5, /which attunes to you|You remove|Both of your hands are full|Get what\?/i
+def guidebookquest_get_guidebook(command)
+  result = dothistimeout command, 5, /which attunes to you|You remove|You retrieve|Both of your hands are full|Get what\?|could not find|soul shards/i
   if result =~ /Both of your hands are full/i
     fput "stow all"
     sleep 1
-    fput "get guidebook"
+    fput command
   end
   sleep 1
-  fput "get my guidebook" unless result =~ /Get what\?/i || guidebookquest_guidebook_in_hand?
 end
 
-# Confirmed live (Davu, 2026-11-02): OPEN on a book that's already open
-# stays on its current page ("Your leatherbound guidebook is already
-# open."), so a guidebook left open on a later chapter is closed and
-# reopened to get back to Chapter 1.
-def guidebookquest_open_to_first_page
-  result = dothistimeout "open my guidebook", 5, /You open your|already open|What were you referring to/i
-  return unless result =~ /already open/i
+# The carried guidebook comes first ("You remove a shadowy leatherbound
+# guidebook from in your fleece-lined cloak."). Plain GET GUIDEBOOK in the
+# clerk's room is her counter, which is only free the first time (Davu,
+# 2026-11-02): "Hey, Davu, I see that you already received a book
+# previously.  Did you lose it?  Tsk tsk.  That'll cost you, both time and
+# shards.  I charge 100 soul shards for this."
+def guidebookquest_ensure_guidebook_in_hand
+  return if guidebookquest_guidebook_in_hand?
 
-  fput "close my guidebook"
+  guidebookquest_get_guidebook("get my guidebook")
+  guidebookquest_get_guidebook("get guidebook") unless guidebookquest_guidebook_in_hand?
+end
+
+# Confirmed live (Davu, 2026-11-02): CLOSE only earmarks the page ("you mark
+# Page 2 to save your place") and OPEN goes back to it, so TURN is what gets
+# back to Chapter 1: "You quickly flip through some of the leatherbound
+# guidebook's pages until you get to page 1."
+def guidebookquest_open_to_first_page
   fput "open my guidebook"
+  fput "turn my guidebook to 1"
 end
 
 # Maps a QUEST INFO objective's own wording (left) to the matching
@@ -1110,6 +1115,8 @@ QUEST_INFO_TRIGGER_MAP = {
   # Low value to map -- this step happens before QUEST INFO is even
   # meaningful -- but left in for completeness.
   /Travel to Town Hall and speak with the skeletal town hall clerk/i => "You can't do that",
+  # The clerk's step done, Chapter 1 not yet read (Davu, 2026-11-02).
+  /Open and read Chapter 1 of your Guidebook To The Unliving/i => "You can't do that",
   # Chapter 2 -- Evermore Hollow Town Proper (merchant visits)
   /FILL_IN_CHAPTER_2/i => "Seek out various merchants in Evermore Hollow and speak with them about a variety of topics",
   # Chapter 3 -- Evermore Hollow Hotel (bellhop/paintings)
@@ -1223,14 +1230,6 @@ def guidebookquest_dispatch(line)
   ##############################################################################
   # CHAPTER 1 INCOMPLETE
   if line =~ /You can't do that/
-    # A guidebook that's already in hand goes away first (once per run), so
-    # it gets picked up in the clerk's room the way a new character does it
-    # (Picko, 2026-11-02: "Ah, I see you've got your hands on one of our
-    # guidebooks.  Excellent!" right after GET GUIDEBOOK there).
-    if !@guidebookquest_regot_book && guidebookquest_guidebook_in_hand?
-      fput "stow my guidebook"
-      @guidebookquest_regot_book = true
-    end
     Script.run("go2", go2_room("u8084004"))
     guidebookquest_ensure_guidebook_in_hand
     guidebookquest_open_to_first_page
