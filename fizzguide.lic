@@ -19,6 +19,10 @@
     - Chapter 13 places the jack-o'-lantern by its #id (plain "jack" can
       mean one already on display) and tries the Moorlyn rooms one by one
       until one isn't too crowded, instead of pausing for you.
+    - Chapter 8 only turns to Chapter 9 once the scale balances. When the
+      pile items can't make 10 lb it searches the piles again (they
+      refill), then stops on Chapter 8 and says what you carry. A restart
+      walks back to Moorlyn before searching piles.
     - Pauses itself by its own name (so ;unpause fizzguide works).
   Messages still say "guidebookquest:" and the per-character data files
   keep their guidebookquest_* names, so a character can switch between
@@ -559,6 +563,14 @@ def guidebookquest_balance_scale(items)
     echo "guidebookquest: the weighed combination didn't balance (#{result.to_s.strip}) -- clearing the scale and falling back to trial and error."
     solution.reverse_each { |item| guidebookquest_remove_from_scale(item) }
   else
+    # With every weight exact, no combination can balance, so trying them
+    # all on the scale is just spam (Salvi, 11/02: 9 lb in all, 75 s of
+    # get/put/stow).
+    if items.all? { |item| item["exact"] }
+      echo "guidebookquest: no combination of the weighed items makes #{MOORLYN_SCALE_TARGET} lb (#{guidebookquest_describe_items(items)})."
+      return false
+    end
+
     echo "guidebookquest: no combination of the weighed items makes #{MOORLYN_SCALE_TARGET} lb (#{guidebookquest_describe_items(items)}) -- falling back to trial and error."
   end
 
@@ -580,7 +592,7 @@ end
 # around somewhere.") in a room that's already been searched. Returns the
 # tracked item hash, or nil.
 def guidebookquest_moorlyn_search_room
-  pile_result = dothistimeout "get pile", 3, /pull out|Get what\?|already found something/i
+  pile_result = dothistimeout "get pile", 3, /pull out|Get what\?|already found something|could not find/i
   return nil unless pile_result =~ /pull out (?:a|an|some) ([a-z][a-z' -]*)\./i
 
   name = Regexp.last_match(1).strip
@@ -724,6 +736,49 @@ def guidebookquest_moorlyn_walk_ring(items, max_steps: 40)
   guidebookquest_moorlyn_scale_room?
 end
 
+def guidebookquest_in_moorlyn?
+  guidebookquest_jack_rooms.include?(XMLData.room_id.to_s)
+end
+
+# The ring rooms with debris piles, the same five in every log so far
+# (Picko, Davu, Fizzleworth, Fizzlestiks, Salvi). The first is the scale's
+# own room.
+def guidebookquest_moorlyn_pile_rooms
+  %w[8083068 8083066 8083063 8083062 8083061]
+end
+
+# Piles refill: Salvi's five items came to 9 lb at 22:24 (2026-11-02), and
+# at 23:21 the scale room's pile gave him a 5 lb fuzzy bell. So when the
+# items can't make the target, this searches the five pile rooms once
+# more, then waits in the scale's room trying its pile every minute (no
+# walking) for up to 15 minutes. It stops as soon as the weights work.
+# Returns true then, standing at the scale.
+def guidebookquest_moorlyn_search_again(items)
+  add_item = lambda do
+    item = guidebookquest_moorlyn_search_room
+    next false unless item
+
+    items << item
+    guidebookquest_save_moorlyn_items(items)
+    !guidebookquest_scale_solution(items).nil?
+  end
+
+  echo "guidebookquest: the Moorlyn items can't make #{MOORLYN_SCALE_TARGET} lb -- searching the debris piles again, since they refill."
+  solved = guidebookquest_moorlyn_pile_rooms.any? do |room|
+    Script.run("go2", go2_room("u#{room}")) unless XMLData.room_id.to_s == room
+    add_item.call
+  end
+  Script.run("go2", go2_room("u8083068")) unless guidebookquest_moorlyn_scale_room?
+  return true if solved
+
+  echo "guidebookquest: still short -- waiting at the scale up to 15 minutes, trying its pile once a minute."
+  15.times do
+    sleep 60
+    return true if add_item.call
+  end
+  false
+end
+
 # Chapter 8's pile search, weighing, and scale balance -- shared between the
 # normal INCOMPLETE branch (after it goes to Moorlyn and asks the ghoul) and
 # the CHAPTER 8 RECOVERY branch (QUEST INFO's "Thoroughly look around
@@ -734,12 +789,26 @@ def guidebookquest_moorlyn_resume
   items = guidebookquest_load_moorlyn_items
   echo "guidebookquest: resuming with #{items.size} item(s) already weighed: #{guidebookquest_describe_items(items)}." unless items.empty?
 
+  # A restart picks Chapter 8 back up from QUEST INFO wherever the
+  # character stands (Salvi, 11/02: in the graveyard, where it searched
+  # 30-odd rooms for piles).
+  Script.run("go2", go2_room("u8083054")) unless guidebookquest_in_moorlyn?
+
   unless guidebookquest_moorlyn_walk_ring(items)
     echo "guidebookquest: couldn't find the scale's room after walking Moorlyn -- stopping here instead of risking getting stuck."
-    return
+    exit
   end
 
-  guidebookquest_balance_scale(items)
+  balanced = guidebookquest_balance_scale(items)
+  balanced ||= guidebookquest_moorlyn_search_again(items) && guidebookquest_balance_scale(items)
+
+  # Flipping on from an unbalanced scale is what sent Salvi to Chapter 9
+  # (11/02), where the spirit "has no interest" in the lily until
+  # Chapter 8 is done.
+  unless balanced
+    echo "guidebookquest: Chapter 8 isn't finished -- your Moorlyn items (#{guidebookquest_describe_items(items)}) can't make exactly #{MOORLYN_SCALE_TARGET} lb on the scale. Stopping on Chapter 8 instead of going on to Chapter 9. The piles refill, so try ;fizzguide again later."
+    exit
+  end
 
   fput "get my guidebook"
   sleep 1
