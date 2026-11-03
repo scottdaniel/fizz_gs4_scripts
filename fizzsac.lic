@@ -166,7 +166,17 @@ rescue StandardError
   nil
 end
 
+# Sonreeva / Hollowlair rooms ("[Sonreeva, Hall of the Dead - ]"): the creatures there spawn
+# for the party's level, but their names ("grotesque zombie") match a bestiary template of a
+# far weaker kind ("zombie", L23), so the level gap would call every one of them too low.
+def fizzsac_dungeon?
+  XMLData.room_title.to_s =~ /\[(?:Sonreeva|Hollowlair),/i ? true : false
+rescue StandardError
+  false
+end
+
 def worth_sacrificing?(t)
+  return true if fizzsac_dungeon?
   gap = level_gap
   return true if gap <= 0
   lvl = creature_level(t.name)
