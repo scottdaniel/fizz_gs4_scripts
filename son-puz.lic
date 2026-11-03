@@ -37,7 +37,8 @@
 # Everything from here on was read out of the 10/26 run with Nety's group. [typed] = you typed it
 # in that log, [text] = the game text was in the log but someone else did it, [map] = only the Lich
 # map has the command. It stops at each point where the group should be together.
-#   Subterrane                               GO FISSURE [map], then north x4 along the Dark Passageway
+#   Subterrane                               SEARCH until the fissure shows, GO FISSURE [map], then north
+#                                            x4 along the Dark Passageway
 #   Dead End (the abyss edge)                JUMP [typed] into the Void, a safe room where groups wait
 #   The Void                                 CRAWL CREVICE [typed] (a SEARCH first if it isn't there),
 #                                            then down x7 the Collapsed Tunnel [map] to the Cistern
@@ -273,7 +274,18 @@ module SonPuz
 
   def self.at_subterrane
     say "-> go fissure (the Lich map's command), then north along the Dark Passageway."
-    return say("couldn't go through the fissure.") unless step("go fissure")
+    # the fissure is hidden until someone SEARCHes (10/26 19:30:36 Nety "searches around", then
+    # "points at a narrow fissure"); 11/03 `go fissure` cold answered "What were you referring to?"
+    found = step("go fissure")
+    3.times do |i|
+      break if found
+      say "no fissure yet -- searching (#{i + 1}/3)."
+      waitrt?
+      fput "search"
+      sleep 2
+      found = step("go fissure")
+    end
+    return say("couldn't go through the fissure.") unless found
     at_passage
   end
 
