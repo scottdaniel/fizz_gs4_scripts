@@ -1360,36 +1360,27 @@ def guidebookquest_place_jack(jack)
 end
 
 # Chapter 4's witch, "a petite and waif-like gjenganger", is normally in The
-# Cauldron (u8083133): Picko, Davu and others all found her there. On
-# Salvi's run (2026-11-02, 14:45) the Cauldron held only a jack-o'-lantern,
-# and "ask gjeng about drink" got "Who are you trying to ask?" four passes
-# running. So she's looked for in the Cauldron, its two huts, the rest of
-# Fate's Holding and the forest trail with its hut, with a wait in the
-# Cauldron between laps.
-def guidebookquest_witch_rooms
-  %w[8083133 8084733 8084735 8083132 8083131 8083130 8083129 8083128 8083127
-     8083126 8083125 8083124 8083134 8083135 8083136 8083138 8083142 8083143
-     8083141 8083145 8083144 8083139 8083140 8083146 8083147 8083148]
-end
-
+# Cauldron (u8083133): every Cauldron visit in the logs listed her ("You
+# notice an oblong burnt orange jack-o'-lantern and a petite and waif-like
+# gjenganger.") except Salvi's (2026-11-02, from 14:45 to past 14:55), where
+# "ask gjeng about drink" got "Who are you trying to ask?". A lap of all of
+# Fate's Holding (three times over) didn't find her anywhere either -- just
+# a lot of movement spam -- so this waits in the Cauldron quietly instead,
+# with a LOOK every 30 seconds, for up to 10 minutes.
 def guidebookquest_witch
   Array(GameObj.npcs).find { |npc| npc.name =~ /waif-like gjenganger/i }
 end
 
 def guidebookquest_find_witch
-  3.times do
-    guidebookquest_witch_rooms.each do |room|
-      Script.run("go2", go2_room("u#{room}"))
-      return guidebookquest_witch if guidebookquest_witch
-    end
-    echo "guidebookquest: no sign of the witch in Fate's Holding -- waiting in the Cauldron a minute for her."
-    Script.run("go2", go2_room("u8083133"))
-    60.times do
+  echo "guidebookquest: the witch (a petite and waif-like gjenganger) isn't in the Cauldron -- waiting here up to 10 minutes for her."
+  20.times do
+    30.times do
       return guidebookquest_witch if guidebookquest_witch
       sleep 1
     end
+    fput "look"
   end
-  nil
+  guidebookquest_witch
 end
 
 def guidebookquest_find_bellhop
@@ -1579,7 +1570,7 @@ def guidebookquest_dispatch(line)
     Script.run("go2", go2_room("u8083133"))
     witch = guidebookquest_witch || guidebookquest_find_witch
     unless witch
-      echo "guidebookquest: couldn't find the witch (the waif-like gjenganger) anywhere in Fate's Holding after three laps -- try ;fizzguide again later."
+      echo "guidebookquest: the witch (the waif-like gjenganger) never showed up in the Cauldron in 10 minutes -- try ;fizzguide again later."
       exit
     end
     guidebookquest_capture_new_item("wine") { fput "ask ##{witch.id} about drink" }
