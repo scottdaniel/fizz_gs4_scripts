@@ -4,10 +4,10 @@
         game: gemstone
         tags: safety, bigshot
     requires: Lich > 5.14.2
-     version: 0.1
+     version: 0.2
         note: Written with assistance from Claude (Anthropic).
 
-  Unattended-death safety net for bigshot hunts.
+  Unattended death / low-health safety net for bigshot hunts.
 
   bigshot's dead_man_switch() always runs while ;bigshot is active, but unless
   its profile has "Dead man's switch" (GSF only) or "Depart/rerun if dead"
@@ -18,13 +18,17 @@
 
   This script watches for you dying while ;bigshot is (or was just) running
   and quits the game outright, so an AFK session ends in a clean logout
-  instead of a decaying, rezzable corpse. It doesn't touch bigshot's own
-  Dead man's switch / Depart-rerun settings -- those still fire first; this
-  is a belt-and-suspenders exit for whatever bigshot leaves behind.
+  instead of a decaying, rezzable corpse. It also quits if your health drops
+  below LOW_HEALTH_PERCENT (25%) in the same situation, so a bad streak while
+  you're away gets you out of the game before it turns into a death. It
+  doesn't touch bigshot's own Dead man's switch / Depart-rerun settings --
+  those still fire first; this is a belt-and-suspenders exit for whatever
+  bigshot leaves behind.
 
   Gated by the UserVar afk_now, which defaults ON. When you're actually at
   the keyboard doing interactive hunting and would rather handle your own
-  death yourself (get rezzed, keep playing), turn it off for the session:
+  death or low health yourself (get rezzed, heal, keep playing), turn it off
+  for the session:
 
     ;vars set afk_now=false
 
@@ -45,6 +49,7 @@ module DeadExit
   BIGSHOT_SCRIPT_NAME    = "bigshot"
   CHECK_INTERVAL_SECONDS = 3
   BIGSHOT_GRACE_SECONDS  = 20 # bridges bigshot self-killing on death just before we poll
+  LOW_HEALTH_PERCENT     = 25 # quit when health is strictly below this while afk
 
   # === helpers ====================================================================
 
@@ -60,9 +65,17 @@ module DeadExit
     value.to_s !~ /\A\s*(?:0|false|off|no)\s*\z/i
   end
 
+  # Char.percent_health divides by max_health and raises FloatDomainError on NaN
+  # before the first health update arrives, so guard on a real max first.
+  def self.low_health?
+    return false unless Char.max_health.to_i > 0
+
+    Char.percent_health < LOW_HEALTH_PERCENT
+  end
+
   # === main =======================================================================
   def self.run
-    echo "deadexit started! Watching for death while ;#{BIGSHOT_SCRIPT_NAME} is running (afk_now defaults ON)."
+    echo "deadexit started! Watching for death or health below #{LOW_HEALTH_PERCENT}% while ;#{BIGSHOT_SCRIPT_NAME} is running (afk_now defaults ON)."
     echo "Hunting interactively? ;vars set afk_now=false to stop the auto-quit."
     echo "Stop with ;kill deadexit"
 
@@ -72,9 +85,14 @@ module DeadExit
       bigshot_last_seen = Time.now if Script.running?(BIGSHOT_SCRIPT_NAME)
       bigshot_recently_hunting = bigshot_last_seen && (Time.now - bigshot_last_seen) < BIGSHOT_GRACE_SECONDS
 
-      if dead? && bigshot_recently_hunting && afk_now?
-        echo "deadexit: you're dead and afk_now is on -- quitting so you don't decay or get rezzed unattended."
-        fput "quit"
+      if bigshot_recently_hunting && afk_now?
+        if dead?
+          echo "deadexit: you're dead and afk_now is on -- quitting so you don't decay or get rezzed unattended."
+          fput "quit"
+        elsif low_health?
+          echo "deadexit: health is #{Char.percent_health}% (below #{LOW_HEALTH_PERCENT}%) and afk_now is on -- quitting before it turns into a death."
+          fput "quit"
+        end
       end
 
       sleep CHECK_INTERVAL_SECONDS
