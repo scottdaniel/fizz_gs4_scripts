@@ -30,6 +30,14 @@
   Also, once per rest (sitting, mana >= SEND_MANA_AT, nothing hostile around), it
   sends the demon the mana it can hold (;demonmana send); attack-ultima / sac4mana
   ask for it back with ;demonmana get the first time mana runs low in a hunt.
+
+  Calls the demon back (11/04, after it was left behind once more -- in the Rift's swim
+  home): while Minor Summoning is up and the demon isn't in the room, it sends a silent
+  `tell mdemon return` every CALL_GAP_SECONDS. The reply names the demon, so the script
+  learns its id and stops asking while it is standing there. "The magic in your location
+  is interfering with your <demon> returning to you" slows the asking to every
+  CALL_BLOCKED_GAP_SECONDS. A real order is echoed once ("ordered it back"); the silent
+  "already here" replies are not.
 =end
 
 module MdemonRefresh
@@ -38,6 +46,10 @@ module MdemonRefresh
   REFRESH_THRESHOLD_MINUTES = 10
   CHECK_INTERVAL_SECONDS  = 15
   SEND_MANA_AT            = 40   # resting with at least this much mana -> fill the demon (;demonmana)
+  CALL_GAP_SECONDS         = 15  # demon missing from the room: order it back this often
+  CALL_BLOCKED_GAP_SECONDS = 90  # ...but this rarely where the game says the magic interferes
+  RETURN_REPLY = /already here!|acknowledges your order|interfering with your|You have no minor demon at this time/i
+  DEMON_LINK   = %r{(?:[Bb]ut your|Your|your) <pushBold/><a exist="(\d+)" noun="([\w,'-]+)">([\w\-' ]+)</a><popBold/>}
   # No vakra runestone left: true = fuse a new one with fizzfuse (a bank + alchemist trip,
   # then it walks back). With FUSE_ONLY_WHEN_RESTING_IN_TOWN it never starts that
   # mid-hunt -- it waits until you're resting in town. false = ask you to NOD first.
@@ -71,6 +83,28 @@ module MdemonRefresh
       fput "get ##{held_item_id}"
       waitrt?
     end
+  end
+
+  def self.demon_here?
+    return false unless @demon_id
+    Array(GameObj.npcs).any? { |n| n && n.id.to_s == @demon_id.to_s }
+  end
+
+  # `tell mdemon return` when the demon isn't in the room (see the header). The first call
+  # also learns the demon's id from the reply, whatever illusion it is wearing.
+  def self.call_demon_back
+    return unless Effects::Spells.active?(MINOR_SUMMONING_SPELL)
+    return if checkdead || checkstunned
+    now = Time.now.to_f
+    return if now - @last_call.to_f < (@call_blocked ? CALL_BLOCKED_GAP_SECONDS : CALL_GAP_SECONDS)
+    return if demon_here?
+    @last_call = now
+    text = Lich::Util.quiet_command_xml("tell mdemon return", RETURN_REPLY).to_a.join("\n")
+    @demon_id = Regexp.last_match(1) if text =~ DEMON_LINK
+    @call_blocked = text =~ /interfering with your/i ? true : false
+    echo "Demon wasn't here -- ordered it back." if text =~ /acknowledges your order/i
+  rescue StandardError => e
+    echo "call_demon_back: #{e.class} #{e.message}"
   end
 
   # Once per rest, as soon as there's mana to spare (the send costs ~30 and the rest
@@ -167,6 +201,7 @@ module MdemonRefresh
       end
 
       store_mana_while_resting
+      call_demon_back
       sleep CHECK_INTERVAL_SECONDS
     end
   end
