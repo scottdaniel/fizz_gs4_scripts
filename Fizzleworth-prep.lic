@@ -147,7 +147,8 @@ UserVars.scroll_buff_spells ||= "202 207 211 215 219 303 307 310 313 314 319 503
 # branches in case it ever lands in scroll_buff_spells.
 buff_spells = UserVars.scroll_buff_spells.to_s.split - %w[1711]
 if sever
-  sever_scrolls = buff_spells.select { |n| n.to_i.between?(1700, 1799) }
+  # 1720 Arcane Barrier is always cast from a scroll for the Rift (Scott 11/04), listed or not.
+  sever_scrolls = (buff_spells.select { |n| n.to_i.between?(1700, 1799) } | %w[1720])
   Script.run("scrollbuff3", sever_scrolls.join(" ")) unless sever_scrolls.empty?
 elsif UserVars.prep_scrollbuff.to_s =~ /\A\s*(?:1|true|on|yes)\s*\z/i
   Script.run("scrollbuff3", buff_spells.join(" ")) unless buff_spells.empty?   # no args = it reads the UserVar itself
@@ -204,7 +205,12 @@ sleep 0.3
 
 # If verlok lost the spare weapon (a botched teardown last hunt), buy a new
 # one now so ;reanim has something to arm the animate with. No-op otherwise.
-Script.run("Fizzleworth-buyweapon") unless here   # it walks to Icemule's weapon shop
+# It walks to Icemule's weapon shop only when the demon has no spare weapon (otherwise a silent
+# tell + look). `here`/`arena` never walk, but sever mode (the Rift) starts from the Icemule rest room,
+# so it runs there: 11/04 a freshly summoned verlok had no claidhmore and the animate went unarmed.
+# (Sever mode skipped it only because the old standalone prep-sever was a stale copy that predated
+# buyweapon, and the 11/01 merge kept that by treating sever as `here`.)
+Script.run("Fizzleworth-buyweapon") if !here || sever
 
 # The Rift (sever mode): make bigshot flee witches and worms through its own flee flag, whatever
 # profile is loaded (see Fizzleworth-witchguard). Any other hunt stops a guard left over from one.
