@@ -1,0 +1,53 @@
+# Fizzleworth-witchguard.lic
+# Rift hazards: while a witch (or a worm) is alive in the room, set bigshot's own global flee flag so
+# bigshot leaves the room through its normal flee path -- whatever profile happens to be loaded.
+#
+# Why: 11/04 17:02 a Vvrael witch's ground spell took Fizzleworth to 29% and 17:17 she killed him. The
+# profile's `always_flee_from: vvrael witch` never matched (bigshot compares that list to a creature's
+# noun or full name EXACTLY: the game says "a steadfast Vvrael witch", noun "witch"), and the corrected
+# value only applies after `;bigshot profile load`, which is easy to miss. This script needs neither.
+#
+# bigshot reads $bigshot_flee at the top of should_flee? and clears it after each move, so setting it
+# every poll while the hazard is here keeps it fleeing, room after room, until none is left.
+# Black voids are already handled by the profile's flee_voids (a regex on the room objects).
+#
+# Started by Fizzleworth-prep in `sever` (Rift) mode and stopped by it in any other mode.
+# Run it by hand too: ;Fizzleworth-witchguard      Stop: ;kill Fizzleworth-witchguard
+
+module WitchGuard
+  module_function
+
+  POLL   = 0.3
+  HAZARD = /\b(?:witch|worm)\b/i   # noun or name; "Vvrael witch", "worm"
+
+  def hazard_here
+    Array(GameObj.npcs).find do |n|
+      n && n.status.to_s !~ /dead|gone/ && (n.noun.to_s =~ HAZARD || n.name.to_s =~ HAZARD)
+    end
+  end
+
+  def run
+    echo "[witchguard] on: making bigshot flee while a witch or worm is in the room."
+    seen = nil
+    loop do
+      begin
+        hazard = hazard_here
+        if hazard
+          $bigshot_flee = true
+          if seen != hazard.id
+            echo "[witchguard] #{hazard.name} here -- telling bigshot to flee."
+            seen = hazard.id
+          end
+        else
+          seen = nil
+        end
+      rescue StandardError => e
+        echo "[witchguard] error: #{e.class} #{e.message}"
+        sleep 2
+      end
+      sleep POLL
+    end
+  end
+end
+
+WitchGuard.run

@@ -206,6 +206,14 @@ sleep 0.3
 # one now so ;reanim has something to arm the animate with. No-op otherwise.
 Script.run("Fizzleworth-buyweapon") unless here   # it walks to Icemule's weapon shop
 
+# The Rift (sever mode): make bigshot flee witches and worms through its own flee flag, whatever
+# profile is loaded (see Fizzleworth-witchguard). Any other hunt stops a guard left over from one.
+if sever
+  Script.start("Fizzleworth-witchguard") unless Script.running?("Fizzleworth-witchguard")
+elsif Script.running?("Fizzleworth-witchguard")
+  Script.kill("Fizzleworth-witchguard")
+end
+
 # Log mind saturation ("Field Exp: N/1220") right before the hunt starts, so
 # every hunt has a recorded starting mind for the wings-compare analysis
 # (bigshot only reads exp while resting otherwise).
