@@ -115,6 +115,12 @@ unless Spell[1705].active?
   Script.run("qverb", "rub moonstone cube")
   pause 3
 end
+# Mystic Focus (1711), the heavy quartz orb -- the extra casting boost (same as Salvi-prep, added
+# 11/04 for the Rift). A 1700, so it survives the Rift's spell sever.
+unless Spell[1711].active?
+  Script.run("qverb", "rub quartz orb")
+  pause 3
+end
 unless Spell[509].active?
   Script.run("qverb", "rub white crystal")
   pause 3
@@ -136,11 +142,15 @@ UserVars.scroll_buff_spells ||= "202 207 211 215 219 303 307 310 313 314 319 503
 # In `sever` mode a spell-sever area strips every spell outside the 100s, 400s, 700s and 1700s,
 # so only the 1700s from the list are worth a scroll, and those are always cast. scrollbuff3
 # skips whatever is already running, so a spell the rubs above just gave costs no scroll.
+# Never from a scroll: 1711 Mystic Focus. Those scrolls are kept for imbuing the sigil staff; the
+# quartz orb rub above is what gives the spell here (Scott 11/04). Dropped from the list in both
+# branches in case it ever lands in scroll_buff_spells.
+buff_spells = UserVars.scroll_buff_spells.to_s.split - %w[1711]
 if sever
-  sever_scrolls = UserVars.scroll_buff_spells.to_s.split.select { |n| n.to_i.between?(1700, 1799) }
+  sever_scrolls = buff_spells.select { |n| n.to_i.between?(1700, 1799) }
   Script.run("scrollbuff3", sever_scrolls.join(" ")) unless sever_scrolls.empty?
 elsif UserVars.prep_scrollbuff.to_s =~ /\A\s*(?:1|true|on|yes)\s*\z/i
-  Script.run("scrollbuff3", UserVars.scroll_buff_spells)
+  Script.run("scrollbuff3", buff_spells.join(" ")) unless buff_spells.empty?   # no args = it reads the UserVar itself
 end
 # Safety net: if scrollbuff3 ever leaves a scroll in hand (a late "get" reply
 # raced its check -- 10.03), put it back in the scroll sack BEFORE readying the
