@@ -8,6 +8,7 @@
       confirm) first.
     - Accepts the quest itself when QUEST still lists it as "Available".
       Without that, nobody in town reacts and Chapter 2 re-ran forever.
+      When QUEST doesn't list the quest at all, it stops right away.
     - Chapter 1 (town hall) TURNs the guidebook back to page one, since
       a book left open on a later page would otherwise read that page.
       It also gets the guidebook you carry first: the clerk's counter
@@ -129,11 +130,26 @@ QUEST_NAME = 'Welcome to Evermore Hollow'
 # don't line up cleanly with issue_command's line-by-line start/end
 # pattern matching. The plain-text downstream Lich provides via
 # usexml: false doesn't have that problem.
-def guidebookquest_quest_row
+def guidebookquest_quest_list_lines
   lines = Lich::Util.issue_command('quest list all', /Quest Name|Realm|available|not currently/i,
                                     /<prompt/, timeout: 6, silent: true, quiet: true, usexml: false) rescue []
   Array(lines).map(&:to_s)
-              .find { |l| l =~ /\d+\)\s+#{Regexp.escape(QUEST_NAME)}/i }
+end
+
+def guidebookquest_quest_row
+  guidebookquest_quest_list_lines.find { |l| l =~ /\d+\)\s+#{Regexp.escape(QUEST_NAME)}/i }
+end
+
+# Brayis, 2026-11-03 (Ebon Gate's last day): QUEST came back with its
+# column headers and no quests at all. The town hall counter still hands
+# out a guidebook and Chapter 1 still "completes", but Chapter 2's
+# merchants never react, so the run just lapped them. Only a list that
+# arrived (its header is there) counts, so a timed-out QUEST doesn't stop
+# a run that would have worked.
+def guidebookquest_quest_not_offered?
+  lines = guidebookquest_quest_list_lines
+  lines.any? { |l| l =~ /Quest Name/ } &&
+    lines.none? { |l| l =~ /\d+\)\s+#{Regexp.escape(QUEST_NAME)}/i }
 end
 
 def guidebookquest_quest_slot
@@ -2176,6 +2192,11 @@ end
 @guidebookquest_redirects = @guidebookquest_redirect_objective = nil
 
 guidebookquest_transport_to_ebon_gate
+
+if guidebookquest_quest_not_offered?
+  echo "guidebookquest: QUEST doesn't list #{QUEST_NAME} for #{Char.name} at all, so it isn't open to this character (free accounts don't get it, and it may be gone now that Ebon Gate is ending) -- stopping."
+  exit
+end
 
 # A just-accepted quest's objective is the town hall clerk, and Chapter 1
 # picks the guidebook up there itself.
