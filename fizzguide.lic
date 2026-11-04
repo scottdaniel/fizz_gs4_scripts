@@ -2196,7 +2196,7 @@ guidebookquest_transport_to_ebon_gate
 
 if guidebookquest_quest_not_offered?
   # The town hall counter's guidebook is free with or without the quest,
-  # and Scott wants it anyway in case the account goes standard later.
+  # and Scott wants it anyway in case the quest opens up for this character later.
   guidebookquest_get_guidebook("get my guidebook")
   unless guidebookquest_guidebook_in_hand?
     Script.run("go2", go2_room("u8084004"))
@@ -2204,7 +2204,7 @@ if guidebookquest_quest_not_offered?
   end
   have_book = guidebookquest_guidebook_in_hand?
   fput "stow my guidebook" if have_book
-  echo "guidebookquest: QUEST doesn't list #{QUEST_NAME} for #{Char.name} at all, so it isn't open to this character (free accounts don't get it, and it may be gone now that Ebon Gate is ending). #{have_book ? 'You have the guidebook, in case that changes' : "Couldn't get a guidebook from the town hall counter either"} -- stopping."
+  echo "guidebookquest: QUEST doesn't list #{QUEST_NAME} for #{Char.name} at all, so the quest isn't running for this character (on 2026-11-03, Ebon Gate's last day, it was removed for everyone). #{have_book ? 'You have the guidebook, in case that changes' : "Couldn't get a guidebook from the town hall counter either"} -- stopping."
   exit
 end
 
