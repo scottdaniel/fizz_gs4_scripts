@@ -20,6 +20,9 @@
 #      SHIFT_GAP keeps a miss (no essence / on cooldown / out of uses) from being
 #      hammered; Return and Restoration still back it up. Rooted/immobile aren't
 #      detected (Lich only exposes stunned and webbed).
+#      11.03: in the Hollowlair Dreadgrounds (Sonreeva) the game refused it three times ("the
+#      demonic gates recede away from you ... You recoil back"), so after that reply SHIFT is
+#      skipped for the rest of that area (the title's first word); leaving it clears the block.
 #
 # Written after 10.05: stunned for 6 rounds, then 20s + 10s roundtime in a crowd
 # of incubi/inciters; the animate (and luck) kept Fizzleworth alive. There is NO
@@ -44,7 +47,12 @@ module Lifeguard
   RETURN_WAIT  = 12    # secs to wait for the teleport to take (room id changes)
   SHIFT_GAP    = 120   # secs between SHIFT attempts (own cooldown, few uses a day)
   SHIFT_WAIT   = 8     # secs to wait for SHIFT to move us (room id changes)
-  SHIFT_REPLY  = /bleed through the veil|gateways? reveal|cannot|can't|don't|do not|not enough|no shadow|cooldown|must wait|wait \d+|unable|already|Roundtime/i
+  # Chat lines ("[Help] Name: ...") start with a bracket: 11.03 one with "don't" in it was taken for
+  # the reply, so the real one (below) was never read.
+  SHIFT_REPLY  = /\A(?!\s*\[).*(?:bleed through the veil|gates recede|gateways? reveal|cannot|can't|don't|do not|not enough|no shadow|cooldown|must wait|wait \d+|unable|already|Roundtime)/i
+  # 11.03 18:47:58, three tries in a row in the Hollowlair Dreadgrounds; not a rank, essence or
+  # cooldown message, so SHIFT is skipped for the rest of that area.
+  SHIFT_REFUSED = /gates recede away from you/i
   PAUSE_SCRIPTS = %w[bigshot go2 Fizzleworth-attack-ultima Fizzleworth-attack-cat
                      Fizzleworth-attack-base sac4mana wander fizzsac] unless defined?(PAUSE_SCRIPTS)
 
@@ -143,7 +151,15 @@ module Lifeguard
     0
   end
 
+  # The area a room belongs to, from its title: "[Hollowlair, Dreadgrounds - ]" => "Hollowlair".
+  def region
+    XMLData.room_title.to_s[/\[([^,\]]+)/, 1].to_s.strip
+  rescue StandardError
+    ""
+  end
+
   # SACRIFICE SHIFT (see the header). Frozen like Return so nothing walks us out of it.
+  # @return :refused when the game won't open a gate here, else nil
   def emergency_shift
     echo "[lifeguard] !! health #{hp_pct}%, #{checkwebbed ? 'webbed' : 'stunned'} -- SACRIFICE SHIFT (essence #{essence})."
     $bigshot_should_rest = true
@@ -153,6 +169,10 @@ module Lifeguard
     begin
       reply = dothistimeout("sacrifice shift", 6, SHIFT_REPLY).to_s
       echo "[lifeguard] shift reply: #{reply.strip[0, 180]}"
+      if reply =~ SHIFT_REFUSED
+        echo "[lifeguard] SHIFT refused in #{region.empty? ? 'this room' : region} -- no more tries until you leave it; Return/Restoration still back it up."
+        return :refused
+      end
       deadline = Time.now + SHIFT_WAIT
       until Time.now > deadline
         return echo("[lifeguard] shifted out (now room #{Room.current.id}).") if (Room.current.id rescue nil) != start
@@ -160,6 +180,7 @@ module Lifeguard
         sleep 0.3
       end
       echo "[lifeguard] SHIFT didn't move us -- check the log for what the game said."
+      nil
     ensure
       thaw(mine)
     end
@@ -170,14 +191,16 @@ module Lifeguard
     last_restore = 0.0
     last_return  = 0.0
     last_shift   = 0.0
+    shift_blocked = nil   # area where the game refused a SHIFT; cleared by leaving it
     loop do
       Script.current.kill if checkdead
       if on? && hostiles?
         hp = hp_pct
         now = Time.now.to_f
-        if flag(:lifeguard_shift) && stuck? && hp <= pct(:lifeguard_shift_pct, 50) && essence >= 1 && now - last_shift > SHIFT_GAP
+        shift_blocked = nil if shift_blocked && shift_blocked != region
+        if flag(:lifeguard_shift) && !shift_blocked && stuck? && hp <= pct(:lifeguard_shift_pct, 50) && essence >= 1 && now - last_shift > SHIFT_GAP
           last_shift = now
-          emergency_shift
+          shift_blocked = region if emergency_shift == :refused
         elsif hp <= pct(:lifeguard_return_pct, 25) && now - last_return > RETURN_GAP
           last_return = now
           emergency_return
