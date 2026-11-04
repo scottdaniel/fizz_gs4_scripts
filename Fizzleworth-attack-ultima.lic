@@ -286,7 +286,7 @@ end
 # these (they're out of hostiles), and walk out of the room when one is the target. The worm and
 # void names are from chat, not yet seen in the game -- fix the pattern on the first real sighting.
 def hazard?(foe)
-  foe && foe.name.to_s =~ /vvrael witch|black void|\bworm\b|\bcaedera\b|\bcsetairi\b/i ? true : false
+  foe && foe.name.to_s =~ /vvrael witch|vvrael warlock|black void|\bworm\b|\bcaedera\b|\bcsetairi\b/i ? true : false
 end
 
 # inciter / incubus / vision / Rift Plane One -- the ones that cast and so get 703
