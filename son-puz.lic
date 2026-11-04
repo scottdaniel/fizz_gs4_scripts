@@ -59,7 +59,7 @@
 #                                            about a minute later)
 #   Demon Roost (safe room)                  GO GAP, up, GO TUNNEL [typed], north x2, up x2 the Bone Church
 #                                            to the Tower
-#   Tower                                    GO PORTAL once the rune ring is disarmed (a rogue's job)
+#   Tower                                    DISARM RUNES [typed, a guess], then GO PORTAL (Rogue and Sorcerer guides both did it)
 #   the ash field                            GO PATH, then run me again within 30 s to confirm [typed]: the
 #                                            point of no return
 #   the pool (boss room)                     LOOK IN POOL for the gateway, put the soulstone heart in it,
@@ -90,6 +90,17 @@ module SonPuz
   ].freeze
   WALL_JET   = /jet of sc[ao]lding-hot steam sprays toward you/i   # the log spells it "scolding"
   DOOR_SEEN  = /\bdoor\b.*(?:depression|open|closed)/i
+  # The Tower's rune ring round the portal. Seen on 10/26 (Nety, a Rogue) and 11/03 (Rolfard, a
+  # Sorcerer, so it isn't only a Rogue's job): the room reads "a ring of glowing blue runes" until it is
+  # disarmed, then "a ring of faded runes". A failed try explodes the runes on the one disarming
+  # (5 points of cold damage to Nety). The log only shows what OTHERS see ("Rolfard disarms the runes"),
+  # so the command DISARM RUNES is a guess from that wording.
+  RUNES_UP     = /glowing blue runes/i
+  RUNES_DOWN   = /faded runes/i
+  DISARM_DONE  = /runes dim and the barrier around an unstable magical portal fades/i
+  DISARM_BOOM  = /runes.{0,40}explode|explode.{0,40}runes/i
+  DISARM_TRIES = 3
+  DISARM_MIN_HP = 60   # percent; don't keep setting off the runes below this
   # the Bone Church on the way to the tower: the step to take in each room
   CHURCH_STEP = [[/Narthex|Nave/i, 'north'], [/Altar/i, 'up'], [/Tower Approach/i, 'up']].freeze
   # loop room (by what its description says) => the step toward the Dead End
@@ -473,10 +484,38 @@ module SonPuz
       return say("don't know the way from #{title.strip}.") unless cmd
       return say("couldn't go #{cmd}.") unless step(cmd)
     end
-    say "at the tower. The rune ring round the portal has to be disarmed (Nety did it; it explodes on a failure), then run me again." if where == :tower
+    say "at the tower. Run me again: I'll try to disarm the rune ring round the portal, then go through." if where == :tower
+  end
+
+  # Disarm the rune ring (see RUNES_UP above), then GO PORTAL. DISARM RUNES is unverified: if the game
+  # answers something else, its words are echoed and nothing more is tried.
+  # @return true when the ring is down (or was already)
+  def self.disarm_runes
+    return true if descr =~ RUNES_DOWN
+    DISARM_TRIES.times do |i|
+      if Char.percent_health.to_i < DISARM_MIN_HP
+        say "health under #{DISARM_MIN_HP}% -- not setting the runes off again; heal and run me again."
+        return false
+      end
+      say "rune ring is up -- DISARM RUNES (try #{i + 1}/#{DISARM_TRIES})."
+      waitrt?
+      r = dothistimeout("disarm runes", 8, Regexp.union(DISARM_DONE, DISARM_BOOM, /could not find|referring|no target|cannot|can't|don't|not /i)).to_s
+      waitrt?
+      sleep 0.5
+      return true if r =~ DISARM_DONE || descr =~ RUNES_DOWN
+      if r =~ DISARM_BOOM
+        say "they exploded; trying again."
+        next
+      end
+      say "DISARM RUNES answered: #{r.strip.empty? ? 'nothing I recognise' : r.strip[0, 160]} -- disarm the ring by hand (or ask a guide), then run me again."
+      return false
+    end
+    say "still up after #{DISARM_TRIES} tries -- disarm the ring by hand (or ask a guide), then run me again."
+    false
   end
 
   def self.at_tower
+    return unless disarm_runes
     say "-> go portal."
     say "couldn't go through the portal -- is the rune ring still up?" unless step("go portal", 8)
   end
