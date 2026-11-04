@@ -1,0 +1,203 @@
+# son-sell.lic
+# Sells the Sonreeva puzzle-item leftovers (pumpkins, cubes, pentacles, vortexes ...) to the gem
+# dealer, out of the "Special" line of your stow container, and NEVER the pulsating soulstone
+# heart.
+#
+#   ;son-sell              go to the gem dealer (;go2 gemshop) if you're not there and sell
+#   ;son-sell dry          only read the container and print what it would sell / keep
+#   ;son-sell max=20000    skip anything the dealer would pay more than this (default 10000)
+#   ;son-sell in=sack      look in a different container (default: cloak)
+#
+# What counts as a leftover is a list of shape/item nouns (NOUNS below), not "everything in
+# Special": older Special lists also had orbs, a mithril cup and a promissory note, and the dealer
+# would happily buy an orb. The dealer is asked to APPRAISE each piece first (the way the uncut
+# diamond was quoted 11/03) and only gets SELL when the quote is at most max=, so a piece that is
+# secretly worth money stays in the container. Verified 11/03 22:48: `sell pumpk` -> "The gem
+# dealer takes the peridot pumpkin ... hands you 31 silver for it."; a non-gem is refused with
+# "That's not quite my field ... I only deal in gems and jewelry." (the guidebook is probably
+# refused that way -- the script says so and puts it back).
+
+module SonSell
+  module_function
+
+  # Not sphere, vial or syringe: Scott keeps those (11/04).
+  NOUNS = %w[glyph vortex cube pentacle pyramid talon helix pumpkin caduceus fang chevron
+             guidebook].freeze
+  KEEP        = /\bheart\b/i
+  DEFAULT_MAX = 10_000
+  REFUSED     = /not quite my field|only deal in/i
+  QUOTE       = /give you ([\d,]+) silvers?/i
+  PAID        = /hands you ([\d,]+) silvers?/i
+  GOT_IT      = /You (?:retrieve|remove|take|get|pull|slip)|referring|could not find|free hand|hands are full|need a free/i
+  NO_HAND     = /free hand|hands are full|need a free/i
+
+  def say(msg)
+    echo "[son-sell] #{msg}"
+  end
+
+  def options
+    opts = { dry: false, max: DEFAULT_MAX, container: "cloak" }
+    Script.current.vars[1..-1].to_a.compact.map(&:to_s).each do |a|
+      case a
+      when /\A(?:dry|list|test)\z/i then opts[:dry] = true
+      when /\Amax=([\d,]+)\z/i      then opts[:max] = Regexp.last_match(1).delete(",").to_i
+      when /\Ain=([\w.-]+)\z/i      then opts[:container] = Regexp.last_match(1)
+      end
+    end
+    opts
+  end
+
+  # [[name, count], ...] from the Special line of LOOK IN, e.g.
+  #   Special [32]: a brass and gold sphere (3), a shadowy leatherbound guidebook, ...
+  # nil when the container has no Special line.
+  def special_items(container)
+    lines = []
+    put "look in my #{container}"
+    deadline = Time.now.to_f + 4
+    until Time.now.to_f >= deadline
+      line = get?
+      if line.nil?
+        sleep 0.05
+        next
+      end
+      lines << line
+      break if line =~ /^Total items:|^In .+ you see |There (?:is|are) nothing|is closed|can't look/i
+    end
+    special = lines.find { |l| l =~ /\ASpecial \[\d+\]:/ }
+    return nil unless special
+    special.sub(/\ASpecial \[\d+\]:\s*/, "").split(/,\s*/).map do |s|
+      s = s.strip.sub(/\Aand\s+/i, "")
+      m = s.match(/\A(.+?)\s*\((\d+)\)\z/)
+      name, count = m ? [m[1], m[2].to_i] : [s, 1]
+      [name.sub(/\A(?:an?|the|some)\s+/i, ""), count]
+    end.reject { |name, _| name.empty? }
+  end
+
+  def noun_of(name)
+    name.to_s.split.last.to_s
+  end
+
+  def sellable?(name)
+    NOUNS.include?(noun_of(name).downcase) && name !~ KEEP
+  end
+
+  # The hand object holding a <noun>, polled briefly -- the hand update lags the reply.
+  def hand_with(noun, wait = 2.0)
+    deadline = Time.now.to_f + wait
+    loop do
+      h = [GameObj.right_hand, GameObj.left_hand].compact.find { |o| o.noun.to_s.casecmp?(noun) }
+      return h if h
+      return nil if Time.now.to_f >= deadline
+      sleep 0.2
+    end
+  end
+
+  def stow_back(item)
+    right = GameObj.right_hand
+    fput "stow #{right && right.id == item.id ? 'right' : 'left'}"
+  end
+
+  def at_dealer?
+    XMLData.room_title.to_s =~ /Gemcutter|gem ?shop/i || Array(GameObj.npcs).any? { |n| n && n.name.to_s =~ /gem dealer/i } ? true : false
+  rescue StandardError
+    false
+  end
+
+  def go_to_dealer
+    return true if at_dealer?
+    say "not at a gem dealer -- ;go2 gemshop."
+    Script.run("go2", "gemshop")
+    at_dealer?
+  end
+
+  # One piece with this noun out of the container and to the dealer (GET by noun alone: the
+  # names have "and" in them, and the one you get doesn't matter). Returns
+  # [:sold / :refused / :pricey / :unknown / :nohand / :missing, detail, the item's name].
+  def sell_one(noun, max)
+    waitrt?
+    reply = dothistimeout("get #{noun} from my #{@container}", 4, GOT_IT).to_s
+    return [:nohand, reply, noun] if reply =~ NO_HAND
+    item = hand_with(noun)
+    return [:missing, reply.strip.empty? ? "no answer to GET" : reply.strip[0, 140], noun] unless item
+    name = item.name.to_s
+    if name =~ KEEP
+      stow_back(item)
+      return [:missing, "picked up #{name} -- put it back, not selling it", name]
+    end
+
+    quote = dothistimeout("appraise #{noun}", 5, Regexp.union(QUOTE, REFUSED)).to_s
+    if quote =~ REFUSED
+      stow_back(item)
+      return [:refused, nil, name]
+    end
+    price = quote[QUOTE, 1]
+    if price.nil?
+      stow_back(item)
+      return [:unknown, "appraise answered: #{quote.strip.empty? ? 'nothing' : quote.strip[0, 140]}", name]
+    end
+    price = price.delete(",").to_i
+    if price > max
+      stow_back(item)
+      return [:pricey, price, name]
+    end
+
+    sale = dothistimeout("sell #{noun}", 5, Regexp.union(PAID, REFUSED)).to_s
+    if sale =~ PAID
+      [:sold, sale[PAID, 1].delete(",").to_i, name]
+    elsif sale =~ REFUSED
+      stow_back(item) if hand_with(noun, 0.5)
+      [:refused, nil, name]
+    else
+      left = hand_with(noun, 1.0)
+      stow_back(left) if left
+      [:unknown, "sell answered: #{sale.strip.empty? ? 'nothing' : sale.strip[0, 140]}", name]
+    end
+  end
+
+  def run
+    o = options
+    @container = o[:container]
+    items = special_items(@container)
+    if items.nil?
+      say "no Special line in 'look in my #{@container}' -- nothing to sell (or wrong container: in=<name>)."
+      return
+    end
+    sell, keep = items.partition { |name, _| sellable?(name) }
+    say "will sell #{sell.sum { |_, c| c }}: " + (sell.map { |n, c| c > 1 ? "#{n} (#{c})" : n }.join(", ").then { |s| s.empty? ? "nothing" : s })
+    say "leaving alone #{keep.sum { |_, c| c }}: " + (keep.map { |n, c| c > 1 ? "#{n} (#{c})" : n }.join(", ").then { |s| s.empty? ? "nothing" : s })
+    return if o[:dry] || sell.empty?
+    return say("can't find the gem dealer -- go to the gemshop and run me again.") unless go_to_dealer
+
+    total = 0
+    sold = 0
+    left = []
+    by_noun = sell.group_by { |name, _| noun_of(name).downcase }.map { |noun, rows| [noun, rows.sum { |_, c| c }] }
+    by_noun.each do |noun, count|
+      count.times do
+        result, detail, name = sell_one(noun, o[:max])
+        case result
+        when :sold
+          sold += 1
+          total += detail
+          say "sold #{name} for #{detail}."
+        when :nohand
+          say "both hands are full -- free one and run me again."
+          return report(sold, total, left)
+        else
+          why = { refused: "dealer won't buy it", pricey: "dealer would pay #{detail} (over max=#{o[:max]})",
+                  unknown: detail, missing: detail }[result].to_s.sub(/\.+\z/, "")
+          say "kept #{name}: #{why}."
+          left << name
+          break   # the rest of these would answer the same
+        end
+      end
+    end
+    report(sold, total, left)
+  end
+
+  def report(sold, total, left)
+    say "done: sold #{sold} for #{total} silver." + (left.empty? ? "" : " Still in the #{@container}: #{left.join('; ')}.")
+  end
+end
+
+SonSell.run
