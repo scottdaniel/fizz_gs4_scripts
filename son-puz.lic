@@ -44,7 +44,9 @@
 #                                            then down x7 the Collapsed Tunnel [map] to the Cistern
 #   Cistern                                  SWIM [typed]: drops through a hatch that locks behind you
 #   Sunken Chamber                           south, then down x4 / north x5 to the Demon Wall [text]
-#   Demon Wall                               the monolithic stone door wants an ouroboros (door routine)
+#   Demon Wall                               TWIST WALL (shuts off the steam), TURN WALL (teeth), PUSH WALL
+#                                            (tongue), in that order [typed 11.03]: the monolithic stone
+#                                            door appears and wants an ouroboros (door routine)
 #   Hollowlair, Dreadgrounds                 a shifting maze it can't solve; in the room with "the heavily
 #                                            carved door" it WHISPERs "door six" [typed], which sends you
 #                                            alone to the Dark Sanctuary
@@ -78,6 +80,16 @@ module SonPuz
   OFFER_STOP  = /not enough|don't have|cannot afford|can't afford/i
   GAVE_WAY    = /causing it to give way and dump you into the darkness|give way and dump you/i
   DOOR_OPENS  = /causing the .*(?:door|gateway) to open/i
+  # the Demon Wall puzzle, verified in the 11.03 18:44 log. The order matters: TURN WALL with the
+  # steam still on only got "A jet of scalding-hot steam sprays toward you!" (18:43:08). `look wall`
+  # starts as "teeth face toward you ... Scalding hot steam billows ... tongue is raised".
+  WALL_STEPS = [
+    ['twist wall', /Scalding hot steam billows/i, /shutting off the steam/i],
+    ['turn wall',  /teeth face toward you/i,      /turn the razor-sharp teeth to face away/i],
+    ['push wall',  /tongue is raised/i,           /revealing a monolithic stone door/i]
+  ].freeze
+  WALL_JET   = /jet of sc[ao]lding-hot steam sprays toward you/i   # the log spells it "scolding"
+  DOOR_SEEN  = /\bdoor\b.*(?:depression|open|closed)/i
   # the Bone Church on the way to the tower: the step to take in each room
   CHURCH_STEP = [[/Narthex|Nave/i, 'north'], [/Altar/i, 'up'], [/Tower Approach/i, 'up']].freeze
   # loop room (by what its description says) => the step toward the Dead End
@@ -341,7 +353,34 @@ module SonPuz
       cmd = exits.include?('down') ? 'down' : 'north'
       return say("couldn't go #{cmd}.") unless step(cmd)
     end
-    say "at the Demon Wall; run me again to put the ouroboros in its door." if where == :demon_wall
+    say "at the Demon Wall; run me again to work the wall and open its door." if where == :demon_wall
+  end
+
+  # The wall has no door until the maw is worked in order: valve (steam), teeth, tongue. A step runs
+  # only while `look wall` still shows its starting state, so a half-worked wall picks up where it
+  # stopped; if the look can't be read, all three run in order and stop at the first odd answer.
+  def self.door_here?
+    r = dothistimeout("look door", 3, Regexp.union(DOOR_SEEN, /could not find|What were you referring/i)).to_s
+    r =~ DOOR_SEEN ? true : false
+  end
+
+  def self.at_demon_wall
+    unless door_here?
+      waitrt?
+      state = dothistimeout("look wall", 4, /teeth|tongue|steam|could not find|What were you referring/i).to_s
+      readable = state =~ /teeth|tongue|steam/i
+      say "can't read the wall (#{state.strip[0, 100]}) -- trying all three steps in order." unless readable
+      WALL_STEPS.each do |cmd, todo, done|
+        next if readable && state !~ todo
+        waitrt?
+        r = dothistimeout(cmd, 4, Regexp.union(done, WALL_JET, /rephrase|could not find|What were you referring/i)).to_s
+        return say("`#{cmd}` answered: #{r.strip[0, 120]} -- stopping; finish the wall by hand.") unless r =~ done
+        say "#{cmd}: done."
+        sleep 0.3
+      end
+      return say("worked the wall but no door showed up.") unless door_here?
+    end
+    door
   end
 
   # ---- Hollowlair ----------------------------------------------------------------
@@ -491,7 +530,7 @@ module SonPuz
 
   # the door names the shape it wants; get that item, put it in, go through
   def self.door
-    r = dothistimeout("look door", 4, /\bdoor\b.*(?:depression|open|closed)/i).to_s
+    r = dothistimeout("look door", 4, DOOR_SEEN).to_s
     shape = r[/in the shape of an? (\w+)/i, 1]
     if shape.nil?
       say "no empty depression in the door text (#{r.strip[0, 120]}) -- trying to go through."
@@ -543,7 +582,7 @@ module SonPuz
     when :cistern        then at_cistern
     when :sunken         then at_sunken
     when :depths         then at_depths
-    when :demon_wall     then door
+    when :demon_wall     then at_demon_wall
     when :dreadgrounds   then at_dreadgrounds
     when :sanctuary      then at_sanctuary
     when :shrine         then at_shrine
