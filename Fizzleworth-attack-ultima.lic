@@ -22,12 +22,14 @@
 #     pestilent vision           spellcasting ~15s. All three cast, so silencing
 #                                them is worth more than a web. 3 mana, once per
 #                                target ($ult_silenced_id).
-#   * The Rift, Plane One      -> Corrupt Essence (703) on naisirc (L75), seraceris
-#     (10.31)                    (L78) and vvrael witch (L80), same as the Den's
-#                                casters. The raving lunatic (L77, miniboss) is the
-#                                exception and gets Web (118) -- see rift_silence?.
-#                                The non-corporeal ones (naisirc, seraceris) are also
-#                                skipped for Grasp (709), like the visions.
+#   * The Rift, Plane One      -> Corrupt Essence (703) on naisirc (L75) and seraceris
+#     (10.31)                    (L78), same as the Den's casters. The raving lunatic
+#                                (L77, miniboss) is the exception and gets Web (118) --
+#                                see rift_silence?. The non-corporeal ones (naisirc,
+#                                seraceris) are also skipped for Grasp (709), like the
+#                                visions. Vvrael witches, black voids and worms are
+#                                hazards (11.04, see hazard?): never cast at, walked away
+#                                from.
 #   * anything unrecognised    -> Web (118), same as -base.
 #
 # CROWD CONTROL (2026-10-05): the disable above isn't just for the active target.
@@ -271,10 +273,20 @@ def animate_target?(foe)
 end
 
 # The Rift, Plane One (gswiki The_Rift, 10.31): naisirc L75, raving lunatic L77, seraceris L78,
-# vvrael witch L80. All of them but the lunatic get 703 (the lunatic falls through to Web in the
-# main flow). A METHOD, not a constant, so edits apply to the next hunt without a Lich restart.
+# vvrael witch L80. naisirc and seraceris get 703 (the lunatic falls through to Web in the main
+# flow; the witch is a hazard, below). A METHOD, not a constant, so edits apply to the next hunt
+# without a Lich restart.
 def rift_silence?(foe)
-  foe && foe.name.to_s =~ /naisirc|seraceris|vvrael witch/i
+  foe && foe.name.to_s =~ /naisirc|seraceris/i
+end
+
+# Rift hazards (11.04, Bertred and Siarnaq in the Help channel before Scott's first Rift trip): the
+# vvrael witches are immune to magic, so every cast at one is wasted; black voids wander about
+# and injure you ("move away from them"); worms are "like giant roa'ters -- run". Never cast at
+# these (they're out of hostiles), and walk out of the room when one is the target. The worm and
+# void names are from chat, not yet seen in the game -- fix the pattern on the first real sighting.
+def hazard?(foe)
+  foe && foe.name.to_s =~ /vvrael witch|black void|\bworm\b/i ? true : false
 end
 
 # inciter / incubus / vision / Rift Plane One -- the ones that cast and so get 703
@@ -446,7 +458,7 @@ CC_SILENCE_GAP = 18 unless defined?(CC_SILENCE_GAP)   # secs before re-silencing
 GRASP_GAP      = 6 unless defined?(GRASP_GAP)    # min secs between Grasp casts
 
 def hostiles
-  GameObj.targets.select { |t| t && t.status.to_s !~ /dead|gone/ && t.name.to_s !~ /animated|verlok/i }
+  GameObj.targets.select { |t| t && t.status.to_s !~ /dead|gone/ && t.name.to_s !~ /animated|verlok/i && !hazard?(t) }
 end
 
 def floored?(t)
@@ -529,6 +541,7 @@ end
 # (Incubi waited for the animate too until 11.01, when 5 of a night's 23 incubus kills turned out
 # to have happened before it.)
 def avoiding?(foe)
+  return true if hazard?(foe)   # always, whatever ult_avoid_low says
   avoid_low_on? && low_level?(foe) && ($ult_reanim_done || foe.name.to_s !~ /Ivasian inciter/i)
 end
 
@@ -536,7 +549,7 @@ end
 # bigshot happened to target; with nothing better here, `foe` stays.
 def worthwhile_instead(foe)
   return foe unless avoiding?(foe)
-  hostiles.find { |t| !low_level?(t) } || foe
+  hostiles.find { |t| !low_level?(t) } || foe   # hostiles has no hazards
 end
 
 # Thrash cap (10.13 log: 19 bursts of 3+ leaves within 10s, e.g. bigshot flipping
@@ -567,7 +580,7 @@ def leave_room(foe)
   opts   = room.wayto.keys.map(&:to_s) - bounds.map(&:to_s)
   opts.delete_if { |id| room.timeto[id].is_a?(StringProc) && room.timeto[id].call.nil? } rescue nil
   return false if opts.empty?
-  echo "[ultima] #{foe.name.to_s.sub(/\A(?:an?|the) /i, '')} is low-level -- leaving the room."
+  echo "[ultima] #{foe.name.to_s.sub(/\A(?:an?|the) /i, '')} #{hazard?(foe) ? 'is a hazard' : 'is low-level'} -- leaving the room."
   ($ult_leaves ||= []) << Time.now.to_f
   Script.run("go2", "#{opts.sample} --disable-confirm", { quiet: true })
   true
@@ -690,6 +703,13 @@ end
 
 # Walk away from low-exp visions (always) and inciters / incubi (after the animate).
 exit if avoiding?(foe) && leave_room(foe)
+# A hazard we couldn't walk away from (hop cap, webbed, no exit): cast nothing at it -- bigshot's
+# own flee list handles it -- and don't let bigshot relaunch us in a tight loop.
+if hazard?(foe)
+  echo "[ultima] #{foe.name.to_s.sub(/\A(?:an?|the) /i, '')} is a hazard and I can't leave -- not casting at it."
+  sleep 2
+  exit
+end
 
 # Crowd control first: disable everyone else in the room, Grasp a crowd.
 crowd_control(foe)
