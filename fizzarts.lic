@@ -8112,10 +8112,11 @@ module BlackArts
 
     # Disguises from the demon illusions (gswiki Illusions and Minor demon messaging): Igaesha as a
     # hawk/osprey/buzzard/vulture/condor, Imp and Shien as a gnoll, Verlok as a raven/parrot/stork/
-    # toucan, Grantris as a ferret/mink, Aishan as a wolf/jackal, Arashan as a spinner/tarantula,
-    # Abyran and Grik as a robed/masked/caped/cowled/hooded figure
+    # toucan, Grantris as a ferret/mink (also a weasel, ermine or stoat, seen 2026-11-04), Aishan
+    # as a wolf/jackal, Arashan as a spinner/tarantula, Abyran and Grik as a robed/masked/caped/
+    # cowled/hooded figure
     def self.disguised?(noun)
-      noun.to_s.downcase =~ /\A(?:hawk|osprey|buzzard|vulture|condor|gnoll|raven|parrot|stork|toucan|ferret|mink|wolf|jackal|spinner|tarantula|figure)\z/ ? true : false
+      noun.to_s.downcase =~ /\A(?:hawk|osprey|buzzard|vulture|condor|gnoll|raven|parrot|stork|toucan|ferret|mink|weasel|ermine|stoat|wolf|jackal|spinner|tarantula|figure)\z/ ? true : false
     end
 
     # Illusions rank at which each minor demon type can be illusioned (gswiki Illusions page).
