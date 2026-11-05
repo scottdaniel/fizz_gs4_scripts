@@ -41,8 +41,8 @@
 # `;vars set ult_cc=off`.
 #
 # ONE-SHOT ANIMATE BUDDY: the first creature matching animate_target? of a
-# hunt (the Ivasian inciter in the Den, the raving lunatic in the Rift -- see
-# animate_target?), if we don't already have an animate up, is handed to `;reanim` (Pain 711 to death, then
+# hunt (the Ivasian inciter in the Den, the raving lunatic in the Rift, the minotaur warrior on the
+# Hidden Plateau -- see animate_target?), if we don't already have an animate up, is handed to `;reanim` (Pain 711 to death, then
 # Animate Dead 730 the corpse into a buddy that tanks/attacks for us). Just
 # once per hunt -- $ult_reanim_done latches it, and reanim.lic clears that
 # latch from its `;reanim die` end-of-hunt teardown (Fizzleworth-prep clears
@@ -270,8 +270,16 @@ end
 # Lich keeps constants alive across script runs, so a guarded constant keeps
 # its OLD value until the whole Lich session restarts (10.03: the vereri
 # switch didn't apply to the next hunt for exactly that reason).
+#
+# The Hidden Plateau (11/04): the minotaur warrior (L76, weapon + Bull Rush / Disarm / Charge / Ground
+# Slam, no immunities). Verified by hand with ;fizzanim at 20:51: Pain killed one in about 16 s, the
+# appraise said "suitable for animation" and Animate Dead took it. Not the magus (it casts, wears Spell
+# Shield) or the lesser minotaur. The "animated" guard keeps the buddy itself from ever matching.
 def animate_target?(foe)
-  foe && foe.name.to_s =~ /Ivasian inciter|raving lunatic/i
+  return false unless foe
+  n = foe.name.to_s
+  return false if n =~ /animated/i
+  n =~ /Ivasian inciter|raving lunatic|minotaur warrior/i ? true : false
 end
 
 # The Rift, Plane One (gswiki The_Rift, 10.31): naisirc L75, raving lunatic L77, seraceris L78,
