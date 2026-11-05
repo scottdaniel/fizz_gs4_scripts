@@ -21,8 +21,9 @@
       - ;fizzarts ia (interactive): speed tasks and Arcane Master lessons stay automatic;
         teach, learn and audience Illusions tasks wait for you to NOD (keep it and do it
         yourself; fizzarts waits, then turns it in) or SHAKE your head (trade it in).
-        Before taking over movement again (after the guild's wait, or after a task you did
-        yourself) it asks first: NOD to carry on, SHAKE to wait 5 more minutes.
+        Before taking over movement again (after the guild's wait, after a task you did
+        yourself, or after its audience reps) it asks first: NOD to carry on, SHAKE to wait
+        5 more minutes.
         Audience tasks are different: NOD lets fizzarts do just the reps (no automated
         apology or nod watching, since you're doing the talking), and "fizzarts pause" /
         "fizzarts resume" hold them (you can move while paused).
@@ -7414,14 +7415,16 @@ module BlackArts
 
     # Audience tasks in interactive mode: NOD and fizzarts does just the reps (no apology or nod
     # watching, since you're doing the talking); "fizzarts pause" / "fizzarts resume" hold them any
-    # time. SHAKE trades the task in.
+    # time. When the reps are done it asks before walking you back to turn the task in, since
+    # you're probably still talking to someone. SHAKE trades the task in.
     def self.interactive_audience(skill, task)
       answer = Guild.nod_or_shake(lambda {
         Util.msg("yellow", " Your #{skill} task: #{task}.")
-        Util.msg("yellow", " NOD to let fizzarts do the audience reps (type \"fizzarts pause\" any time to hold them), or SHAKE your head to trade it in.")
+        Util.msg("yellow", " NOD to let fizzarts do the audience reps (it will take you to an audience; type \"fizzarts pause\" any time to hold them), or SHAKE your head to trade it in.")
       })
       if answer == :nod
         Illusions.do_illusions(place: 'audience')
+        Guild.interactive_resume("Your audience reps are done, so it's time to go back and turn the task in.")
       else
         Guild.remove_task(skill)
       end
