@@ -10,7 +10,10 @@
 #
 # bigshot reads $bigshot_flee at the top of should_flee? and clears it after each move, so setting it
 # every poll while the hazard is here keeps it fleeing, room after room, until none is left.
-# Black voids are already handled by the profile's flee_voids (a regex on the room objects).
+# Black voids too (11/04 evening): "The air begins to thin rapidly ... Air is sucked away from you!" is a
+# swirling black void's attack, and bigshot's own flee_voids didn't get it out of the room (log: it fought
+# in rooms listing "a swirling black void" for 9+ s). Voids can show up as room objects or as creatures,
+# so every list is checked.
 #
 # 11/04 evening: caedera ("explodes from the ground"; Lich files it as a Worm, so the "worm" players warned
 # about) and csetairi (L81) added -- Scott called them dangerous. The bare word "worm" would NOT have
@@ -25,6 +28,7 @@ module WitchGuard
 
   POLL   = 0.3
   HAZARD = /\b(?:witch|warlock|worm|caedera|csetairi)\b/i   # noun or name; "Vvrael witch", "Vvrael warlock", "caedera", "csetairi"
+  VOID   = /black void/i                                    # "a swirling black void"
 
   def hazard_here
     Array(GameObj.npcs).find do |n|
@@ -32,12 +36,21 @@ module WitchGuard
     end
   end
 
+  # A black void in the room, wherever Lich filed it (room objects, room description, creatures).
+  def void_here
+    (Array(GameObj.loot) + Array(GameObj.room_desc) + Array(GameObj.npcs)).find do |o|
+      o && o.name.to_s =~ VOID && o.status.to_s !~ /dead|gone/
+    end
+  rescue StandardError
+    nil
+  end
+
   def run
-    echo "[witchguard] on: making bigshot flee from witches, warlocks, caedera, csetairi and worms."
+    echo "[witchguard] on: making bigshot flee from witches, warlocks, caedera, csetairi, worms and black voids."
     seen = nil
     loop do
       begin
-        hazard = hazard_here
+        hazard = hazard_here || void_here
         if hazard
           $bigshot_flee = true
           if seen != hazard.id

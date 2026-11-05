@@ -87,6 +87,7 @@ SPELL_WEB_MANA       = 5 unless defined?(SPELL_WEB_MANA)   # TARGETED 118 (not e
 SPELL_CORRUPT_MANA   = (Spell[703].mana_cost.to_i.positive? ? Spell[703].mana_cost.to_i : 3)  unless defined?(SPELL_CORRUPT_MANA)
 SPELL_MAELSTROM_MANA = (Spell[710].mana_cost.to_i.positive? ? Spell[710].mana_cost.to_i : 10) unless defined?(SPELL_MAELSTROM_MANA)
 SPELL_TETHER_MANA    = (Spell[706].mana_cost.to_i.positive? ? Spell[706].mana_cost.to_i : 6)  unless defined?(SPELL_TETHER_MANA)
+SPELL_BLOOD_MANA     = (Spell[701].mana_cost.to_i.positive? ? Spell[701].mana_cost.to_i : 1)  unless defined?(SPELL_BLOOD_MANA)
 
 WEB_ENDROLL   = 101 unless defined?(WEB_ENDROLL)
 WEB_MAX_TRIES = 3   unless defined?(WEB_MAX_TRIES)
@@ -199,6 +200,7 @@ def hold_for_dot(seconds, foe)
   harvested  = false
   until Time.now.to_f >= deadline
     return if target_dead?(foe)
+    return if $bigshot_flee          # the witchguard wants out: stop holding for the DoT
     return if living_targets >= FLEE_HINT
     # once, in the back half of the hold: grab it for essence before the DoT
     # kills it (if the pool's low and it's frail)
@@ -376,6 +378,28 @@ def land_tether(foe)
   waitrt?
   cast_collect("incant 706")
   $ult_tethered_id = foe.id.to_i
+  waitcastrt?
+  waitrt?
+end
+
+# Blood Burst (701, 1 mana) on raving lunatics: they are living, not undead, so the blood spell works
+# on them and the caster gets the blood transfusion back (Scott 11/04). Once per pass, and only with
+# enough mana left that the 710 + 706 finish is still affordable. A METHOD, not a constant, so the
+# pattern can be edited without restarting Lich.
+def blood_burst_target?(foe)
+  foe && foe.name.to_s =~ /raving lunatic/i && foe.name.to_s !~ /animated/i ? true : false
+end
+
+def land_blood_burst(foe)
+  return if target_dead?(foe)
+  return if checkmana < SPELL_BLOOD_MANA + SPELL_MAELSTROM_MANA + SPELL_TETHER_MANA
+  waitcastrt?
+  waitrt?
+  text = cast_collect("incant 701")
+  if text =~ CANT_CAST_WOUNDED
+    Script.run("eherbs", "--spellcast")
+    return
+  end
   waitcastrt?
   waitrt?
 end
@@ -646,6 +670,10 @@ foe = worthwhile_instead(foe)
 
 exit if target_dead?(foe)
 
+# Fizzleworth-witchguard asked bigshot to flee (witch, warlock, caedera, csetairi, void): cast nothing and
+# hand control back so bigshot can leave (it only checks between attack passes).
+exit if $bigshot_flee
+
 if $ult_target != foe.id.to_i
   $ult_target      = foe.id.to_i
   $ult_webbed_id   = nil
@@ -723,6 +751,9 @@ elsif caster?(foe)
 else
   land_web(foe)                      # unknown -> web, same as -base
 end
+
+# Raving lunatics are living: Blood Burst (701) for the transfusion, once a pass.
+land_blood_burst(foe) if blood_burst_target?(foe) && !target_dead?(foe)
 
 # Shared DoT finish.
 got_dot = false
