@@ -1,0 +1,277 @@
+# quiet
+# sell-ingot.lic  (first line `# quiet`: Lich skips its "active"/"has exited" lines, so a
+# run with no ingots to sell prints nothing in the game window)
+#
+# Sells every bright gold ingot in your stow containers (and hands) to the gem dealer, banks
+# the silver they brought, and walks back to where it started. Not character-specific, and
+# not in any prerest (Scott, 11/04): run it by hand, or add Script.run("sell-ingot") to a
+# prerest right after ;eloot sell (and ;unburden).
+#
+# Why: ingots come out of boxes, eloot stows them, and its sell pass never sells them again:
+#   - eloot sells an ingot only when it WON'T FIT in any container at the locksmith pool
+#     (Sell.handle_ingot), e.g. Picko 11/04 23:04, "hands you 7,500 silver for it".
+#   - Otherwise a gold ingot is gameobj type "valuable", and eloot sells it at the gemshop
+#     only for characters whose sell_loot_types include "valuable". Fizzleworth, Salvi and
+#     Felixopedes leave that type out, so their ingots piled up (Fizzleworth's cloak had two
+#     on 11/04 until he sold them by hand at 22:22).
+#
+#   ;sell-ingot          sell them (nothing happens, and nothing is printed, if you have none)
+#   ;sell-ingot dry      only say where the ingots are
+#   ;sell-ingot nobank   sell them but keep the silver on hand
+#
+# Verified game text (saga logs):
+#   get    "You retrieve a bright gold ingot from one of the concealed pockets lining your
+#           spidersilk cloak."  (Fizzleworth 11/04 22:22)
+#          "You remove a bright gold ingot from in your grey wool cloak."  (Salvi 10/28)
+#   sell   "You ask the dealer if he would like to buy a bright gold ingot."
+#          "The gem dealer takes the gold ingot, gives it a careful examination and hands you
+#           7,488 silver for it."  (Fizzleworth 11/04; Icemule: "The gemcutter Zirconia takes
+#           the gold ingot, ... hands you 7,500 silver for it.", Picko 11/04)
+#   Ingots fetched 1,511 to 9,895 silver, all under eloot's 14,999 gemshop appraise limit, so
+#   this sells without appraising first.
+
+require 'yaml'
+
+module SellIngot
+  module_function
+
+  # Methods, not constants: Lich keeps a script's constants until it restarts, so an edit
+  # to a constant wouldn't apply on the next run (see the reservecheck 111 story).
+  def ingot_name
+    /\bgold ingot\b/i
+  end
+
+  def look_reply
+    Regexp.union(/That is closed/i, /is shut too tightly to see its contents/i,
+                 /In the(.*?)you see/i, /In the(.*?):/i, /There is nothing/i,
+                 /I could not find|What were you referring/i)
+  end
+
+  def get_reply
+    /You (?:retrieve|remove|take|get|pull|slip|grab)|referring|could not find|free hand|hands are full|need a free/i
+  end
+
+  def no_hand_reply
+    /free hand|hands are full|need a free/i
+  end
+
+  def paid_reply
+    /hands you ([\d,]+) silvers?/i
+  end
+
+  def refused_reply
+    /not quite my field|only deal in|basically worthless|Can't say I'm interested|not buying|What were you referring|could not find/i
+  end
+
+  def deposit_reply
+    /You deposit|That's a total of|silvers? to your account|You have no coins to deposit|don't have access|takes your silvers/i
+  end
+
+  def say(msg)
+    echo "sell-ingot: #{msg}"
+  end
+
+  def options
+    opts = { dry: false, bank: true }
+    Script.current.vars[1..-1].to_a.compact.map(&:to_s).each do |a|
+      case a
+      when /\A(?:dry|list|test)\z/i then opts[:dry] = true
+      when /\Ano-?bank\z/i          then opts[:bank] = false
+      end
+    end
+    opts
+  end
+
+  # adjective.noun matching the way the game does it (eloot's overflow_containers setting).
+  def container_matches?(obj, name)
+    words = name.to_s.strip.sub(/\Amy\s+/i, '').split(/[\s.]+/)
+    return false if words.empty?
+
+    obj.noun.to_s.casecmp?(words.last) && words[0..-2].all? { |word| obj.name.to_s =~ /\b#{Regexp.escape(word)}/i }
+  end
+
+  # eloot's overflow containers for this character, as names ("backpack, bag").
+  def overflow_names
+    path = File.join(DATA_DIR, XMLData.game, Char.name, "eloot.yaml")
+    settings = (YAML.unsafe_load_file(path) rescue YAML.load_file(path)) rescue nil
+    return [] unless settings.is_a?(Hash)
+
+    settings[:overflow_containers].to_s.split(',').map(&:strip).reject(&:empty?)
+  rescue StandardError
+    []
+  end
+
+  # Every container eloot might have put an ingot in: the whole STOW LIST (default, gem,
+  # treasure ... plus the overflow_container keys eloot adds), and eloot's overflow
+  # containers by name in case eloot hasn't run since login.
+  def loot_containers
+    begin
+      StowList.check(silent: true, quiet: true) unless StowList.checked? && StowList.valid?
+    rescue StandardError => e
+      say "couldn't read the STOW LIST (#{e.class}: #{e.message})."
+    end
+    found = []
+    (StowList.stow_list.values rescue []).each { |c| found << c if c.respond_to?(:id) && c.id }
+    inv = Array(GameObj.inv)
+    overflow_names.each do |name|
+      obj = inv.find { |o| container_matches?(o, name) }
+      found << obj if obj
+    end
+    found.uniq(&:id)
+  end
+
+  # Fresh contents of one container (LOOK IN, quietly), opening it if it's closed.
+  def contents_of(container)
+    lines = Lich::Util.issue_command("look in ##{container.id}", look_reply, usexml: true, silent: true, quiet: true, timeout: 5)
+    if lines.any? { |l| l =~ /That is closed|shut too tightly/i }
+      fput "open ##{container.id}"
+      @opened << container
+      Lich::Util.issue_command("look in ##{container.id}", look_reply, usexml: true, silent: true, quiet: true, timeout: 5)
+    end
+    Array(container.contents)
+  rescue StandardError => e
+    say "couldn't look in your #{container.name} (#{e.class}: #{e.message})."
+    []
+  end
+
+  # [[ingot, container it's in (nil = in a hand)], ...]
+  def find_ingots
+    held = [GameObj.right_hand, GameObj.left_hand].compact.select { |o| o.id && o.name.to_s =~ ingot_name }
+    found = held.map { |o| [o, nil] }
+    loot_containers.each do |c|
+      contents_of(c).each { |o| found << [o, c] if o.name.to_s =~ ingot_name }
+    end
+    found.uniq { |o, _| o.id }
+  end
+
+  def in_hand?(item)
+    [GameObj.right_hand, GameObj.left_hand].compact.any? { |o| o.id == item.id }
+  end
+
+  def hand_free?
+    checkright.nil? || checkleft.nil?
+  end
+
+  # GET needs a hand. eloot's sell normally leaves both empty, but a weapon can still be out:
+  # STORE it (to its sheath; plain STOW would drop a runestaff in the cloak).
+  def free_a_hand
+    return true if hand_free?
+
+    fput "store right"
+    sleep 0.5
+    return true if hand_free?
+
+    fput "store left"
+    sleep 0.5
+    hand_free?
+  end
+
+  def put_back(item, container)
+    return unless in_hand?(item)
+
+    if container
+      fput "put ##{item.id} in ##{container.id}"
+    else
+      fput "stow ##{item.id}"
+    end
+  end
+
+  # One ingot to the dealer. Returns [:sold, silver] or [:kept, why].
+  def sell_one(item, container)
+    unless in_hand?(item)
+      waitrt?
+      reply = dothistimeout("get ##{item.id}", 4, get_reply).to_s
+      return [:nohand, "both hands are full"] if reply =~ no_hand_reply
+
+      deadline = Time.now.to_f + 2
+      sleep 0.1 until in_hand?(item) || Time.now.to_f >= deadline
+      return [:kept, reply.strip.empty? ? "no answer to GET" : reply.strip[0, 140]] unless in_hand?(item)
+    end
+
+    waitrt?
+    sale = dothistimeout("sell ##{item.id}", 5, Regexp.union(paid_reply, refused_reply)).to_s
+    if sale =~ paid_reply
+      [:sold, Regexp.last_match(1).delete(',').to_i]
+    else
+      sleep 0.5
+      put_back(item, container)
+      [:kept, sale.strip.empty? ? "no answer from the dealer" : sale.strip[0, 140]]
+    end
+  end
+
+  def bank(amount)
+    return if amount <= 0
+
+    Script.run("go2", "bank")
+    reply = dothistimeout("deposit #{amount}", 3, deposit_reply).to_s
+    if reply =~ /You deposit|That's a total of|to your account|takes your silvers/i
+      say "banked #{amount} silver."
+    else
+      say "couldn't bank the #{amount} silver (#{reply.strip.empty? ? 'no answer' : reply.strip[0, 140]}) -- it's still on hand."
+    end
+  end
+
+  def go_back(home)
+    return if home.nil? || (Room.current.id rescue nil) == home
+
+    Script.run("go2", "#{home} --disable-confirm")
+  end
+
+  def close_opened
+    @opened.uniq(&:id).each { |c| fput "close ##{c.id}" }
+  end
+
+  def sell_all_ingots
+    @opened = []
+    opts = options
+    ingots = find_ingots
+    if ingots.empty?
+      say "no gold ingots on you." if opts[:dry]
+      close_opened
+      return
+    end
+
+    where = ingots.group_by { |_, c| c ? c.name : "your hands" }.map { |place, rows| "#{rows.size} in #{place}" }
+    say "#{ingots.size} gold ingot#{ingots.size == 1 ? '' : 's'}: #{where.join(', ')}."
+    if opts[:dry]
+      close_opened
+      return
+    end
+
+    unless free_a_hand
+      say "both hands are full and STORE didn't free one -- not selling."
+      close_opened
+      return
+    end
+
+    home = (Room.current.id rescue nil)
+    Script.run("go2", "gemshop")
+
+    sold = 0
+    total = 0
+    ingots.each do |item, container|
+      result, detail = sell_one(item, container)
+      case result
+      when :sold
+        sold += 1
+        total += detail
+        say "sold #{item.name} for #{detail} silver."
+      when :nohand
+        say "both hands are full -- stopping."
+        break
+      else
+        why = detail.to_s.strip
+        say "kept #{item.name}: #{why}#{why =~ /[.!?"]\z/ ? '' : '.'}"
+        break # the rest would get the same answer
+      end
+    end
+
+    close_opened
+    bank(total) if opts[:bank] && total.positive?
+    go_back(home)
+    left = ingots.size - sold
+    say "done: sold #{sold} for #{total} silver." + (left.positive? ? " #{left} still on you." : "")
+  end
+end
+
+SellIngot.sell_all_ingots
