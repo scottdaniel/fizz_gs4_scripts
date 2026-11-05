@@ -291,9 +291,17 @@ def hazard?(foe)
   foe && foe.name.to_s =~ /vvrael witch|vvrael warlock|black void|\bworm\b|\bcaedera\b|\bcsetairi\b/i ? true : false
 end
 
-# inciter / incubus / vision / Rift Plane One -- the ones that cast and so get 703
+# The Hidden Plateau's minotaur magus (L78, 11/04): casts Fire Spirit (111) bolts, Divine Fury (317), Spirit
+# Strike (117) and keeps Spell Shield / Spirit Defense up -- a caster, so 703 silences it. The minotaur
+# warrior and the lesser minotaur only fight with weapons and maneuvers (Bull Rush, Disarm, Charge, Ground
+# Slam) and get the Web (118) default. A METHOD so edits apply without a Lich restart.
+def minotaur_magus?(foe)
+  foe && foe.name.to_s =~ /minotaur magus/i ? true : false
+end
+
+# inciter / incubus / vision / Rift Plane One / minotaur magus -- the ones that cast and so get 703
 def caster?(foe)
-  foe && (foe.name.to_s =~ INCITER_RE || foe.name.to_s =~ INCUBUS_RE || foe.name.to_s =~ VISION_RE || rift_silence?(foe))
+  foe && (foe.name.to_s =~ INCITER_RE || foe.name.to_s =~ INCUBUS_RE || foe.name.to_s =~ VISION_RE || rift_silence?(foe) || minotaur_magus?(foe))
 end
 
 def have_animate?
