@@ -13,7 +13,10 @@
         Also stops after 3 failed ILLUSION DEMON attempts in a row instead of looping.
       - demon illusion tasks summon their own demon: with no minor demon, or one this
         rank can't illusion yet, it runs ;summond <newest type your rank allows> --yes
-        (Igaesha 48, Imp 53, Verlok 54, Grantris 55, ...) before travelling.
+        (Igaesha 48, Imp 53, Verlok 54, ...) before travelling. It stops at the Verlok
+        even past rank 55 (11/05: a Grantris kept getting stranded after eloot's stops at
+        Kilron's pawnshop): ;vars set fizzarts_demon=grantris (or =newest) raises the cap,
+        read at run time.
       - "Vouchers on Guild Night only" option: only redeems voucher packs while GLD
         says it's a Guild Night (doubled training points), and signs leftovers back
         into a pack afterwards. Redeems the whole pack at once: tearing off one voucher
@@ -30,11 +33,11 @@
       - a demon still wearing an illusion (e.g. an Imp disguised as a gnoll) is dispelled
         first, so its real type can be checked.
       - from rank 48, before asking for an Illusions task it makes sure your demon is the
-        newest type your rank allows (Imp at 53, Verlok at 54, ...), summoning one if not:
+        newest type your rank allows, up to the cap above (Imp at 53, Verlok at 54), summoning one if not:
         speed tasks stopped appearing at rank 53 while the demon was an Igaesha.
       - after 5 demon illusions in a row that the guild doesn't credit (no repetition or
         speed-round message), it summons the newest demon type your rank allows with
-        ;summond and only accepts that type from then on.
+        ;summond and only accepts that type from then on (again no newer than the cap).
       - illusion loops stop the script if you walk away from the practice room or the
         Illusions task changes under them (you turned it in or took a new one yourself).
       - voucher safety stop: 10 voucher trades in a row without a usable task stops
@@ -7255,7 +7258,8 @@ module BlackArts
       # Speed tasks were 22-33% of assignments at ranks 35-48, fell to 4-14% at 49-52, and stopped
       # entirely at rank 53 (0 of 49 overnight on 2026-10-21) while the demon was an Igaesha and
       # Imp/Shien had just unlocked. Best guess (unconfirmed): the guild only hands out speed tasks
-      # for the newest demon type the rank allows, so have that demon before asking.
+      # for the newest demon type the rank allows, so have that demon before asking. Capped at
+      # Illusions.demon_cap (the verlok since 11/05), so past rank 55 this keeps a verlok.
       if item == 'illusions' && guild_status['illusions'] && guild_status['illusions'][:rank].to_i >= 48
         Illusions.ensure_newest_demon
         Util.travel(BlackArts.data.current_admin) # ;summond may have gone to a summoning chamber
@@ -8156,6 +8160,23 @@ module BlackArts
       demon_nouns.find { |_demon_type, pattern| noun.downcase =~ pattern }&.first
     end
 
+    # The newest demon type fizzarts will summon or insist on, or nil for no cap. Since 11/05 it's
+    # the verlok: a grantris went missing after 5 of 5 eloot stops at Kilron's pawnshop and stayed
+    # gone ~32 min each time, while a verlok passed the same stop fine. A method read at run time,
+    # so ;vars set fizzarts_demon=grantris (any type, or "newest") takes effect without a reload.
+    def self.demon_cap
+      cap = UserVars.fizzarts_demon.to_s.strip.downcase
+      return nil if %w[newest any none].include?(cap)
+      Illusions.demon_ranks.key?(cap) ? cap : 'verlok'
+    end
+
+    # The types this rank can illusion, none newer than demon_cap
+    def self.allowed_demons(rank)
+      cap = Illusions.demon_cap
+      top = cap ? [rank, Illusions.demon_ranks[cap]].min : rank
+      Illusions.demon_ranks.select { |_type, min_rank| min_rank <= top }
+    end
+
     def self.ensure_newest_demon
       @needs_newest_demon = true
       Illusions.ensure_demon
@@ -8169,11 +8190,12 @@ module BlackArts
     end
 
     # Before a demon illusion task: if there's no minor demon, or it's a type this rank can't
-    # illusion yet, summon the newest type the rank allows with ;summond (Igaesha at 48, Imp at 53,
-    # Verlok at 54, ...). A demon that's already usable is left alone.
+    # illusion yet (or newer than demon_cap), summon the newest type the rank allows with ;summond
+    # (Igaesha at 48, Imp at 53, Verlok at 54; no further while the cap is the verlok). A demon
+    # that's already usable is left alone.
     def self.ensure_demon
       rank = Guild.gld['illusions'][:rank].to_i
-      allowed = Illusions.demon_ranks.select { |_type, min_rank| rank >= min_rank }
+      allowed = Illusions.allowed_demons(rank)
       return if allowed.empty?
 
       if Effects::Spells.active?("Minor Summoning")
@@ -8183,7 +8205,12 @@ module BlackArts
         return if BlackArts.data.demon_id && (type.nil? || Illusions.demon_usable?(type, allowed))
       end
 
-      wanted = allowed.max_by { |_type, min_rank| min_rank }.first
+      cap = Illusions.demon_cap
+      wanted = if cap && allowed[cap] == allowed.values.max
+                 cap # a tie (imp/shien) goes to the cap itself
+               else
+                 allowed.max_by { |_type, min_rank| min_rank }.first
+               end
       # A plain valence runestone pulls a random archetype (an igaesha is 1 in 4 lorae'tyr demons),
       # and specific runes like lorae'tyr-igaesha only come from raffles, so allow plenty of re-rolls
       summon_args = "#{wanted} --yes --tries=20"
@@ -8247,10 +8274,12 @@ module BlackArts
     def self.handle_uncredited
       rank = Guild.gld['illusions'][:rank].to_i
       type = Illusions.demon_type(BlackArts.data.demon_noun, BlackArts.data.demon_name)
-      newer = Illusions.demon_ranks.select { |t, min_rank| min_rank <= rank && (type.nil? || min_rank > Illusions.demon_ranks[type].to_i) }
+      newer = Illusions.allowed_demons(rank).select { |_t, min_rank| type.nil? || min_rank > Illusions.demon_ranks[type].to_i }
       Util.msg("yellow", " 5 demon illusions in a row on your #{BlackArts.data.demon_noun || 'minor demon'} didn't count toward your task.")
       if newer.empty?
+        capped = Illusions.demon_ranks.select { |_t, min_rank| min_rank <= rank && (type.nil? || min_rank > Illusions.demon_ranks[type].to_i) }.keys
         Util.msg("yellow", " No newer demon to try at rank #{rank}. Check the game window for why.")
+        Util.msg("yellow", " (fizzarts stops at the #{Illusions.demon_cap}; ;vars set fizzarts_demon=newest allows #{capped.join(', ')}.)") unless capped.empty?
         exit
       end
 
