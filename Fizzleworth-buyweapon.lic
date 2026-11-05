@@ -15,7 +15,8 @@
 
   Knobs (UserVars, so per-character):
     reanim_weapon         noun of the weapon (default "claidhmore")
-    reanim_weapon_order   Wineberry catalog number (default 82 =
+    reanim_weapon_order   catalog number to force in EVERY town (default: by town, see ORDER_BY_TOWN:
+                          Icemule 82, Wehnimer's Landing 55). Wineberry catalog number (82 =
                           "a massive bone-hilted claidhmore", backroom, ~1200)
 =end
 
@@ -25,7 +26,22 @@ module FizzBuyWeapon
   NOUN      = (UserVars.reanim_weapon.to_s.strip.empty? ? "claidhmore" : UserVars.reanim_weapon.to_s.strip)
   ORDER_NUM = (UserVars.reanim_weapon_order.to_s =~ /\A\d+\z/ ? UserVars.reanim_weapon_order.to_s : "82")
   WITHDRAW  = 2000          # a buffer over the ~1200 the claidhmore haggles to
-  SHOP      = "weaponshop"  # go2 alias -> Wineberry's, Icemule
+  SHOP      = "weaponshop"  # go2 alias -> the nearest weapon shop: Wineberry's in Icemule, Tykel's Arms in the Landing
+
+  # The claidhmore's catalog number differs per shop (11/04 log, Tykel's Arms: "55. a claidhmore" in the
+  # backroom; order 82 there answers "I have no such item"). Keyed by the shop room's map location.
+  # A METHOD so edits apply on the next run.
+  def order_by_town
+    { "Icemule Trace" => "82", "Wehnimer's Landing" => "55" }
+  end
+
+  # The number to order in the shop we're standing in: UserVars.reanim_weapon_order wins when set, then
+  # the table, then 82.
+  def order_number
+    return UserVars.reanim_weapon_order.to_s.strip if UserVars.reanim_weapon_order.to_s =~ /\A\s*\d+\s*\z/
+    town = (Room.current.location rescue nil).to_s
+    order_by_town.find { |name, _| town.casecmp?(name) }&.last || ORDER_NUM
+  end
 
   # Your minor demon's room noun, whatever type it is and whatever illusion it wears (an
   # imp showed as a "gnoll" on 10.23). A silent TELL MDEMON RETURN answers with its id and
@@ -202,7 +218,7 @@ module FizzBuyWeapon
       echo "[buyweapon] found the #{NOUN} on me -- #{ok ? 'gave it to the demon' : 'kept it (no demon)'} instead of buying."
       return
     end
-    echo "[buyweapon] the demon has no #{NOUN} -- buying one at Wineberry's."
+    echo "[buyweapon] the demon has no #{NOUN} -- buying one at the weapon shop."
 
     start = (Room.current.id rescue nil)
 
@@ -211,9 +227,19 @@ module FizzBuyWeapon
       /withdraw [\d,]+ silvers|hand you [\d,]+ silvers|don't have (?:that much|enough)|insufficient/i)
 
     Script.run("go2", SHOP)
+    number = order_number
     fput "order"                                   # open the catalog
     sleep 1
-    fput "order #{ORDER_NUM}"                       # get its price / arm BUY
+    o = dothistimeout("order #{number}", 5,         # get its price / arm BUY
+          /I have no such item|price|cost|silvers?|Sold for/i).to_s
+    # Only buy what the shop says is the weapon: "You ask about the price of a massive bone-hilted claidhmore."
+    if o =~ /no such item/i || o !~ /#{Regexp.escape(NOUN)}/i
+      echo "[buyweapon] !! item ##{number} here isn't a #{NOUN} (#{(Room.current.location rescue '?')}; the shop said: #{o.strip[0, 80].inspect}) -- not buying. Fix order_by_town."
+      Script.run("go2", "bank")
+      fput "deposit all"
+      Script.run("go2", "#{start} --disable-confirm") if start
+      return
+    end
     sleep 1
     r = dothistimeout("buy", 8,
       /Sold for|hands you (?:a|an|the)|don't have enough|can't afford|hands are full|not for sale/i).to_s
@@ -228,7 +254,7 @@ module FizzBuyWeapon
       ok = give_to_demon
       echo "[buyweapon] bought a #{NOUN}#{ok ? ' and gave it to the demon' : ' (kept -- no demon)'}."
     else
-      echo "[buyweapon] !! couldn't buy a #{NOUN} (order ##{ORDER_NUM}): #{r.strip[0, 120]}"
+      echo "[buyweapon] !! couldn't buy a #{NOUN} (order ##{number}): #{r.strip[0, 120]}"
     end
 
     Script.run("go2", "bank")
