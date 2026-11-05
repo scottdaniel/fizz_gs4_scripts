@@ -28,9 +28,10 @@ Script.run("diskwait")  # eloot only finds the disk's boxes if the disk is here 
 Script.run("eloot", "sell")
 Script.run("unburden")  # a box eloot left in hand -> sell again
 Script.run("Fizzleworth-rest")
-# Rift bounties only (11/04, back to plain bigshot instead of ebounty): keep a bounty whose creature
-# is on the list, reroll anything else. Remove this line to manage bounties by hand again.
-Script.run("bounty_chooser", "kill naisirc, raving lunatic, seraceris")
+# Hidden Plateau minotaur bounties only (11/04 night; the Rift list was "naisirc, raving lunatic,
+# seraceris"): keep a bounty whose creature is on the list, reroll anything else. Remove this line
+# to manage bounties by hand again.
+Script.run("bounty_chooser", "kill lesser minotaur, minotaur warrior, minotaur magus")
 Script.run("buyitems")
 Script.run("ewaggle")
 Script.run("timequit")
