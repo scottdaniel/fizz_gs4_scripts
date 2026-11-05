@@ -4,7 +4,7 @@
         game: gemstone
         tags: sorcerer, demon, minor summoning, 725, runestone
     requires: Lich > 5.14.2
-     version: 0.2
+     version: 0.3
         note: Written with assistance from Claude (Anthropic).
 
   Summons a Minor Summoning (725) demon of the valence or archetype you ask for.
@@ -43,6 +43,10 @@
     --here       cast where you are instead of travelling to a summoning chamber
     --tries=N    give up after N casts (default 10)
     --yes        replace your current demon without asking (for other scripts, e.g. fizzarts)
+
+  Already have the demon you asked for, but it's lost somewhere (it never turns up when told
+  to return)? summond calls it back and offers to send it back and summon a new one (NOD).
+  With --yes it waits 90 seconds for it first.
 
   Where your runestones and rune tools (brush, ink, cup) live:
     ;vars set runestonesack=<container name>
@@ -174,22 +178,49 @@ module Summond
     false
   end
 
-  # Name of the current minor demon, or nil
-  def self.current_demon
-    line = dothistimeout "tell mdemon follow", 5, /You have no minor demon at this time|is already following you|You command your|acknowledges your order/
-    return nil if line =~ /You have no minor demon/
+  # The current minor demon as [name, where], or nil. A silent TELL MDEMON RETURN says whether it's
+  # in the room ("But your X is already here!"), away and now on its way ("Your X acknowledges your
+  # order and begins to travel to your location."), or away and kept from coming ("The magic in
+  # your location is interfering with your X returning to you."). where is :here, :away or :blocked.
+  RETURN_REPLY = /already here!|acknowledges your order|interfering with your|You have no minor demon at this time/i
+  DEMON_LINK   = %r{(?:[Bb]ut your|Your|your) <pushBold/><a exist="\d+" noun="[\w,'-]+">([\w\-' ]+)</a><popBold/>}
 
-    name = line.to_s[/(?:^Your|You command your) (.+?) (?:is already following|to follow|acknowledges your order)/, 1]
-    # Unrecognized reply but the spell's up: some demon is here, we just don't know which
-    name || (Spell[725].active? ? 'minor demon' : nil)
+  def self.current_demon
+    text = Lich::Util.quiet_command_xml("tell mdemon return", RETURN_REPLY).to_a.join("\n")
+    return nil if text =~ /You have no minor demon/
+
+    where = if text =~ /already here!/i then :here
+            elsif text =~ /interfering with your/i then :blocked
+            elsif text =~ /acknowledges your order/i then :away
+            end
+    name = text[DEMON_LINK, 1]
+    # Unrecognized reply but the spell's up: some demon is around, we just don't know which
+    return nil unless name || Spell[725].active?
+
+    [name || 'minor demon', where || :here]
   end
 
-  def self.dismiss_demon
+  # Waits up to `seconds` for an away demon to turn up, calling it back every 15 seconds.
+  def self.wait_for_demon(seconds)
+    end_time = Time.now + seconds
+    while Time.now < end_time
+      sleep 15
+      demon = current_demon
+      return true if demon.nil? || demon[1] == :here
+    end
+    false
+  end
+
+  # True once Minor Summoning is gone (the demon went back through the rift). A demon that's away
+  # walks back first: 11/05, TELL MDEMON LEAVE at 14:31:00 got no reply, the lost grantris "hurries
+  # into the room and circles it quickly" at 14:31:15 and was pulled through the rift at 14:31:18.
+  def self.dismiss_demon(seconds = 10)
     fput "tell mdemon leave"
-    20.times {
-      break unless Spell[725].active?
+    (seconds * 2).times {
+      return true unless Spell[725].active?
       sleep 0.5
     }
+    !Spell[725].active?
   end
 
   # Takes a runestone with this rune out of the sack and returns it in hand, or nil. Rummage
@@ -445,8 +476,9 @@ module Summond
     respond "  --yes        replace your current demon without asking (for other scripts, e.g. fizzarts)"
     respond
     respond "What it does:"
-    respond "  1. If you already have a demon: stops if it's what you asked for, otherwise asks you to"
-    respond "     NOD within #{NOD_TIMEOUT_SECONDS} seconds before sending it back (TELL MDEMON LEAVE)."
+    respond "  1. If you already have a demon: stops if it's what you asked for and it's here, otherwise asks"
+    respond "     you to NOD within #{NOD_TIMEOUT_SECONDS} seconds before sending it back (TELL MDEMON LEAVE). One that's"
+    respond "     what you asked for but lost somewhere is called back too; with --yes it gets 90 seconds."
     respond "  2. Picks a runestone from your infusesack:"
     respond "       - the archetype's runestone (e.g. lorae'tyr-igaesha) if you have one, or know that"
     respond "         rune (RUNE UNCOMMON) and it can make one"
@@ -517,10 +549,33 @@ module Summond
     end
     wanted = archetype || "#{valence} demon"
 
-    demon = current_demon
-    if demon && wanted?(demon, valence, archetype)
+    demon, where = current_demon
+    if demon && wanted?(demon, valence, archetype) && where == :here
       msg "You already have #{a(demon)}."
       exit
+    elsif demon && wanted?(demon, valence, archetype)
+      # Lost somewhere (11/05: a grantris stranded after a stop at Kilron's pawnshop never came back, though
+      # it "began to travel" to every return order for half an hour), so offer a fresh one
+      away = where == :blocked ? "isn't here and the magic here is keeping it from coming back" : "isn't here (it's been told to come back)"
+      if yes
+        msg "Your #{demon} #{away}. Giving it 90 seconds to turn up."
+        if wait_for_demon(90)
+          msg "Your #{demon} is here."
+          exit
+        end
+        msg "Your #{demon} still isn't here. Sending it back to summon a new one."
+      else
+        msg "Your #{demon} #{away}. If it's lost, type NOD within #{NOD_TIMEOUT_SECONDS} seconds to send it back and summon a new #{wanted}."
+        unless wait_for_nod(NOD_TIMEOUT_SECONDS)
+          msg "Keeping it. It's been told to come back."
+          exit
+        end
+      end
+      msg "Telling your #{demon} to leave. It has to come back to you first, so this can take a while."
+      unless dismiss_demon(120)
+        msg "Minor Summoning is still up 2 minutes after TELL MDEMON LEAVE, so your #{demon} didn't go back. Stopping."
+        exit
+      end
     elsif demon
       if yes
         msg "Sending back your #{demon} to summon #{a(wanted)}."
@@ -528,7 +583,10 @@ module Summond
         msg "You already have #{a(demon)}. Type NOD within #{NOD_TIMEOUT_SECONDS} seconds to send it back and summon #{a(wanted)}."
         exit unless wait_for_nod(NOD_TIMEOUT_SECONDS)
       end
-      dismiss_demon
+      unless dismiss_demon(where == :here ? 10 : 120)
+        msg "Minor Summoning is still up after TELL MDEMON LEAVE, so your #{demon} didn't go back. Stopping."
+        exit
+      end
     end
 
     # before_dying, not ensure: on ;kill the script's thread dies first and fput from its

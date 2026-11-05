@@ -4,7 +4,7 @@
         game: gemstone
         tags: sorcerer, demon, minor summoning
     requires: Lich > 5.14.2
-     version: 0.2
+     version: 0.3
         note: Written with assistance from Claude (Anthropic).
 
   Keeps a Sorcerer's Minor Summoning (725) demon refreshed.
@@ -31,6 +31,9 @@
   sends the demon the mana it can hold (;demonmana send); attack-ultima / sac4mana
   ask for it back with ;demonmana get the first time mana runs low in a hunt.
 
+  If it's still "on its way" after STUCK_WARN_MINUTES (11/05: a grantris stranded after a stop at Kilron's
+  pawnshop never came back), it says so once and suggests ;summond to replace it.
+
   Calls the demon back (11/04, after it was left behind once more -- in the Rift's swim
   home): while Minor Summoning is up and the demon isn't in the room, it sends a silent
   `tell mdemon return` every CALL_GAP_SECONDS. The reply names the demon, so the script
@@ -48,6 +51,7 @@ module MdemonRefresh
   SEND_MANA_AT            = 40   # resting with at least this much mana -> fill the demon (;demonmana)
   CALL_GAP_SECONDS         = 15  # demon missing from the room: order it back this often
   CALL_BLOCKED_GAP_SECONDS = 90  # ...but this rarely where the game says the magic interferes
+  STUCK_WARN_MINUTES       = 10  # still "on its way" after this long: say once that it may be lost
   RETURN_REPLY = /already here!|acknowledges your order|interfering with your|You have no minor demon at this time/i
   DEMON_LINK   = %r{(?:[Bb]ut your|Your|your) <pushBold/><a exist="(\d+)" noun="([\w,'-]+)">([\w\-' ]+)</a><popBold/>}
   # No vakra runestone left: true = fuse a new one with fizzfuse (a bank + alchemist trip,
@@ -97,14 +101,40 @@ module MdemonRefresh
     return if checkdead || checkstunned
     now = Time.now.to_f
     return if now - @last_call.to_f < (@call_blocked ? CALL_BLOCKED_GAP_SECONDS : CALL_GAP_SECONDS)
-    return if demon_here?
+    if demon_here?
+      @away_since = nil
+      return
+    end
     @last_call = now
     text = Lich::Util.quiet_command_xml("tell mdemon return", RETURN_REPLY).to_a.join("\n")
     @demon_id = Regexp.last_match(1) if text =~ DEMON_LINK
     @call_blocked = text =~ /interfering with your/i ? true : false
-    echo "Demon wasn't here -- ordered it back." if text =~ /acknowledges your order/i
+    if text =~ /acknowledges your order/i
+      echo "Demon wasn't here -- ordered it back."
+      @away_since ||= now
+      warn_if_stuck(now, text)
+    elsif text =~ /already here!|You have no minor demon/i
+      @away_since = nil
+    end
   rescue StandardError => e
     echo "call_demon_back: #{e.class} #{e.message}"
+  end
+
+  # 11/04-05: a grantris stranded after stops at Kilron's pawnshop (a verlok passed the same stop fine) "began to travel" to every order for half
+  # an hour of logged-in time and never arrived. Say so once per absence (time counts only while
+  # this script runs, so mostly logged in).
+  def self.warn_if_stuck(now, text)
+    if now - @away_since < STUCK_WARN_MINUTES * 60
+      @stuck_warned = false
+      return
+    end
+    return if @stuck_warned
+    @stuck_warned = true
+    name = text =~ DEMON_LINK ? Regexp.last_match(3) : "demon"
+    type = name.split.last.to_s.split("'").first.to_s.downcase
+    # an igaesha's noun is "smoke", "fog", ...; a disguised demon's is "weasel", "gnoll", ...
+    type = "<type>" unless %w[grik imp abyran grantris igaesha verlok aishan shien arashan].include?(type)
+    _respond "<pushBold/>[mdemon_refresh] Your #{name} has been on its way for #{STUCK_WARN_MINUTES}+ minutes and hasn't arrived; it may be stuck. ;summond #{type} offers to send it back and summon a new one.<popBold/>"
   end
 
   # Once per rest, as soon as there's mana to spare (the send costs ~30 and the rest
@@ -171,6 +201,9 @@ module MdemonRefresh
 
   # === main ======================================================================
   def self.run
+    # module state survives between runs (Lich re-opens the module)
+    @away_since = nil
+    @stuck_warned = false
     echo "MdemonRefresh started! Watching Minor Summoning (refresh buffer: #{REFRESH_THRESHOLD_MINUTES} min)."
     echo "Auto-fuse runestone: #{AUTO_FUSE_RUNESTONE}"
     echo "Stop with ;kill mdemon_refresh"
