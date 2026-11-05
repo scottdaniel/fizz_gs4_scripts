@@ -67,7 +67,7 @@ module FizzAnim
   # Never your minor demon, by id: under an illusion ("gnoll") no name filter recognizes it.
   def self.pick(explicit)
     return explicit.delete_prefix("#") if explicit
-    mine = demon&.dig(:id).to_s
+    mine = demon(need_here: false)&.dig(:id).to_s
     cur = GameObj.target
     return cur.id.to_s if cur && cur.name.to_s !~ IGNORE_NPC && cur.status.to_s !~ /dead|gone/i && cur.id.to_s != mine
     n = GameObj.npcs.to_a.find { |x| x.status.to_s !~ /dead|gone/i && x.name.to_s !~ IGNORE_NPC && x.id.to_s != mine }
@@ -176,10 +176,15 @@ module FizzAnim
   # Your minor demon, here in the room: { id:, noun:, name: }, or nil. A silent TELL MDEMON RETURN
   # answers with its id, noun and current name under any illusion, and calls it back if it wandered
   # off (same trick as demonmana.lic).
-  def self.demon
+  #
+  # need_here: false = just the demon's id/noun/name, without waiting for it to arrive. Target picking
+  # (pick) only needs the id to keep it off the target list; 11/04 it waited up to 10 s for a slow
+  # verlok'asha to show up before it would even start killing the target.
+  def self.demon(need_here: true)
     text = Lich::Util.quiet_command_xml("tell mdemon return", RETURN_REPLY).to_a.join("\n")
     return nil unless text =~ DEMON_LINK
     d = { id: $1, noun: $2, name: $3 }
+    return d unless need_here
     here = text.include?("already here!")
     if text.include?("begins to travel")
       10.times { break if (here = demon_here?(d[:id])); sleep 1 }
