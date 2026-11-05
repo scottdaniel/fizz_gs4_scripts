@@ -1,0 +1,455 @@
+=begin
+      author: Fizzleworth
+        name: fizzlesson
+        game: gemstone
+        tags: sorcerer, guild, illusions, teach, learn, minor demon
+    requires: Lich > 5.14.2
+     version: 0.2
+        note: Written with assistance from Claude (Anthropic).
+
+  Helps with the Sorcerer Guild's Illusions teaching tasks, as the teacher, the
+  student, or both at once (two sorcerers who both have a teach task can take
+  turns teaching each other).
+
+  Teaching: you lecture with ILLUSION TEACH <person> <illusion>; it counts once
+  they do that illusion within about a minute ("[Your teaching of <Name> was
+  successful.  You have N repetitions remaining.]"). fizzlesson lectures again
+  after each success, and again after 75 seconds if it didn't count, until your
+  task is done.
+
+  Being taught: after "<Name> begins to meticulously lecture you ..." you have
+  about a minute (55 seconds counted, 68 didn't) to do the illusion on your own
+  minor demon. fizzlesson waits out the lecture's roundtime, dispels your demon's
+  old disguise if it has one, and casts. It always targets your demon by its ID,
+  because ILLUSION DEMON with a name or adjective can't tell two grantris apart
+  ("Illusioning a demon that is not your own may not be a good idea") and finds
+  nothing once your demon is disguised as a weasel or a ferret. Void lessons are
+  done too (ILLUSION VOID, then POKE MY VOID) if you have a hand free; anything
+  else it tells you to do yourself.
+
+  The lesson doesn't have to be your latest illusion: a void lesson counted for a
+  teach task at rank 55 (2026-11-04), and it's much less fiddly for the student.
+
+  Usage:
+    ;fizzlesson <name> [illusion]   teach <name> (default illusion: demon) until your
+                                    teach task is done, and answer <name>'s lectures
+                                    e.g. ;fizzlesson Asthenea void
+    ;fizzlesson learn [name]        only answer lectures (from <name>, or from anyone)
+    ;fizzlesson help
+
+  ;kill fizzlesson stops it any time.
+
+  changelog:
+    0.2 (2026-11-04) command replies come through the script's own hook (0.1 never saw its
+        lectures start, so it re-lectured into "You are already teaching"); the last rep's
+        "You have completed your training task" ends the teaching
+    0.1 (2026-11-04) first version
+=end
+
+module FizzLesson
+  HOOK = 'fizzlesson_events'.freeze
+  # Within this many seconds of a lecture, the student's illusion counted (55 s worked, 68 s
+  # didn't, 2026-11-04)
+  WINDOW = 55
+  # How long the teacher waits for a lecture to count before lecturing again
+  RELECTURE_AFTER = 75
+  MAX_MISSES = 3
+
+  LECTURED_ME = /^(\w+) begins to meticulously lecture you on the various intricacies of (.+?)\.(?:\s|$)/
+  # The void lesson reads "Making sure Asthenea is paying close attention, you explain the
+  # subtleties of creating the illusion of a dark black void in the palm of your hand." for the
+  # teacher (verified); the student's side is a guess from that.
+  VOID_LECTURED_ME = /(?:^|, )([A-Z][\w'-]+) explains the subtleties of creating the illusion of (.+?) in the palm of/
+  # "[Your teaching of Asthenea was successful.  You have 1 repetition remaining.]", and on the
+  # last one "[Your teaching of Asthenea was successful.  You have completed your training task.]"
+  TEACH_OK = /\[Your teaching of (\w+) was successful\.\s+You have (?:(\d+|no) repetitions? remaining|completed your training task)\.\]/
+  TASK_DONE = /\[You have completed your training task\.\]/
+  LECTURE_STARTED = /^You meticulously begin to lecture|^Making sure \w+ is paying close attention, you explain the subtleties/
+  # "You are already teaching Asthenea.  Wait a few seconds and try again." means the last
+  # lecture is still open: she hasn't done the illusion yet
+  ALREADY_TEACHING = /^You are already teaching/
+  TEACH_REPLY = Regexp.union(
+    LECTURE_STARTED,
+    ALREADY_TEACHING,
+    /trying to teach\?/,
+    /^You (?:can(?:'|no)t|must|need|don't|are not|aren't|have no)\b/,
+    /^(?:\w+) (?:is not|isn't|doesn't|does not|has no|already)\b/
+  )
+  CAST_REPLY = /Piece by piece, the creature's form changes until|is already illusioned|I could not find what you were referring to|not your own|You don't|You can't|You need/
+  DISPEL_REPLY = /With a flick of your hand|I could not find what you were referring to|not your own|isn't|is not|You don't|You can't/
+  VOID_REPLY = /rippling black void|void slowly opens|You (?:need|don't|can't)|free hand/
+  WAIT_LINE = /^\.\.\. ?wait (\d+) sec/
+
+  # Same noun patterns as fizzarts' Illusions.demon_type (gswiki Minor demon messaging); a noun
+  # that matches none of them is a disguise (gnoll, raven, ferret, weasel, ermine, ...)
+  DEMON_NOUNS = {
+    'igaesha'  => /\A(?:haze|rouk|brume|haar|murk|nyle|mist|smoke|vapor|fog)\z/,
+    'imp'      => /\Aimp\z/,
+    'shien'    => /\A(?:darkling|shadowling)/,
+    'verlok'   => /\Averlok/,
+    'grantris' => /\Agrantris/,
+    'aishan'   => /\Aaishan/,
+    'arashan'  => /\Aarashan/,
+    'abyran'   => /\Aabyran/,
+    'grik'     => /\Agrik/,
+  }.freeze
+
+  def self.msg(text, color = :info)
+    if color == :warn
+      _respond("<pushBold/>[fizzlesson] #{text.gsub('&', '&amp;').gsub('<', '&lt;').gsub('>', '&gt;')}<popBold/>")
+    else
+      respond "[fizzlesson] #{text}"
+    end
+  end
+
+  def self.help
+    respond
+    respond 'fizzlesson: Sorcerer Guild Illusions teach/learn helper'
+    respond
+    respond '  ;fizzlesson <name> [illusion]   teach <name> (default: demon) until your teach'
+    respond '                                  task is done, and answer their lectures too'
+    respond '  ;fizzlesson learn [name]        only answer lectures (from <name>, or anyone)'
+    respond '  ;fizzlesson help                this help'
+    respond
+    respond '  As the student it waits out the lecture roundtime, dispels your demon\'s old'
+    respond '  disguise, and casts ILLUSION DEMON on your own demon by its ID, so another'
+    respond '  sorcerer\'s grantris (or ermine) in the room can\'t get in the way. You have'
+    respond '  about a minute after a lecture. Void lessons are done too if a hand is free.'
+    respond
+    respond '  The lesson needn\'t be your latest illusion: void counts for the teach task,'
+    respond '  and it\'s far less fiddly for the student (;fizzlesson <name> void).'
+    respond
+    respond '  As the teacher it lectures, waits for "[Your teaching of <Name> was'
+    respond "  successful...]\", and lectures again; after #{RELECTURE_AFTER} seconds without one it"
+    respond "  lectures again, and stops after #{MAX_MISSES} in a row."
+    respond
+  end
+
+  # ---- events from the game -------------------------------------------------------------------
+
+  # Command replies are caught here too (see command), as well as the lesson events
+  def self.start_hook
+    @events = Queue.new
+    @expect = nil
+    @reply = nil
+    @wait_secs = nil
+    DownstreamHook.remove(HOOK)
+    DownstreamHook.add(HOOK, proc { |xml|
+      begin
+        xml.to_s.split("\n").each { |raw|
+          line = raw.gsub(/<[^>]+>/, '').gsub('&gt;', '>').gsub('&lt;', '<').gsub('&amp;', '&').strip
+          if (want = @expect)
+            if line =~ WAIT_LINE
+              @wait_secs = Regexp.last_match(1).to_i
+            elsif @reply.nil? && line =~ want
+              @reply = line
+            end
+          end
+          if line =~ LECTURED_ME || line =~ VOID_LECTURED_ME
+            @events << [:lectured, Regexp.last_match(1), Regexp.last_match(2), Time.now]
+          elsif line =~ TEACH_OK
+            @events << [:taught, Regexp.last_match(1), Regexp.last_match(2) || 'no']
+          elsif line =~ TASK_DONE
+            @events << [:task_done]
+          end
+        }
+      rescue StandardError
+        nil
+      end
+      xml
+    })
+    before_dying { DownstreamHook.remove(HOOK) }
+  end
+
+  # Sends cmd and returns the first game line matching pattern ('' if none came within timeout
+  # seconds), resending after a "...wait N seconds." The reply is read by our own DownstreamHook,
+  # not get?: on 2026-11-04 dothistimeout in this script never saw a single reply (it didn't even
+  # retry on "...wait 1 seconds."), while the hook caught every line.
+  def self.command(cmd, pattern, timeout = 5)
+    4.times do
+      waitrt?
+      @reply = nil
+      @wait_secs = nil
+      @expect = pattern
+      put cmd
+      deadline = Time.now + timeout
+      sleep 0.1 until @reply || @wait_secs || Time.now > deadline
+      break unless @reply.nil? && @wait_secs
+
+      sleep [@wait_secs - 0.5, 0.3].max
+    end
+    reply = @reply.to_s
+    @expect = nil
+    reply
+  end
+
+  def self.next_event(timeout)
+    deadline = Time.now + timeout
+    loop do
+      return @events.pop(true) unless @events.empty?
+      return nil if Time.now >= deadline
+
+      sleep 0.2
+    end
+  end
+
+  # ---- guild status ---------------------------------------------------------------------------
+
+  # The Illusions task text and repetitions left, from GLD
+  def self.illusions_task
+    lines = Lich::Util.quiet_command_xml('gld', /You are (?:a|an) |You have no guild|You are not a member/)
+    skill = nil
+    task = nil
+    reps = nil
+    lines.each { |xml|
+      line = xml.gsub(/<[^>]+>/, '').strip
+      if line =~ /ranks? in the (.+?) skill\./
+        skill = Regexp.last_match(1)
+      elsif skill == 'Illusions' && line =~ /^The Training Administrator told you to (.*)\.$/
+        task = Regexp.last_match(1)
+      elsif skill == 'Illusions' && line =~ /^You have (\d+|no) repetitions? remaining/
+        reps = Regexp.last_match(1) == 'no' ? 0 : Regexp.last_match(1).to_i
+      end
+    }
+    [task, reps]
+  end
+
+  # ---- your minor demon -----------------------------------------------------------------------
+
+  # [id, noun, name] of your minor demon (its noun is the disguise's while it wears one), or nil
+  def self.read_demon
+    lines = Lich::Util.quiet_command_xml('tell md to follow', /You have no minor demon at this time|You command your|is already following you|acknowledges your order/)
+    lines.each { |line|
+      if line =~ /(?:Your|You command your) <pushBold\/><a exist="(\d+)" noun="([\w,'-]+)">([\w\-' ]+)<\/a><popBold\/>/
+        return [Regexp.last_match(1), Regexp.last_match(2), Regexp.last_match(3)]
+      end
+    }
+    nil
+  end
+
+  def self.disguised?(noun)
+    DEMON_NOUNS.none? { |_type, pattern| noun.to_s.downcase =~ pattern }
+  end
+
+  def self.wait_for_mana
+    return if checkmana > 5
+
+    msg "Waiting for mana (you have #{checkmana})."
+    sleep 0.5 until checkmana > 5
+  end
+
+  def self.cast(id)
+    wait_for_mana
+    waitrt?
+    command("illusion demon ##{id}", CAST_REPLY)
+  end
+
+  def self.dispel(id)
+    wait_for_mana
+    waitrt?
+    result = command("illusion demon ##{id} dispel", DISPEL_REPLY)
+    waitrt?
+    result
+  end
+
+  def self.call_demon_back
+    msg 'Your demon isn\'t here, so telling it to come back.'
+    put 'tell mdemon return'
+    sleep 10
+  end
+
+  # Being taught: do the illusion within the window after <teacher>'s lecture
+  def self.answer(teacher, topic, lectured_at)
+    return answer_void(teacher, lectured_at) if topic =~ /\bvoid\b/i
+
+    unless topic =~ /demon/i
+      msg "#{teacher} is teaching you #{topic}. fizzlesson only does demon and void illusions, so do this one yourself (you have about a minute).", :warn
+      return
+    end
+
+    sleep 0.5 # the lecture's "Roundtime: N sec." comes right after it
+    waitrt?
+    demon = read_demon
+    if demon.nil?
+      msg 'You have no minor demon to illusion. Summon one (;summond <type>) and try again.', :warn
+      return
+    end
+
+    id, noun, name = demon
+    if disguised?(noun)
+      result = dispel(id)
+      msg "Couldn't dispel your #{name}: #{result.empty? ? 'no reply' : result}", :warn unless result =~ /With a flick of your hand/
+    end
+
+    result = cast(id)
+    if result =~ /I could not find/
+      call_demon_back
+      result = cast(id)
+    elsif result =~ /is already illusioned/
+      dispel(id)
+      result = cast(id)
+    end
+    waitrt?
+    elapsed = (Time.now - lectured_at).round
+    if result =~ /Piece by piece/
+      late = elapsed > WINDOW ? " That may be too late to count (#{WINDOW} s counted, 68 s didn't)." : ''
+      msg "Did the demon illusion #{elapsed} s after #{teacher}'s lecture.#{late}"
+    else
+      msg "The demon illusion didn't work (#{elapsed} s after the lecture): #{result.empty? ? 'no reply' : result}", :warn
+    end
+  end
+
+  def self.answer_void(teacher, lectured_at)
+    sleep 0.5
+    waitrt?
+    unless GameObj.right_hand.id.nil? || GameObj.left_hand.id.nil?
+      msg "#{teacher} is teaching you the void, but both your hands are full. Free one and do ILLUSION VOID yourself (you have about a minute).", :warn
+      return
+    end
+
+    wait_for_mana
+    result = command('illusion void', VOID_REPLY)
+    waitrt?
+    elapsed = (Time.now - lectured_at).round
+    if [GameObj.right_hand, GameObj.left_hand].any? { |hand| hand.name.to_s =~ /void/ }
+      msg "Did the void illusion #{elapsed} s after #{teacher}'s lecture."
+      put 'poke my void'
+      sleep 1
+      waitrt?
+    else
+      msg "The void illusion didn't work (#{elapsed} s after the lecture): #{result.empty? ? 'no reply' : result}", :warn
+    end
+  end
+
+  # ---- teaching -------------------------------------------------------------------------------
+
+  def self.student_here(name)
+    GameObj.pcs.to_a.find { |pc| pc.noun.downcase.start_with?(name.downcase) }
+  end
+
+  # :started, :open (the last lecture is still waiting on the student), or :failed (after
+  # saying why)
+  def self.lecture(student, illusion)
+    line = command("illusion teach #{student} #{illusion}", TEACH_REPLY)
+    return :started if line =~ LECTURE_STARTED
+    return :open if line =~ ALREADY_TEACHING
+
+    msg "The lecture didn't start: #{line.empty? ? 'no reply (check the game window)' : line}", :warn
+    :failed
+  end
+
+  def self.run(args)
+    mode = :teach
+    if args.first.to_s =~ /\A(?:learn|student|answer)\z/i
+      mode = :learn
+      args.shift
+    elsif args.first.to_s =~ /\Ateach\z/i
+      args.shift
+    end
+    partner = args.shift
+    illusion = (args.shift || 'demon').downcase
+
+    if mode == :teach && partner.nil?
+      help
+      return
+    end
+
+    start_hook
+    partner = student_here(partner)&.noun || partner.capitalize if partner
+    task, reps = illusions_task
+    teaching = mode == :teach
+    if teaching && task !~ /teach Illusions to/i
+      msg "Your Illusions task isn't a teach task (#{task || 'none'}), so lectures won't count for you. Only answering #{partner}'s lectures.", :warn
+      teaching = false
+    elsif teaching && reps.to_i.zero?
+      msg 'Your teach task has no repetitions left. Only answering lectures.', :warn
+      teaching = false
+    end
+    learning = task.to_s =~ /teach you illusions/i
+
+    if teaching
+      msg "Teaching #{partner} #{illusion} (#{reps} to go), and answering their lectures. ;k fizzlesson to stop."
+    else
+      msg "Answering lectures from #{partner || 'anyone'}#{learning ? ' until your learn task is done' : ''}. ;k fizzlesson to stop."
+    end
+
+    misses = 0
+    waiting_since = nil # when the current lecture started
+    told_absent = false
+
+    loop do
+      if teaching && waiting_since.nil?
+        student = student_here(partner)
+        if student.nil?
+          msg "Waiting for #{partner} to be here." unless told_absent
+          told_absent = true
+        else
+          told_absent = false
+          case lecture(student.noun, illusion)
+          when :started
+            waiting_since = Time.now
+          when :open
+            msg "Your last lecture to #{partner} is still open; waiting for them to do the illusion."
+            waiting_since = Time.now
+          else
+            misses += 1
+            if misses >= MAX_MISSES
+              msg "#{MAX_MISSES} lectures in a row didn't work, so I've stopped teaching. ;fizzlesson #{partner} to try again.", :warn
+              teaching = false
+            end
+            sleep 3
+          end
+        end
+      end
+
+      event = next_event(1)
+      if event
+        case event.first
+        when :lectured
+          _kind, teacher, topic, at = event
+          answer(teacher, topic, at) if partner.nil? || teacher.downcase.start_with?(partner.downcase)
+        when :taught
+          _kind, student_name, left = event
+          left = left == 'no' ? 0 : left.to_i
+          msg left.zero? ? "#{student_name} got it: that was the last one." : "#{student_name} got it: #{left} to go."
+          misses = 0
+          waiting_since = nil
+          if left.zero?
+            msg 'Your teach task is done! Still answering their lectures; ;k fizzlesson when they\'re done.' if teaching
+            teaching = false
+          else
+            sleep 2
+          end
+        when :task_done
+          if learning && !teaching
+            msg 'Your learn task is done.'
+            exit
+          elsif teaching
+            msg 'Your teach task is done! Still answering their lectures; ;k fizzlesson when they\'re done.'
+            teaching = false
+            waiting_since = nil
+          end
+        end
+      end
+
+      next unless teaching && waiting_since && Time.now - waiting_since > RELECTURE_AFTER
+
+      if student_here(partner)
+        misses += 1
+        if misses >= MAX_MISSES
+          msg "#{MAX_MISSES} lectures in a row didn't count, so I've stopped teaching. Still answering their lectures; ;fizzlesson #{partner} to teach again.", :warn
+          teaching = false
+        else
+          msg "#{partner} didn't get that one within #{RELECTURE_AFTER} seconds; lecturing again."
+        end
+      end
+      waiting_since = nil
+    end
+  end
+end
+
+if Script.current.vars[1].to_s =~ /\A(?:help|-h|--help)?\z/i
+  FizzLesson.help
+else
+  FizzLesson.run(Script.current.vars[1..].to_a.compact)
+end
