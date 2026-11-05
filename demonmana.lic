@@ -19,7 +19,16 @@
   until it's replaced by a new one, which is measured afresh.
 
   Silver can be held too; not done here.
+
+  OFF by default since 11/05 (Scott wears a verlok for its illusion; a verlok holds ~12 mana, under
+  MIN_STORE anyway). Every caller (mdemon_refresh, attack-ultima, fizzanim, sac4mana, ...) just
+  runs ;demonmana send / get, so this one switch silences them all, with no waiting for the demon:
+    ;vars set demonmana=on     turn it back on
+    ;vars set demonmana=off    turn it off again
 =end
+
+# Read at run time, so changing it needs no reload.
+exit unless UserVars.demonmana.to_s.strip =~ /\A(?:on|1|true|yes)\z/i
 
 SEND_OK  = /(\d+) points were succes+fully transferred to your .+? while only draining (\d+) mana points/i
 GOT_MANA = /You gain (\d+) mana points/i
