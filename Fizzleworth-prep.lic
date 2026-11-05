@@ -121,7 +121,9 @@ unless Spell[1711].active?
   Script.run("qverb", "rub quartz orb")
   pause 3
 end
-unless Spell[509].active?
+# Not in sever mode (the Rift): 509 is outside the 100s/400s/700s/1700s, so the sever strips it on
+# entry and the crystal's charge is wasted every hunt (Scott 11/04).
+unless sever || Spell[509].active?
   Script.run("qverb", "rub white crystal")
   pause 3
 end
