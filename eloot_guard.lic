@@ -257,6 +257,12 @@ def self.arm_if_boxed
   @armed_at = Time.now.to_f
   settle
   fput "ready weapon"
+  # The hand updates when the game's "You remove ..." line arrives, a moment after the command.
+  10.times do
+    break if weapon_in_hand?
+
+    sleep 0.2
+  end
   say(weapon_in_hand? ? "Box in hand, so the weapon is out again." : "Box in hand and `ready weapon` didn't put a weapon in the other hand.")
 end
 
