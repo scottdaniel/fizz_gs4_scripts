@@ -1,0 +1,213 @@
+=begin
+      author: Fizzleworth
+        name: verlok_raven
+        game: gemstone
+        tags: sorcerer, illusions, minor demon, verlok
+    requires: Lich > 5.14.2
+     version: 0.1
+        note: Written with assistance from Claude (Anthropic).
+
+  Re-rolls the demon illusion on your verlok until it's a raven.
+
+  ILLUSION DEMON on a verlok picks one of five disguises at random. Fizzleworth's logs, 527
+  casts: an old blue parrot 117, a small brown pelican 110, a brightly plumed toucan 104, a
+  large glossy raven 102, a lanky white stork 94 -- so about 1 cast in 5 is the raven. This
+  casts it, and if it isn't the raven, dispels it and casts again until it is.
+
+    ;verlok_raven              re-roll until it's a raven (gives up after 30 casts)
+    ;verlok_raven --tries=N    give up after N casts instead
+    ;verlok_raven help         this
+
+  Your minor demon has to be a verlok (Illusions rank 54). If it's already a raven nothing
+  is done; if it's wearing one of the other bird disguises, that's dispelled first. It's
+  called back first if it isn't in the room. Each cast costs a little mana (about 5); it
+  waits whenever you have less than MIN_MANA.
+
+  Out of tries, it leaves the last disguise on (any disguise gets an undisguised demon past
+  TOWN OFF) and says which one it is.
+=end
+
+module VerlokRaven
+  DEFAULT_TRIES = 30
+  MIN_MANA      = 10
+  RECALL_WAIT   = 120  # seconds to wait for a called-back demon
+  RECALL_EVERY  = 15   # ...re-sending TELL MDEMON RETURN this often
+
+  RETURN_REPLY = /already here!|acknowledges your order|interfering with your|You have no minor demon at this time/i
+  DEMON_LINK   = %r{(?:[Bb]ut your|Your|your) <pushBold/><a exist="(\d+)" noun="([\w,'-]+)">([\w\-' ]+)</a><popBold/>}
+  # The other four verlok disguises (raven is the one we want)
+  OTHER_DISGUISES = /\A(?:parrot|pelican|toucan|stork)\z/i
+
+  # Verified (2026-10/11 logs):
+  #   You shift your gaze to your brass verlok'asha and focus your energy upon creating the illusion
+  #   of disguise.  ...  Piece by piece, the creature's form changes until a lanky white stork stands
+  #   in its place and you withdraw your hand.
+  #   With a flick of your hand, the illusion around a lanky white stork begins to dissipate.
+  #   Droplets of inky black ichor ... reveals behind it a narrow-beaked bronze verlok'asha. ...
+  #   I could not find what you were referring to.        (demon not in the room)
+  #   You are not quite skilled enough to attempt to illusion a shimmering rhimar verlok'ar yet.
+  # "is already illusioned" is from blackarts, not seen in these logs.
+  BECAME     = /changes until (?:an? )?(.+?) stands in its place/
+  CAST_END   = /stands in its place|is already illusioned|I could not find what you were referring to|not quite skilled enough|not your own|free hand|^\.\.\.wait|may only type ahead/i
+  DISPEL_END = /reveals behind it|I could not find what you were referring to|^\.\.\.wait|may only type ahead/i
+  RETRY      = /^\.\.\.wait|may only type ahead/i
+
+  def self.msg(text)
+    respond "[verlok_raven] #{text}"
+  end
+
+  def self.a(phrase)
+    "#{phrase.to_s =~ /\A[aeiou]/i ? 'an' : 'a'} #{phrase}"
+  end
+
+  # put, not fput: fput would swallow the first response line, which is the one we need.
+  # Retries on "...wait N seconds." / type-ahead refusals.
+  def self.collect_lines(action, terminator, timeout = 8)
+    3.times do
+      waitrt?
+      waitcastrt?
+      Script.current.clear
+      put action
+      lines = []
+      end_time = Time.now.to_f + timeout
+      loop do
+        line = get?
+        if line
+          lines << line
+          break if line =~ terminator
+        else
+          sleep 0.1
+        end
+        break if Time.now.to_f > end_time
+      end
+      if (wait = lines.find { |l| l =~ RETRY })
+        sleep(wait[/(\d+) sec/, 1].to_i.clamp(1, 5))
+        next
+      end
+      return lines
+    end
+    []
+  end
+
+  def self.here?(id)
+    (GameObj.npcs.to_a + GameObj.loot.to_a + GameObj.room_desc.to_a).any? { |o| o.id.to_s == id.to_s }
+  end
+
+  def self.tell_return
+    Lich::Util.quiet_command_xml("tell mdemon return", RETURN_REPLY).to_a.join("\n")
+  end
+
+  # => { id:, noun:, name: } for your demon once it's in the room, or nil (said why).
+  def self.find_demon
+    text = tell_return
+    if text =~ /You have no minor demon/i
+      msg "You have no minor demon."
+      return nil
+    end
+    unless text =~ DEMON_LINK
+      msg "No answer to TELL MDEMON RETURN."
+      return nil
+    end
+    demon = { id: Regexp.last_match(1), noun: Regexp.last_match(2), name: Regexp.last_match(3) }
+    return demon if text =~ /already here!/i || here?(demon[:id])
+
+    msg "Your #{demon[:name]} isn't here. Calling it back (up to #{RECALL_WAIT / 60} minutes)."
+    RECALL_WAIT.times do |i|
+      return demon if here?(demon[:id])
+      return demon if i.positive? && (i % RECALL_EVERY).zero? && tell_return =~ /already here!/i
+      sleep 1
+    end
+    msg "Your #{demon[:name]} didn't turn up in #{RECALL_WAIT / 60} minutes. Stopping."
+    nil
+  end
+
+  def self.wait_for_mana
+    return if checkmana >= MIN_MANA
+    msg "Waiting for mana (you have #{checkmana})."
+    sleep 0.5 until checkmana >= MIN_MANA
+  end
+
+  # true once the demon's real form shows again
+  def self.dispel(id)
+    wait_for_mana
+    collect_lines("illusion demon ##{id} dispel", DISPEL_END).any? { |l| l =~ /reveals behind it/ }
+  end
+
+  def self.help
+    respond <<~HELP
+      [verlok_raven] Re-rolls ILLUSION DEMON on your verlok until it's a raven.
+        ;verlok_raven              re-roll until it's a raven (gives up after #{DEFAULT_TRIES} casts)
+        ;verlok_raven --tries=N    give up after N casts instead
+      Each cast picks parrot, pelican, toucan, raven or stork, about 1 in 5 each.
+    HELP
+  end
+
+  def self.run(args)
+    return help if args.first.to_s =~ /\A(?:help|-h|--help)\z/i
+
+    tries = (args.join(" ")[/--tries=(\d+)/, 1] || DEFAULT_TRIES).to_i
+    tries = DEFAULT_TRIES unless tries.positive?
+
+    demon = find_demon or return
+    id = demon[:id]
+    if demon[:noun] =~ /\Araven\z/i
+      msg "Your verlok is already #{a(demon[:name])}."
+      return
+    end
+    unless demon[:noun] =~ /\Averlok/i || demon[:noun] =~ OTHER_DISGUISES
+      msg "Your #{demon[:name]} isn't a verlok (or is disguised as something a verlok can't be), so it can't be made a raven."
+      return
+    end
+    if demon[:noun] =~ OTHER_DISGUISES
+      msg "Your verlok is disguised as #{a(demon[:name])}. Dispelling that first."
+      dispel(id)
+    end
+
+    casts = 0
+    misses = 0
+    shape = nil
+    while casts < tries
+      if misses >= 3
+        msg "ILLUSION DEMON didn't work 3 times in a row. Check the game window for why. Stopping."
+        return
+      end
+      wait_for_mana
+      lines = collect_lines("illusion demon ##{id}", CAST_END)
+      text = lines.join("\n")
+
+      if text =~ /not quite skilled enough/i
+        msg "Your Illusions rank is too low to illusion a verlok (it takes rank 54)."
+        return
+      elsif text =~ /free hand/i
+        msg "The game wants a free hand for that. Empty one and run it again."
+        return
+      elsif text =~ /I could not find what you were referring to/
+        misses += 1
+        find_demon or return
+      elsif text =~ /is already illusioned/i
+        misses += 1
+        dispel(id)
+      elsif text =~ BECAME
+        shape = Regexp.last_match(1)
+        casts += 1
+        misses = 0
+        if shape =~ /\braven\b/i
+          msg "Cast #{casts}: #{a(shape)}. Done."
+          return
+        end
+        break if casts >= tries # keep the last disguise on (see below)
+
+        msg "Cast #{casts}: #{a(shape)}. Dispelling and trying again."
+        dispel(id)
+      else
+        misses += 1
+        msg "Unexpected reply to ILLUSION DEMON:"
+        lines.each { |line| respond "    #{line}" }
+      end
+    end
+
+    msg "No raven in #{tries} casts. Leaving it #{shape ? a(shape) : 'as it is'}; run it again to keep trying."
+  end
+end
+
+VerlokRaven.run(Script.current.vars[1..] || [])
