@@ -4,7 +4,7 @@
         game: gemstone
         tags: sorcerer, demon, minor summoning
     requires: Lich > 5.14.2
-     version: 0.3
+     version: 0.4
         note: Written with assistance from Claude (Anthropic).
 
   Keeps a Sorcerer's Minor Summoning (725) demon refreshed.
@@ -31,8 +31,11 @@
   sends the demon the mana it can hold (;demonmana send); attack-ultima / sac4mana
   ask for it back with ;demonmana get the first time mana runs low in a hunt.
 
-  If it's still "on its way" after STUCK_WARN_MINUTES (11/05: a grantris stranded after a stop at Kilron's
-  pawnshop never came back), it says so once and suggests ;summond to replace it.
+  If it's still "on its way" after TOWN_ON_AFTER_MINUTES and you're in Wehnimer's Landing, Icemule
+  or Mist Harbor (where minor demons are legal), it says TELL MDEMON TO TOWN ON, once per demon:
+  with TOWN OFF a demon with no illusion won't walk into a town by itself, only while following
+  you (11/04-05: a grantris left behind in Landing never came back). If it's still on its way
+  after STUCK_WARN_MINUTES, it says so once and suggests ;summond to replace it.
 
   Calls the demon back (11/04, after it was left behind once more -- in the Rift's swim
   home): while Minor Summoning is up and the demon isn't in the room, it sends a silent
@@ -51,6 +54,7 @@ module MdemonRefresh
   SEND_MANA_AT            = 40   # resting with at least this much mana -> fill the demon (;demonmana)
   CALL_GAP_SECONDS         = 15  # demon missing from the room: order it back this often
   CALL_BLOCKED_GAP_SECONDS = 90  # ...but this rarely where the game says the magic interferes
+  TOWN_ON_AFTER_MINUTES    = 3   # still "on its way" after this long in a legal town: TELL MDEMON TO TOWN ON
   STUCK_WARN_MINUTES       = 10  # still "on its way" after this long: say once that it may be lost
   RETURN_REPLY = /already here!|acknowledges your order|interfering with your|You have no minor demon at this time/i
   DEMON_LINK   = %r{(?:[Bb]ut your|Your|your) <pushBold/><a exist="(\d+)" noun="([\w,'-]+)">([\w\-' ]+)</a><popBold/>}
@@ -103,6 +107,7 @@ module MdemonRefresh
     return if now - @last_call.to_f < (@call_blocked ? CALL_BLOCKED_GAP_SECONDS : CALL_GAP_SECONDS)
     if demon_here?
       @away_since = nil
+      @town_on_tried = false
       return
     end
     @last_call = now
@@ -112,16 +117,47 @@ module MdemonRefresh
     if text =~ /acknowledges your order/i
       echo "Demon wasn't here -- ordered it back."
       @away_since ||= now
+      town_on_if_stuck(now, text)
       warn_if_stuck(now, text)
     elsif text =~ /already here!|You have no minor demon/i
       @away_since = nil
+      @town_on_tried = false
     end
   rescue StandardError => e
     echo "call_demon_back: #{e.class} #{e.message}"
   end
 
-  # 11/04-05: a grantris stranded after stops at Kilron's pawnshop (a verlok passed the same stop fine) "began to travel" to every order for half
-  # an hour of logged-in time and never arrived. Say so once per absence (time counts only while
+  # gswiki Minor Summoning (725): minor demons are legal in Wehnimer's Landing, Icemule Trace and
+  # Mist Harbor (the Isle of Four Winds on the map); in other towns they fall under justice.
+  def self.demons_legal_here?
+    room = Room.current
+    return false unless room
+    town = Room[room.find_nearest_by_tag("town")]
+    !!(town && town.location.to_s =~ /Wehnimer's Landing|Icemule Trace|Isle of Four Winds|Mist Harbor/i)
+  rescue StandardError
+    false
+  end
+
+  # 11/04-05: with TOWN OFF (the default) a demon with no illusion won't enter a town on its own,
+  # only while following you, so once go2 outran the grantris in Wehnimer's Landing every order
+  # "began to travel" for half an hour and nothing came (Rolfard on Discord; gswiki). The verlok
+  # that "passed fine" was disguised as a raven. Verified reply:
+  #   >tell mdemon to town on
+  #   Your verlok'asha will enter town without an illusion.
+  # Once per absence looks at where you are; once per demon it actually says it.
+  def self.town_on_if_stuck(now, text)
+    return if @town_on_tried || now - @away_since < TOWN_ON_AFTER_MINUTES * 60
+    @town_on_tried = true
+    return if @demon_id && @town_on_id == @demon_id
+    return unless demons_legal_here?
+    @town_on_id = @demon_id
+    name = text =~ DEMON_LINK ? Regexp.last_match(3) : "demon"
+    echo "Your #{name} has been on its way #{TOWN_ON_AFTER_MINUTES}+ minutes. Telling it TOWN ON (a demon with no illusion won't walk into town by itself)."
+    fput "tell mdemon to town on"
+  end
+
+  # Still "on its way" after STUCK_WARN_MINUTES (11/04-05: the grantris, about half an hour of
+  # logged-in time before TOWN ON was known). Say so once per absence (time counts only while
   # this script runs, so mostly logged in).
   def self.warn_if_stuck(now, text)
     if now - @away_since < STUCK_WARN_MINUTES * 60
@@ -204,6 +240,7 @@ module MdemonRefresh
     # module state survives between runs (Lich re-opens the module)
     @away_since = nil
     @stuck_warned = false
+    @town_on_tried = false
     echo "MdemonRefresh started! Watching Minor Summoning (refresh buffer: #{REFRESH_THRESHOLD_MINUTES} min)."
     echo "Auto-fuse runestone: #{AUTO_FUSE_RUNESTONE}"
     echo "Stop with ;kill mdemon_refresh"
