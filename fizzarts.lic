@@ -8108,9 +8108,19 @@ module BlackArts
 
       disguise = BlackArts.data.demon_name.to_s
       Util.msg("info", " Your demon is still disguised as #{disguise =~ /\A[aeiou]/i ? 'an' : 'a'} #{disguise}; dispelling the illusion to see what it is.")
-      sleep 0.5 until checkmana > 5
-      fput "illusion demon ##{BlackArts.data.demon_id} dispel"
-      Util.wait_rt
+      # 2026-11-05 18:14: the raven (a verlok) was still catching up to the guild foyer, so both
+      # dispels got "I could not find what you were referring to." and it stayed a raven until
+      # Scott dispelled it by hand. Call it back and try once more.
+      dispel = proc {
+        sleep 0.5 until checkmana > 5
+        r = dothistimeout("illusion demon ##{BlackArts.data.demon_id} dispel", 5, /could not find what you were referring to|begins to dissipate/i)
+        Util.wait_rt
+        r.to_s
+      }
+      if dispel.call =~ /could not find/i
+        Illusions.bring_demon_back
+        dispel.call
+      end
       Illusions.read_demon(dispel_disguise: false)
     end
 
