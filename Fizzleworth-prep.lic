@@ -3,9 +3,9 @@
 module FizzleworthPrep
 
 # `;Fizzleworth-prep here` (`arena` is the same thing; ;fizzabyss runs it before each arena
-# entry): everything below except what walks to another room -- the rubs, the scroll
-# spell-up, weapon, lifeguard, but not the buyweapon trip to Icemule. Anything added to this
-# script that moves you must be skipped when `here` is set.
+# entry): everything below except what walks to another room -- the scroll spell-up, weapon,
+# lifeguard and, last of all, the rubs, but not the buyweapon trip to Icemule. Anything added to
+# this script that moves you must be skipped when `here` is set.
 # `;Fizzleworth-prep sever` (what Fizzleworth-prep-sever.lic runs) is `here` for a spell-sever
 # area like the Rift: the same prep, no walking, and the scroll spell-up is limited to the 1700s.
 mode   = Script.current.vars[1].to_s.downcase
@@ -67,6 +67,42 @@ def self.crooked_intent
   echo "[prep] thumb-ring TURN: #{r.strip.empty? ? 'no answer' : r.strip[0, 100]}" unless r =~ ok
 end
 
+# Spells the rubs give. The first scroll pass leaves them out (a scroll would take the spell and
+# the rub would then be skipped as already active); a rub that came up empty gets its scroll
+# afterwards instead.
+def self.rub_spells
+  %w[1701 1712 1705 1711 509]
+end
+
+# Which spells the scroll spell-up is meant to cast, for this mode. In `sever` mode a spell-sever
+# area strips every spell outside the 100s, 400s, 700s and 1700s, so only the 1700s from the list
+# are worth a scroll, and those are always cast; 1720 Arcane Barrier is always cast from a scroll
+# for the Rift (Scott 11/04), listed or not. Otherwise the whole list, but only while
+# `;vars set prep_scrollbuff=on` (off since 10.30 to save scrolls).
+def self.scroll_spells(spells, sever)
+  if sever
+    spells.select { |n| n.to_i.between?(1700, 1799) } | %w[1720]
+  elsif UserVars.prep_scrollbuff.to_s =~ /\A\s*(?:1|true|on|yes)\s*\z/i
+    spells
+  else
+    []
+  end
+end
+
+# Safety net: if scrollbuff3 ever leaves a scroll in hand (a late "get" reply raced its check --
+# 10.03), put it back in the scroll sack BEFORE readying the weapon (10.03: the old per-hunt
+# ensorcell landed on the paper instead of the runestaff).
+def self.stray_scroll_away
+  sleep 1
+  %i[right_hand left_hand].each do |hand|
+    item = GameObj.send(hand)
+    next unless item && item.noun.to_s =~ /\A(?:paper|parchment|scroll|vellum|sheet)\z/i
+    sack = (GameObj[Vars["scrollsack"].to_s] rescue nil)
+    fput(sack ? "put ##{item.id} in ##{sack.id}" : "stow ##{item.id}")
+    sleep 0.5
+  end
+end
+
 # ewander (what fizzsac and sac4mana wander with) keeps its own boundary list, separate from
 # bigshot's hunting_boundaries, so make it match the loaded profile at the start of every hunt.
 # 11.02: with no Den boundary it left the Den by the portal, crossed the Abbey and hung at the
@@ -101,76 +137,26 @@ end
 tidy_staffs
 fput "stow all"
 
-# rub stuff, but only if the spell isn't already active -- and only pause
-# after ones that actually ran, instead of always eating 3s per item
-unless Spell[1701].active?
-  Script.run("qverb", "rub gold coin")
-  pause 3
-end
-unless Spell[1712].active?
-  Script.run("qverb", "rub small statue")
-  pause 3
-end
-unless Spell[1705].active?
-  Script.run("qverb", "rub moonstone cube")
-  pause 3
-end
-# Mystic Focus (1711), the heavy quartz orb -- the extra casting boost (same as Salvi-prep, added
-# 11/04 for the Rift). A 1700, so it survives the Rift's spell sever.
-unless Spell[1711].active?
-  Script.run("qverb", "rub quartz orb")
-  pause 3
-end
-# Not in sever mode (the Rift): 509 is outside the 100s/400s/700s/1700s, so the sever strips it on
-# entry and the crystal's charge is wasted every hunt (Scott 11/04).
-unless sever || Spell[509].active?
-  Script.run("qverb", "rub white crystal")
-  pause 3
-end
-unless GameObj.loot.find { |i| i.name =~ /#{Char.name} disk/ }
-  Script.run("qverb", "rub black crystal")
-  pause 3
-end
-
-crooked_intent       # hands are empty here
-
+# Scroll spell-up FIRST, the rubs LAST (Scott 11/07): a scroll pass can take a while and the
+# moonstone cube / quartz orb only last a few minutes, so the rubs wait until just before the hunt
+# (see "rub stuff" at the end of this script).
+#
 # cast protective spells from scrolls -- spell list lives in UserVars.scroll_buff_spells
 # (shared with scrollinv.lic's "Buff Scrolls" categorization); seeded once below
 # with the list this line used to hardcode, so behavior doesn't change until you
 # edit it with ;vars set scroll_buff_spells=<spell numbers>
 # (606 is currently left out while doing arena runs, so as not to waste)
 UserVars.scroll_buff_spells ||= "202 207 211 215 219 303 307 310 313 314 319 503 507 508 509 601 605 613 618 905 911 913 1119 1204 1208 1215 1601 1616 1701 1705"
-# Off since 10.30 to save scrolls; `;vars set prep_scrollbuff=on` brings the spell-up back.
-# In `sever` mode a spell-sever area strips every spell outside the 100s, 400s, 700s and 1700s,
-# so only the 1700s from the list are worth a scroll, and those are always cast. scrollbuff3
-# skips whatever is already running, so a spell the rubs above just gave costs no scroll.
 # Never from a scroll: 1711 Mystic Focus. Those scrolls are kept for imbuing the sigil staff; the
-# quartz orb rub above is what gives the spell here (Scott 11/04). Dropped from the list in both
-# branches in case it ever lands in scroll_buff_spells.
-buff_spells = UserVars.scroll_buff_spells.to_s.split - %w[1711]
-if sever
-  # 1720 Arcane Barrier is always cast from a scroll for the Rift (Scott 11/04), listed or not.
-  sever_scrolls = (buff_spells.select { |n| n.to_i.between?(1700, 1799) } | %w[1720])
-  Script.run("scrollbuff3", sever_scrolls.join(" ")) unless sever_scrolls.empty?
-elsif UserVars.prep_scrollbuff.to_s =~ /\A\s*(?:1|true|on|yes)\s*\z/i
-  Script.run("scrollbuff3", buff_spells.join(" ")) unless buff_spells.empty?   # no args = it reads the UserVar itself
-end
-# Safety net: if scrollbuff3 ever leaves a scroll in hand (a late "get" reply
-# raced its check -- 10.03), put it back in the scroll sack BEFORE readying the
-# weapon (10.03: the old per-hunt ensorcell landed on the paper instead of the
-# runestaff).
-sleep 1
-%i[right_hand left_hand].each do |hand|
-  item = GameObj.send(hand)
-  next unless item && item.noun.to_s =~ /\A(?:paper|parchment|scroll|vellum|sheet)\z/i
-  sack = (GameObj[Vars["scrollsack"].to_s] rescue nil)
-  fput(sack ? "put ##{item.id} in ##{sack.id}" : "stow ##{item.id}")
-  sleep 0.5
-end
-fput "ready weapon"
-
-# (The runestaff is permanently ensorcelled now -- the old per-hunt `prep 735` /
-# `evoke` check was removed 2026-10-05.)
+# quartz orb rub is what gives the spell here (Scott 11/04). Dropped from the list in every branch
+# in case it ever lands in scroll_buff_spells.
+buff_spells   = UserVars.scroll_buff_spells.to_s.split - %w[1711]
+scroll_wanted = scroll_spells(buff_spells, sever)
+# scrollbuff3 skips whatever is already running. Empty list -> don't call it: with no args it
+# would read the whole UserVar.
+scroll_first  = scroll_wanted - rub_spells
+Script.run("scrollbuff3", scroll_first.join(" ")) unless scroll_first.empty?
+stray_scroll_away
 
 # Dismisses the Fizzleworth-attack-cat / -ultima ;reanim animate in the field
 # the moment bigshot decides to rest, before the walk home. Started here so
@@ -221,6 +207,55 @@ if sever
 elsif Script.running?("Fizzleworth-witchguard")
   Script.kill("Fizzleworth-witchguard")
 end
+
+# rub stuff LAST, right before the hunt (Scott 11/07: the moonstone cube and quartz orb only last a
+# few minutes, and the scroll spell-up above can take a while). Only if the spell isn't already
+# active -- and only pause after ones that actually ran, instead of always eating 3s per item.
+# Hands are empty here (cleared at the top; the weapon is readied right after the rubs).
+unless Spell[1701].active?
+  Script.run("qverb", "rub gold coin")
+  pause 3
+end
+unless Spell[1712].active?
+  Script.run("qverb", "rub small statue")
+  pause 3
+end
+unless Spell[1705].active?
+  Script.run("qverb", "rub moonstone cube")
+  pause 3
+end
+# Mystic Focus (1711), the heavy quartz orb -- the extra casting boost (same as Salvi-prep, added
+# 11/04 for the Rift). A 1700, so it survives the Rift's spell sever.
+unless Spell[1711].active?
+  Script.run("qverb", "rub quartz orb")
+  pause 3
+end
+# Not in sever mode (the Rift): 509 is outside the 100s/400s/700s/1700s, so the sever strips it on
+# entry and the crystal's charge is wasted every hunt (Scott 11/04).
+unless sever || Spell[509].active?
+  Script.run("qverb", "rub white crystal")
+  pause 3
+end
+unless GameObj.loot.find { |i| i.name =~ /#{Char.name} disk/ }
+  Script.run("qverb", "rub black crystal")
+  pause 3
+end
+
+crooked_intent       # hands are empty here
+
+# A rub that gave nothing (item used up or missing) falls back to its scroll, as it did when the
+# scroll pass ran after the rubs. Only spells the scroll pass was meant to cast; scrollbuff3
+# skips any that are running.
+missed = (scroll_wanted & rub_spells).reject { |n| Spell[n.to_i].active? }
+unless missed.empty?
+  Script.run("scrollbuff3", missed.join(" "))
+  stray_scroll_away
+end
+
+fput "ready weapon"
+
+# (The runestaff is permanently ensorcelled now -- the old per-hunt `prep 735` /
+# `evoke` check was removed 2026-10-05.)
 
 # Log mind saturation ("Field Exp: N/1220") right before the hunt starts, so
 # every hunt has a recorded starting mind for the wings-compare analysis

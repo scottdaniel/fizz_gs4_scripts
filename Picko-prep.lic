@@ -19,8 +19,23 @@ end
 fput "store weapon"
 fput "stow all"
 
-# rub stuff, but only if the spell isn't already active -- and only pause
-# after ones that actually ran, instead of always eating 3s per item
+# Scroll spell-up FIRST, the rubs LAST (Scott 11/07): a scroll pass can take a while and the
+# moonstone cube only lasts a few minutes, so the rubs wait until just before the hunt.
+#
+# cast protective spells from scrolls -- spell list lives in UserVars.scroll_buff_spells
+# (shared with scrollinv.lic's "Buff Scrolls" categorization). Must be set via:
+# e.g. ;vars set scroll_buff_spells=101 103 107 112 120 202 207 211 215 219 303 307 310 313 314 319 601 606 613 618 1119 1215 1204 1601 1701 1705 1208 1616
+# The spells the rubs give (1701 gold coin, 1712 small statue, 1705 moonstone cube) are left out of
+# this pass -- a scroll would take the spell and the rub would then be skipped as already active --
+# and a rub that came up empty gets its scroll after the rubs instead. Empty list -> don't call
+# scrollbuff3: with no args it would read the whole UserVar.
+rub_spells    = %w[1701 1712 1705]
+scroll_wanted = UserVars.scroll_buff_spells.to_s.split
+scroll_first  = scroll_wanted - rub_spells
+Script.run("scrollbuff3", scroll_first.join(" ")) unless scroll_first.empty?
+
+# rub stuff LAST, right before the hunt, but only if the spell isn't already active -- and only
+# pause after ones that actually ran, instead of always eating 3s per item
 unless Spell[1701].active?
   Script.run("qverb", "rub gold coin")
   pause 3
@@ -34,10 +49,10 @@ unless Spell[1705].active?
   pause 3
 end
 
-# cast protective spells from scrolls -- spell list lives in UserVars.scroll_buff_spells
-# (shared with scrollinv.lic's "Buff Scrolls" categorization). Must be set via:
-# e.g. ;vars set scroll_buff_spells=101 103 107 112 120 202 207 211 215 219 303 307 310 313 314 319 601 606 613 618 1119 1215 1204 1601 1701 1705 1208 1616
-Script.run("scrollbuff3", UserVars.scroll_buff_spells)
+# A rub that gave nothing (item used up or missing) falls back to its scroll, as it did when the
+# scroll pass ran after the rubs.
+missed = (scroll_wanted & rub_spells).reject { |n| Spell[n.to_i].active? }
+Script.run("scrollbuff3", missed.join(" ")) unless missed.empty?
 
 fput "ready weapon"
 

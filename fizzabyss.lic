@@ -21,7 +21,7 @@
 #
 # Prep (setup: "Prep script", default `Fizzleworth-prep here`):
 #   Run before every entry fee is paid, so it costs no arena time. Fizzleworth-prep does the
-#   rubs (small statue, white crystal...) and the scroll spell-up (scrollbuff3), readies the
+#   scroll spell-up (scrollbuff3) and then the rubs (small statue, white crystal...), readies the
 #   weapon and starts lifeguard / manalog; the "here" argument skips its Icemule weapon-shop
 #   trip. Spells that are still up are skipped, so it's quick when nothing has run out.
 #   Blank = no prep.
