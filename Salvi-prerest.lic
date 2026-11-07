@@ -14,7 +14,7 @@ Script.run("eherbs")
 Script.start("eloot_guard") unless Script.running?("eloot_guard")  # unpauses eloot when its containers are full
 Script.run("stow_the_shiny", "sell")
 Script.run("unburden")  # a box eloot left in hand (10/24: crashed pool count) -> sell again
-Script.run("undead_bounty", "kill ghostly pooka")
+Script.run("bounty_chooser")  # shadow mare / shadow steed list: data/GSIV/Salvi/bounty_chooser.yaml
 Script.run("buyitems")
 
 # Sweep every wand out of the default stow container into the active bigshot
