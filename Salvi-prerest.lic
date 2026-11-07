@@ -78,6 +78,11 @@ end
 Script.run("ewaggle")
 Script.run("timequit")
 
+# Temporary Sanctify on the runestaff (prep 330 + evoke) while resting: the mana comes back
+# during the rest instead of being spent at the start of a hunt. Skips when LOOK already
+# shows it or mana is short. Last, so a timequit quit isn't preceded by a pointless cast.
+Script.run("sanctify_runestaff")
+
 # playsongs only when you're actually at the keyboard. Same afk_now UserVar that
 # gates deadexit (unset counts as ON, i.e. AFK -> no music):
 #   ;vars set afk_now=false   # at the keyboard: music plays during rest

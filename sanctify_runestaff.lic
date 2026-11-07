@@ -1,0 +1,106 @@
+# quiet
+# sanctify_runestaff.lic -- temporary Sanctify (330) on the runestaff, cast during a REST.
+#
+# Run from Salvi-prerest. It used to be Salvi-prep.lic's job, which spent the mana at the
+# very start of a hunt; at a rest the mana comes back anyway (bigshot rests until
+# rest_till_mana). Does nothing when LOOK already shows the flickering aura, when 330
+# isn't known, or when there isn't enough mana for the real cost of the cast.
+#
+# PREP 330, then EVOKE the runestaff. 10/28 log: the evoke at 13:10 gave "A diffuse
+# multihued glow coalesces around your fireleaf runestaff ..." (RECALL: "temporarily
+# blessed against the undead with holy water flares"), and LOOK at 18:50 still showed
+#   A faint aura of holy light radiates from the runestaff.       <- a normal bless
+#   A flickering aura of holy light radiates from the runestaff.  <- this Sanctify
+# That's 5h40m on, past gswiki's 4 hours, so LOOK decides, not a timer.
+#
+# The evoke only goes out if the prep line names Sanctify: 10/28 19:05 a typed
+# "prep 335" (Divine Wrath) evoked in Town Square killed three people and put
+# Salvi in the stocks. In a no-magic room (the jail cell) the evoke gets "Your
+# magic fizzles ineffectually."
+#
+# The runestaff lives in its sheath: it is readied for the cast and put back with STORE
+# (never STOW -- see runestaff-sheath-not-stow).
+
+module SanctifyRunestaff
+  def self.say(text)
+    respond "[sanctify_runestaff: #{text}]"
+  end
+
+  def self.staff_in_hand
+    [GameObj.right_hand, GameObj.left_hand].find { |o| o && o.noun == "runestaff" }
+  end
+
+  def self.runestaff_look
+    dothistimeout "look at my runestaff", 3,
+                  /radiates from the runestaff|burn across the runestaff|nothing unusual|I could not find|What were you referring/
+  end
+
+  # The game's "You remove ..." line arrives a moment after the command, so poll the hand.
+  def self.wait_for_staff
+    10.times do
+      return true if staff_in_hand
+      sleep 0.2
+    end
+    false
+  end
+
+  def self.run
+    return unless Spell[330].known?
+
+    cost = Spell[330].mana_cost.to_i
+    cost = 30 unless cost.positive?
+    if checkmana < cost
+      say "#{checkmana} mana, Sanctify needs #{cost} -- not casting it this rest."
+      return
+    end
+
+    readied = false
+    unless staff_in_hand
+      fput "ready weapon"
+      readied = true
+      unless wait_for_staff
+        say "`ready weapon` didn't put the runestaff in hand -- skipping Sanctify."
+        return
+      end
+    end
+
+    begin
+      return if runestaff_look =~ /flickering aura of holy light/
+
+      waitcastrt?
+      fput "release" unless checkprep.to_s =~ /^(None)?$/
+      # 330 reads "focusing on the Sanctify spell", 335 "focusing upon the Divine Wrath spell"
+      prep = dothistimeout "prep 330", 5, /focusing (?:on|upon) the .+? spell|You can't|You don't/
+      unless prep =~ /focusing on the Sanctify spell/
+        say "prep 330 didn't ready Sanctify (#{prep.inspect}), releasing."
+        fput "release" unless checkprep.to_s =~ /^(None)?$/
+        return
+      end
+
+      # The glow or the fizzle comes before "Cast Roundtime", so whichever matches first is the outcome.
+      result = dothistimeout "evoke runestaff", 5, /A diffuse multihued glow coalesces around your|fizzles ineffectually|Cast Roundtime/
+      waitcastrt?
+      case result
+      when /multihued glow/
+        # Check once that LOOK shows it now, or every rest would recast it.
+        if runestaff_look =~ /flickering aura of holy light/
+          say "runestaff is Sanctified."
+        else
+          say "Sanctify cast, but LOOK doesn't show the flickering aura. The next rest will cast it again."
+        end
+      when /fizzles/
+        say "Sanctify fizzled (no-magic room?). It'll try again next rest."
+      else
+        say "evoke runestaff got #{result.inspect}, not the Sanctify glow."
+      end
+    ensure
+      # Put it back where it lives, but only if this script took it out.
+      if readied
+        waitrt?
+        fput "store weapon"
+      end
+    end
+  end
+end
+
+SanctifyRunestaff.run
