@@ -1,7 +1,7 @@
 
 t=Time.now
 # Hour of day (0-23) a rest may quit; 5 unless listed here.
-quit_hours = { "Picko" => 8 }
+quit_hours = { "Picko" => 8, "Salvi" => 8 }
 quit_hour = quit_hours.fetch(Char.name, 5)
 if t.hour == quit_hour
 	echo "Quitting in 10 seconds"
