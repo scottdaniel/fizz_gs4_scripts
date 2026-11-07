@@ -5,7 +5,7 @@
         game: gemstone
         tags: bounty, adventurer's guild
     requires: Lich > 5.4.0
-     version: 1.5
+     version: 1.6
 
   undead_bounty.lic with the "must be undead" test replaced by an allowed list, and
   with heirloom and rescue-child tasks accepted by AREA.
@@ -31,6 +31,7 @@
 
   usage:
     ;bounty_chooser help
+    ;bounty_chooser deliver         (only hand over a rescue child who is in the room with you)
     ;bounty_chooser kill skeletal ice troll, cold guardian, frost giant --areas=Ice Plains, Icemule Trail
     ;bounty_chooser kill darkwoode, greater orc, werebear --kill-areas=Upper Trollfang
     ;bounty_chooser dangerous frost giant
@@ -43,6 +44,12 @@
   started in. See undead_bounty.lic for those details.
 
   changelog:
+    1.6
+      - the rescue child is delivered: once `bounty` reads "made contact with the child" and she is
+        in the room, echild.lic walks her to the guard and the usual turn-in follows. Runs from the
+        normal pass, or alone via `;bounty_chooser deliver` (Salvi-prerest calls it first thing in a
+        rest, before the shopping walk). 11/06 overnight Salvi held a contacted child for 5 hours
+        and nothing ever took her to the guard.
     1.5
       - optional --kill-areas= / kill_areas: a task kept for its creature (kill, dangerous,
         or heirloom/rescue by attacker) must also be in one of those areas. 10/30 Fizzlestiks
@@ -616,6 +623,54 @@ module BountyChooser
     finish_at_taskmaster
   end
 
+  # ---- rescue-child delivery (echild.lic, the same script ebounty.lic runs) ----------------
+  # `bounty` says "You have made contact with the child you are to rescue and you must get
+  # her back alive to <guard> of <town>." (type :rescue_spawned) once the child has found
+  # you while you hunt. She follows you from room to room, but she only counts if she is
+  # still with you when the guard is asked, so this has to run while she is in the room.
+  # echild.lic asks her where home is, walks her to the right guard and asks the guard; the
+  # task then reads "succeeded, return to the Adventurer's Guild" and the usual turn-in follows.
+  CHILD_PATTERN = /\bchild\b/i.freeze
+
+  # true if the child was handed over and the reward collected, false if she isn't with you
+  # (or echild couldn't finish) -- the task is left as it was either way.
+  def self.deliver_child
+    unless find_npc_in_room(CHILD_PATTERN, retries: 6)
+      respond "BountyChooser: you've made contact with the child, but she isn't in this room - " \
+              "keep hunting until she finds you again (bring her along to the next rest)."
+      return false
+    end
+
+    respond 'BountyChooser: the child is with you - escorting her to the guard with echild...'
+    Script.run('echild')
+    waitrt?
+
+    task = refresh_bounty_status
+    unless task && task.type == :taskmaster
+      respond "BountyChooser: echild finished but the bounty still reads #{task ? task.type : 'nothing'} - " \
+              "not turning in; check where the child is."
+      return false
+    end
+
+    respond 'BountyChooser: the guard has the child - collecting the reward...'
+    finish_at_taskmaster
+    true
+  end
+
+  # `;bounty_chooser deliver`: only the child hand-over, nothing else (no rerolls, no new
+  # task). For the START of a rest, before any shopping walk can leave the child behind.
+  def self.deliver_only
+    task = refresh_bounty_status
+    unless task && task.type == :rescue_spawned
+      respond 'BountyChooser: no child to deliver.'
+      return
+    end
+    start_room = Room.current.id
+    deliver_child
+  ensure
+    return_to_room(start_room) if start_room
+  end
+
   # checks status ONCE before touching anything, and handles whatever's
   # already there:
   #   - a completed task waiting on a guard report -> turn it in
@@ -653,6 +708,13 @@ module BountyChooser
     # NOTE: Task#description is never actually populated by the parser, so
     # we have to go back to the raw bounty stream text via checkbounty.
     @eligible_in_minutes = minutes_until_eligible(checkbounty) if task.type == :none
+
+    # Contact made with the rescue child: deliver her if she is with us.
+    if task.type == :rescue_spawned && deliver_child
+      record_bounty(creature: task.creature, number: task_number(task), type: task.type, location: task.location,
+                    verdict: 'child delivered to the guard')
+      return
+    end
 
     if IN_PROGRESS_STATES.include?(task.type)
       record_bounty(creature: task.creature, number: task_number(task), type: task.type, location: task.location,
@@ -933,6 +995,7 @@ module BountyChooser
     respond "    ;#{n} kill skeletal ice troll, cold guardian, frost giant --areas=Ice Plains, Icemule Trail"
     respond "    ;#{n} kill darkwoode, greater orc, werebear --kill-areas=Upper Trollfang"
     respond "    ;#{n} dangerous frost giant"
+    respond "    ;#{n} deliver         - only hand a rescue child who is in the room to the guard (echild)"
     respond "    ;#{n}                 - no arguments: everything comes from data/GSIV/<char>/bounty_chooser.yaml"
     respond ''
     respond 'Kill ("suppress X activity") and dangerous-creature bounties are kept when the'
@@ -979,6 +1042,11 @@ end
 ## space-split tokens start at script.vars[1].
 if script.vars[1].to_s.strip =~ /^help$/i
   BountyChooser.show_help
+  exit
+end
+
+if script.vars[1].to_s.strip =~ /^deliver$/i
+  BountyChooser.deliver_only
   exit
 end
 

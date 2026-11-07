@@ -7,6 +7,10 @@ module SalviPrerest
 Script.run("unlost")
 exit if $unlost_failed
 
+# A rescue child who followed him to the rest goes to the guard FIRST, before the shopping
+# walk below can lose her (bounty_chooser deliver; does nothing without a child in the room).
+Script.run("bounty_chooser", "deliver")
+
 Script.run("eherbs")
 # ;eloot sell under the appraisal recorder, then store anything eloot refused to
 # sell (appraised above your eloot limits) in the locker -- only when encumbered
