@@ -4,7 +4,7 @@
         game: gemstone
         tags: sorcerer, demon, minor summoning
     requires: Lich > 5.14.2
-     version: 0.4
+     version: 0.5
         note: Written with assistance from Claude (Anthropic).
 
   Keeps a Sorcerer's Minor Summoning (725) demon refreshed.
@@ -42,8 +42,10 @@
   `tell mdemon return` every CALL_GAP_SECONDS. The reply names the demon, so the script
   learns its id and stops asking while it is standing there. "The magic in your location
   is interfering with your <demon> returning to you" slows the asking to every
-  CALL_BLOCKED_GAP_SECONDS. A real order is echoed once ("ordered it back"); the silent
-  "already here" replies are not.
+  CALL_BLOCKED_GAP_SECONDS, but only while you stay in that room (11/07: the slow-down used to
+  outlast the room -- the bank teller blocked it, the 90 s ran on after the walk back to the
+  inn, and the raven stood outside the gemcutter's for 80 s until Scott ordered it by hand).
+  A real order is echoed once ("ordered it back"); the silent "already here" replies are not.
 =end
 
 module MdemonRefresh
@@ -104,6 +106,8 @@ module MdemonRefresh
     return unless Effects::Spells.active?(MINOR_SUMMONING_SPELL)
     return if checkdead || checkstunned
     now = Time.now.to_f
+    # The "interfering" slow-down belongs to the room that said it; walk out and ask again at once.
+    @call_blocked = false unless @blocked_room == XMLData.room_id
     return if now - @last_call.to_f < (@call_blocked ? CALL_BLOCKED_GAP_SECONDS : CALL_GAP_SECONDS)
     if demon_here?
       @away_since = nil
@@ -114,6 +118,7 @@ module MdemonRefresh
     text = Lich::Util.quiet_command_xml("tell mdemon return", RETURN_REPLY).to_a.join("\n")
     @demon_id = Regexp.last_match(1) if text =~ DEMON_LINK
     @call_blocked = text =~ /interfering with your/i ? true : false
+    @blocked_room = @call_blocked ? XMLData.room_id : nil
     if text =~ /acknowledges your order/i
       echo "Demon wasn't here -- ordered it back."
       @away_since ||= now
@@ -241,6 +246,8 @@ module MdemonRefresh
     @away_since = nil
     @stuck_warned = false
     @town_on_tried = false
+    @call_blocked = false
+    @blocked_room = nil
     echo "MdemonRefresh started! Watching Minor Summoning (refresh buffer: #{REFRESH_THRESHOLD_MINUTES} min)."
     echo "Auto-fuse runestone: #{AUTO_FUSE_RUNESTONE}"
     echo "Stop with ;kill mdemon_refresh"
