@@ -4,7 +4,7 @@
         game: gemstone
         tags: scroll infusion, infuse, unlock, runestone, scroll
     requires: Lich > 5.4.0
-     version: 1.8
+     version: 2.0
         note: Written with assistance from Claude (Anthropic).
 
 
@@ -39,6 +39,13 @@ Infuse!
 		- You have at least 20,000 silvers in your local bank (withdrawn as a flat
 		  amount whenever a rune needs to be made, to cover runestones/ink/cup/etc.)
 		- You can read all scrolls
+		- You're not carrying a heavy load of silvers: if your encumbrance is 25% or more
+		  and you have silvers on hand, the script runs to the bank, deposits them all and
+		  comes back before doing anything else (change the 25 with
+		  ;vars set infuse_max_encumbrance=<percent>, or 0 to turn it off)
+		- Closed containers are fine: infusesack, scrollsack, vibrantscrollsack and any
+		  --cont container are opened as needed and closed again afterward (only the
+		  ones the script opened - anything already open is left open)
 	
     Once you have the variables set, you can activate the script in the following ways:
 	
@@ -147,6 +154,13 @@ Infuse!
         - Added --spells=101,103: unlock only until those spells are unlocked (waving
           quiss'fyn and checking with odeir'cos in between), then infuse, ignoring the
           other spells on the scroll.
+        - Opens closed containers as needed (infusesack, scrollsack, vibrantscrollsack,
+          --cont) and closes only the ones it opened when it finishes, so a closed
+          scrollsack no longer breaks stowing the finished scroll.
+        - Encumbrance check up front: at infuse_max_encumbrance percent (default 25) or more
+          with silvers on hand, runs to the bank, deposits everything and returns first, so
+          too many silvers can't stop the runestone purchase (;vars set
+          infuse_max_encumbrance=0 turns it off).
 
 =end
 
@@ -160,6 +174,54 @@ $cont_override = nil
 # Spell numbers from --spells=101,103: unlock only until these are unlocked
 # (nil = unlock everything).
 $target_spells = nil
+
+# Containers this script opened (so it can close them again when it's done) and
+# ones it has already looked at, by lowercase name.
+$opened_containers = []
+$checked_containers = []
+
+# Encumbrance percent at or above which we dump our silvers in the bank before
+# starting. Too many coins on hand can stop you buying a runestone partway
+# through making a rune. ;vars set infuse_max_encumbrance=<percent>; 0 = off.
+def max_encumbrance
+	v = UserVars.infuse_max_encumbrance.to_s.strip
+	v =~ /\A\d+\z/ ? v.to_i : 25
+end
+
+# If we're encumbered and carrying silvers, run to the bank, deposit them all
+# and come back, so a heavy coin purse can't kill the run mid-purchase.
+def deposit_if_encumbered
+	limit = max_encumbrance
+	return if limit.zero?
+	enc = Char.percent_encumbrance
+	return if enc < limit
+
+	silver = (Lich::Util.silver_count rescue 0).to_i
+	if silver <= 0
+		echo "Encumbrance is #{enc}% but there are no silvers on hand to deposit - carrying on."
+		return
+	end
+
+	echo "Encumbrance #{enc}% with #{silver} silvers on hand - depositing them first."
+	start = Room.current.id
+	start_script('go2',['bank'])
+	wait_while {running?('go2')}
+	fput "deposit all"
+	sleep 1
+	start_script('go2',[start])
+	wait_while {running?('go2')}
+	echo "Encumbrance now #{Char.percent_encumbrance}%."
+end
+
+# Open a container if it's closed, remembering that we did so it gets closed
+# again when the script ends. Containers that were already open are left alone.
+def open_container(name)
+	name = name.to_s.strip
+	return if name.empty? || $checked_containers.include?(name.downcase)
+	$checked_containers << name.downcase
+	result = dothistimeout "open my #{name}", 5, /^You open|^You carefully|^You unfasten|^That is already open\./
+	$opened_containers << name if result =~ /^You (?:open|carefully|unfasten)/
+end
 
 # Make the rune_name rune
 #
@@ -600,12 +662,15 @@ def check_charge
 
 	if $cont_override
 		echo "Storing in #{$cont_override} (--cont override)."
+		open_container($cont_override)
 		fput "put right in my #{$cont_override}"
 	elsif is_vibrant && UserVars.vibrantscrollsack && UserVars.vibrantscrollsack.length >= 3
 		echo "Vibrant scroll detected, storing in vibrantscrollsack."
+		open_container(UserVars.vibrantscrollsack)
 		fput "put right in my #{UserVars.vibrantscrollsack}"
 	else
 		echo "Vibrant scroll detected but no vibrantscrollsack is set (;vars set vibrantscrollsack=<container name>) - storing in scrollsack instead." if is_vibrant
+		open_container(UserVars.scrollsack)
 		fput "put right in my #{UserVars.scrollsack}"
 	end
 end
@@ -664,6 +729,17 @@ if spells_arg
 	$target_spells = list.split(',').map { |n| n.strip.to_i }.uniq
 end
 
+# Open the infusesack up front (the runestone gear lives there), and put
+# whatever we opened back to closed when the script ends - however it ends.
+# scrollsack/vibrantscrollsack/--cont are opened when a scroll is stowed in them.
+if args[0] != 'help'
+	before_dying {
+		$opened_containers.each { |c| fput "close my #{c}" }
+	}
+	open_container(UserVars.infusesack)
+	deposit_if_encumbered unless args[0] == 'check'
+end
+
 # Main
 if args.empty?
 	check_for_scroll
@@ -704,6 +780,7 @@ elsif args[0] == 'help'
 	respond "    infusesack:        #{UserVars.infusesack || '(not set)'}"
 	respond "    scrollsack:        #{UserVars.scrollsack || '(not set)'}"
 	respond "    vibrantscrollsack: #{UserVars.vibrantscrollsack || '(not set)'}"
+	respond "    infuse_max_encumbrance: #{max_encumbrance} (deposit silvers at the bank first at or above this %; 0 = off)"
 	respond "    infuse_safe:       #{infuse_safe?} (;vars set infuse_safe=false to never pause for a nod)"
 	respond ""
 	respond "You need at least 20,000 silvers in your local bank - whenever a rune needs"
