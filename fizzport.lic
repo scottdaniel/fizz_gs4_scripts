@@ -94,7 +94,8 @@ module Fizzport
     'Icemule Trace'               => { zone: 1, color: 'frosty white',
                                        locations: ['Icemule Trace', 'the town of Icemule Trace', 'the southern snowfields'] },
     'Solhaven'                    => { zone: 1, color: 'aquamarine',
-                                       locations: ['Solhaven', 'the free port of Solhaven', 'the southern part of Solhaven', 'the town of Solhaven'] },
+                                       locations: ['Solhaven', 'the free port of Solhaven', 'the southern part of Solhaven', 'the town of Solhaven',
+                                                   'the plains of Vornavis', 'the holdings of Vornavis'] },
     'Pinefar'                     => { zone: 1, color: 'icy blue', locations: ['the Pinefar Trading Post'] },
     'Icemule Trail-Glacier'       => { zone: 1, color: 'ghostly white', locations: [] },
     'Icemule Trail-Mountain Pass' => { zone: 1, color: 'pearly white', locations: [] },
@@ -226,36 +227,59 @@ module Fizzport
     REALMS.find { |_realm, info| info[:locations].include?(location) }&.first || learned_locations[location]
   end
 
-  # Map locations your rune book vouches for: a saved pattern whose label is the title of map
-  # rooms that all share one location puts that location in the pattern's realm (10/29:
-  # "Icemule Trace, South Gate" is frosty white, so the southern snowfields are Icemule's).
-  # A label used in several places, like every guild's "Sorcerer Guild, Entrance", says nothing.
+  # Map locations your rune book vouches for: a pattern whose label is the title of map rooms
+  # that are all one place puts their locations in the pattern's realm (10/29: "Icemule
+  # Trace, South Gate" is frosty white, so the southern snowfields are Icemule's). One place
+  # means one location, or rooms that all connect to each other (11/08: "Vornavis, Ruins"
+  # spans the plains and the holdings of Vornavis). The same title in different towns, like
+  # every guild's "Sorcerer Guild, Entrance", says nothing. Uses the saved patterns plus any
+  # page read this run, so a pattern sensed since the last ;fizzport patterns counts too.
   def self.learned_locations
     _saved_at, entries = saved_patterns
     # Title -> realms of the patterns with that label (more than one realm: trust none)
     wanted = {}
-    entries.each { |entry|
+    (entries + @seen_rows.to_a).each { |entry|
       realm = realm_of(entry[3])
       (wanted["[#{entry.last}]"] ||= []) << realm if realm
     }
     return {} if wanted.empty?
 
-    places = Hash.new { |hash, key| hash[key] = [] }
+    rooms = Hash.new { |hash, key| hash[key] = [] }
     Map.list.each { |room|
       next if room.nil?
 
-      Array(room.title).each { |title| places[title] << room.location if wanted.key?(title) }
+      Array(room.title).each { |title| rooms[title] << room if wanted.key?(title) }
     }
     learned = {}
     wanted.each { |title, realms|
-      found = places[title].uniq
-      next unless realms.uniq.size == 1 && found.size == 1 && found.first.is_a?(String)
+      next unless realms.uniq.size == 1 && !rooms[title].empty?
 
-      place = found.first
-      # Two realms for one location: trust neither
-      learned[place] = learned.key?(place) && learned[place] != realms.first ? nil : realms.first
+      places = rooms[title].map(&:location).uniq
+      next unless places.all? { |place| place.is_a?(String) } && (places.size == 1 || one_place?(rooms[title]))
+
+      places.each { |place|
+        # Two realms for one location: trust neither
+        learned[place] = learned.key?(place) && learned[place] != realms.first ? nil : realms.first
+      }
     }
     learned.compact
+  end
+
+  # True when the rooms all connect to each other without leaving the group
+  def self.one_place?(rooms)
+    by_id = rooms.to_h { |room| [room.id.to_i, room] }
+    reached = [by_id.keys.first]
+    queue = reached.dup
+    until queue.empty?
+      by_id[queue.shift].wayto.to_h.each_key { |next_id|
+        next_id = next_id.to_i
+        next unless by_id.key?(next_id) && !reached.include?(next_id)
+
+        reached << next_id
+        queue << next_id
+      }
+    end
+    reached.size == by_id.size
   end
 
   def self.realm_of(color)
@@ -388,10 +412,13 @@ module Fizzport
 
   # The rows of the page the book is open to: [[number, colour, label], ...]
   def self.read_page(book)
-    collect_lines("read ##{book.id}", LAST_ROW).map { |line|
+    rows = collect_lines("read ##{book.id}", LAST_ROW).map { |line|
       number, color, label = line.match(PATTERN_ROW)&.captures
       number && [number.to_i, color.downcase, label]
     }.compact
+    # Kept for learned_locations, shaped like a saved pattern
+    (@seen_rows ||= []).concat(rows.map { |number, color, label| [nil, nil, number, color, label] })
+    rows
   end
 
   # Turns one page; returns the new page number (TURN wraps from 10 to 1), or nil
@@ -710,6 +737,7 @@ module Fizzport
     @book = nil
     @chalk = nil
     @was_silent = nil
+    @seen_rows = []
 
     words = args.reject { |arg| arg.start_with?('--') }
     tries = (args.find { |arg| arg =~ /^--tries=\d+$/ }&.split('=')&.last || DEFAULT_TRIES).to_i
