@@ -36,6 +36,17 @@
 #      next streak can be explained from the log.
 #      ;vars set lifeguard_climb_cap=4     damaging falls that stop the climbing (0 = off)
 #
+#   +. TOO HEAVY FOR THE LANDSLIDE (11.08): climb checks account for encumbrance (gswiki) and
+#      Scott put his reading at 65% the night he died; the fatal trip was an eherbs withdraw that
+#      walked 8000 silver (~50 lb) back up the landslide, a load bigshot never looks at (it checks
+#      before prep and between fights). So when go2 is running and you stand in a landslide room
+#      (climb_rooms) at or over CLIMB_ENC % encumbrance, go2 is paused BEFORE the first attempt
+#      (go2 runs `empty_hands` first, about a second, and the loop polls every 0.1 s in those
+#      rooms) and deadexit is asked for the Discord line and the quit (afk_now on; otherwise go2
+#      just stays paused -- lighten up, then ;unpause go2). Unpausing by hand while still heavy
+#      is respected; leaving the room (or getting lighter) re-arms it.
+#      ;vars set lifeguard_climb_enc=50    encumbrance % that stops the landslide (0 = off)
+#
 # Written after 10.05: stunned for 6 rounds, then 20s + 10s roundtime in a crowd
 # of incubi/inciters; the animate (and luck) kept Fizzleworth alive. There is NO
 # "Symbol of Escape" ("Unknown symbol.").
@@ -219,6 +230,56 @@ module Lifeguard
     600   # secs
   end
 
+  # Encumbrance % at which go2 is stopped at a landslide. Between prep's 45 and the 65 Scott
+  # reported; the logged "encumbrance N%" on every climb outcome is what to tune it from.
+  def climb_enc_limit
+    pct(:lifeguard_climb_enc, 50)
+  end
+
+  # Rooms whose map edge is `climb landslide` (map-1793759004, 11.08): Upper Krag Slopes <->
+  # Hidden Plateau, A Winding Path <-> Arctic Tundra High Plain, Upper Dragonsclaw Ledge <->
+  # Ocoma Vale. A method, not a constant, so edits apply without restarting Lich.
+  def climb_rooms
+    [6141, 6152, 2997, 2998, 6736, 6737]
+  end
+
+  def at_climb_room?
+    climb_rooms.include?(XMLData.room_id.to_i)
+  rescue StandardError
+    false
+  end
+
+  # Pause go2 so it stops climbing, and ask deadexit for the Discord line (and the quit, when
+  # afk_now is on).
+  def stop_climbing(reason)
+    Script.pause("go2") if Script.running?("go2") && !Script.paused?("go2")
+    $deadexit_request = reason
+    Script.start("deadexit") unless Script.running?("deadexit")
+  end
+
+  # Called every poll: heavy at a landslide with go2 about to climb -> stop it first.
+  def climb_precheck
+    limit = climb_enc_limit
+    enc   = at_climb_room? ? Char.percent_encumbrance.to_i : 0
+    if !at_climb_room? || limit <= 0 || enc < limit
+      if $lifeguard_heavy_stopped            # lighter, or somewhere else: re-arm and withdraw our request
+        $lifeguard_heavy_stopped = false
+        $deadexit_request = nil if $lifeguard_heavy_reason && $deadexit_request == $lifeguard_heavy_reason
+      end
+      return
+    end
+    return if $lifeguard_heavy_stopped
+    return unless Script.running?("go2") && !Script.paused?("go2")
+    $lifeguard_heavy_stopped = true
+    place = XMLData.room_title.to_s[/\[([^\]]+)/, 1] || "room #{XMLData.room_id}"
+    $lifeguard_heavy_reason = "encumbrance #{enc}% (limit #{limit}%) at #{place}, too heavy to climb the landslide safely"
+    stop_climbing($lifeguard_heavy_reason)
+    echo "[lifeguard] !! #{$lifeguard_heavy_reason} -- go2 paused before the climb; asking deadexit to alert Discord " \
+         "and quit (only if afk_now is on). Lighten up, then ;unpause go2."
+  rescue StandardError => e
+    echo "[lifeguard] heavy-climb guard error: #{e.class} #{e.message}"
+  end
+
   # "health 85%, encumbrance 20%, wounds: head 2, leftHand 1/scar 1" (rank after the part name)
   def climb_state
     parts = %w[head neck nsys back chest abdomen leftEye rightEye leftArm rightArm leftHand
@@ -274,13 +335,11 @@ module Lifeguard
     cap = climb_cap
     return unless cap > 0 && $lifeguard_falls.size >= cap && !$lifeguard_climb_stopped
     $lifeguard_climb_stopped = true
-    Script.pause("go2") if Script.running?("go2") && !Script.paused?("go2")
-    $deadexit_request = "#{$lifeguard_falls.size} damaging climb falls in #{(climb_window / 60.0).round} minutes" \
-                        " at #{XMLData.room_title.to_s[/\[([^\]]+)/, 1] || 'an unknown room'} (health #{hp_pct}%)"
+    stop_climbing("#{$lifeguard_falls.size} damaging climb falls in #{(climb_window / 60.0).round} minutes" \
+                  " at #{XMLData.room_title.to_s[/\[([^\]]+)/, 1] || 'an unknown room'} (health #{hp_pct}%)")
     echo "[lifeguard] !! #{$lifeguard_falls.size} damaging climb falls inside #{(climb_window / 60.0).round} minutes -- " \
          "go2 paused so it stops climbing; asking deadexit to alert Discord and quit (only if afk_now is on). " \
          "Carry on by hand with ;unpause go2."
-    Script.start("deadexit") unless Script.running?("deadexit")
   rescue StandardError => e
     echo "[lifeguard] climb guard error: #{e.class} #{e.message}"
   end
@@ -290,16 +349,21 @@ module Lifeguard
     $lifeguard_falls         = []
     $lifeguard_hist          = []
     $lifeguard_climb_stopped = false
+    $lifeguard_heavy_stopped = false
+    $lifeguard_heavy_reason  = nil
     install_climb_hook
     echo "[lifeguard] watching health (shift <= #{pct(:lifeguard_shift_pct, 50)}% when stunned/webbed, restore <= #{pct(:lifeguard_restore_pct, 50)}%, return <= #{pct(:lifeguard_return_pct, 25)}%; " \
-         "climb cap #{climb_cap > 0 ? "#{climb_cap} falls" : 'off'})."
+         "climb cap #{climb_cap > 0 ? "#{climb_cap} falls" : 'off'}, landslide stop at #{climb_enc_limit > 0 ? "#{climb_enc_limit}% encumbrance" : 'off'})."
     last_restore = 0.0
     last_return  = 0.0
     last_shift   = 0.0
     shift_blocked = nil   # area where the game refused a SHIFT; cleared by leaving it
     loop do
       Script.current.kill if checkdead
-      climb_tick if on?
+      if on?
+        climb_precheck
+        climb_tick
+      end
       if on? && hostiles?
         hp = hp_pct
         now = Time.now.to_f
@@ -315,7 +379,7 @@ module Lifeguard
           restore
         end
       end
-      sleep POLL
+      sleep(at_climb_room? ? 0.1 : POLL)   # fast at a landslide: go2 climbs about a second after arriving
     end
   rescue StandardError => e
     echo "[lifeguard] error: #{e.class} #{e.message}"

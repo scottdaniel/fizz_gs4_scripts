@@ -130,13 +130,25 @@ end
 # Fizzleworth; Scott's reading was 65% encumbrance (see the memory note landslide-climb-death-1108).
 # So: log the number at the end of prep, and if it is >= prep_max_encumbrance (default 45, a margin
 # over bigshot's 33 so ordinary variance doesn't stall a hunt; 0 = gate off) deposit any silver on
-# hand and, if it is still too heavy, HOLD here -- bigshot waits on this script, so the walk to the
-# hunting ground doesn't start -- and send one Discord line through deadexit ($deadexit_notice; the
-# `notice: false` key in exp_check.yaml mutes it). It carries on by itself once the number drops
-# (lighten up by hand, or `;vars set prep_max_encumbrance=0` to skip the gate).
+# hand and, if it is still too heavy:
+#   * afk_now on (the default): ask deadexit to send the Discord line and QUIT the game
+#     ($deadexit_request) -- Scott 11/08: no sitting in town all night while the spells wear off.
+#     Prep keeps waiting in the meantime so bigshot can't start the walk before the quit lands.
+#   * afk_now off (he's at the keyboard): HOLD here -- bigshot waits on this script, so the walk to
+#     the hunting ground doesn't start -- with one Discord line ($deadexit_notice; the
+#     `notice: false` key in exp_check.yaml mutes it). It carries on by itself once the number
+#     drops (lighten up by hand, or `;vars set prep_max_encumbrance=0` to skip the gate).
 def self.max_encumbrance
   v = UserVars.prep_max_encumbrance.to_s.strip
   v =~ /\A\d+\z/ ? v.to_i : 45
+end
+
+# Same reading deadexit uses for UserVars.afk_now: unset counts as away.
+def self.afk_now?
+  v = UserVars.afk_now
+  return true if v.nil?
+  return v if v == true || v == false
+  v.to_s !~ /\A\s*(?:0|false|off|no)\s*\z/i
 end
 
 def self.encumbrance_gate(here)
@@ -160,10 +172,17 @@ def self.encumbrance_gate(here)
     end
   end
 
-  msg = "Hunt on hold: encumbrance #{enc}% after prep (hold limit #{limit}%), too heavy to start the walk to the hunting ground. " \
-        "It carries on by itself once it drops."
-  echo "[prep] !! #{msg} Lighten up by hand, or ;vars set prep_max_encumbrance=0 to skip this gate."
-  $deadexit_notice = msg
+  reason = nil
+  if afk_now?
+    reason = "encumbrance #{enc}% after prep (limit #{limit}%), too heavy to walk to the hunting ground"
+    echo "[prep] !! #{reason} -- afk_now is on, so deadexit sends the Discord line and quits the game."
+    $deadexit_request = reason
+  else
+    msg = "Hunt on hold: encumbrance #{enc}% after prep (hold limit #{limit}%), too heavy to start the walk to the hunting ground. " \
+          "It carries on by itself once it drops."
+    echo "[prep] !! #{msg} Lighten up by hand, or ;vars set prep_max_encumbrance=0 to skip this gate."
+    $deadexit_notice = msg
+  end
   Script.start("deadexit") unless Script.running?("deadexit")
   told = Time.now
   loop do
@@ -177,7 +196,8 @@ def self.encumbrance_gate(here)
     end
   end
   echo "[prep] encumbrance #{enc}% -- carrying on."
-  $deadexit_notice = "Hunt resumed: encumbrance down to #{enc}%."
+  $deadexit_request = nil if reason && $deadexit_request == reason     # it never quit (or afk_now was flipped): withdraw the request
+  $deadexit_notice  = "Hunt resumed: encumbrance down to #{enc}%."
 end
 
 # Stop playing before gearing up for combat -- kills the instrument along
