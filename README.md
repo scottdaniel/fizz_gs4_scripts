@@ -126,7 +126,7 @@ prefix `Htrow-`.
 |---|---|---|
 | `Htrow-attack.lic` | Built on `Brayis-attack`: stance guarded, then Blood Burst (701) and Mana Disruption (702), each only if live mana covers it, then stance offensive and a longsword swing. A script because bigshot's `hunting_stance` re-sends `stance offensive` before every command, so a guard stance never lasted to the casts. Checks the free-account silver cap so a refused swing can't make bigshot re-run it in a tight loop. | cmd |
 | `Htrow-prep.lic` | `store all`, the five rubs that work without Magic Item Use, `gird` the longsword and shield. Stops bigshot if the sword isn't in the right hand afterwards. Starts `eloot_guard`. | - |
-| `Htrow-prerest.lic` | `unlost`, eherbs, `eloot_guard`, `diskwait`, eloot sell, `unburden`, buyitems (seeds her `items_to_buy` once), banks leftover silver to stay under the free-account cap, ewaggle. | - |
+| `Htrow-prerest.lic` | `unlost`, eherbs, `eloot_guard`, `diskwait`, eloot sell, `unburden`, buyitems (seeds her `items_to_buy` once), banks leftover silver to stay under the free-account cap, ewaggle, `timequit` (quit hour 8). | - |
 
 ### Picko (Wizard)
 
@@ -185,7 +185,7 @@ Scripts here are not tied to one character's name, though some need a particular
 | Script | What it does | Bigshot |
 |---|---|---|
 | `buyitems.lic` | Withdraws silver, buys the rub-items in `UserVars.items_to_buy` from the pawnshop, banks the change, returns to the starting room. One copy serves every character. | config (fresh-wand container) |
-| `timequit.lic` | Called at the end of the `-prerest` scripts: quits the game if the current hour is the character's quit hour (5 by default; Picko and Salvi 8; the `quit_hours` hash at the top of the script), otherwise sits, rests and meditates. A one-off deadline is set by hand: `;timequit in 4h`, `;timequit at 16:45`, `;timequit off`, `;timequit status` (stored in `UserVars.quit_at`; the next rest after it quits, and a deadline that passed more than 3 hours ago while logged out is dropped). | - |
+| `timequit.lic` | Called at the end of the `-prerest` scripts: quits the game if the current hour is the character's quit hour (5 by default; Fizzleworth, Picko, Salvi and Htrowelzzif 8; the `quit_hours` hash at the top of the script), otherwise sits, rests and meditates. A one-off deadline is set by hand: `;timequit in 4h`, `;timequit at 16:45`, `;timequit off`, `;timequit status` (stored in `UserVars.quit_at`; the next rest after it quits, and a deadline that passed more than 3 hours ago while logged out is dropped). | - |
 | `4hourquit.lic` | Exits the game N minutes after starting (default 240). `;4hourquit 90`. | - |
 | `eloot_guard.lic` | Unsticks `eloot` when it pauses because nothing it stows into has room: moves the stuck item to another container or the disk, drops it if nowhere has room while hunting (posting to the webhook), then unpauses eloot. Every `-prep` / `-prerest` starts it; it stays running. Pauses bigshot while it works things out in the field. | companion |
 | `diskwait.lic` | Run right before `;eloot sell`: waits (up to a limit) for your floating disk to catch up and show in the room, so eloot sees it. Works around an eloot 2.14.1 race that stored closed boxes in the cloak. | - |

@@ -15,7 +15,7 @@
 # dropped, so it can't quit you the moment you log back in.
 
 # Hour of day (0-23) a rest may quit; 5 unless listed here.
-quit_hours = { "Fizzleworth" => 8, "Picko" => 8, "Salvi" => 8 }
+quit_hours = { "Fizzleworth" => 8, "Picko" => 8, "Salvi" => 8, "Htrowelzzif" => 8 }
 stale_secs = 3 * 3600
 
 fmt = ->(epoch) { Time.at(epoch).strftime("%a %-I:%M %p") }
