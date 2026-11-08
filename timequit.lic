@@ -1,14 +1,88 @@
+# timequit.lic -- called by the -prerest scripts; logs out at the right time of day.
+#
+# Run from a rest (no arguments) it does two checks:
+#   1. a one-off deadline set by hand (below): once it has passed, the next rest quits;
+#   2. the standing schedule: a rest during QUIT_HOURS' hour of the day quits.
+# Otherwise it sits, rests and meditates.
+#
+# One-off deadline, set at the keyboard (stored in UserVars.quit_at, per character):
+#   ;timequit in 4h          quit at the first rest 4 hours from now (also 90m, 2h30m)
+#   ;timequit at 16:45       quit at the first rest after 16:45 (today, or tomorrow if past)
+#   ;timequit off            cancel it
+#   ;timequit status         show what is set
+# "At the first rest" because it only runs between hunts, so the real quit lands up to a rest
+# after the time. A deadline more than 3 hours stale (you were logged out when it passed) is
+# dropped, so it can't quit you the moment you log back in.
 
-t=Time.now
 # Hour of day (0-23) a rest may quit; 5 unless listed here.
 quit_hours = { "Fizzleworth" => 8, "Picko" => 8, "Salvi" => 8 }
+stale_secs = 3 * 3600
+
+fmt = ->(epoch) { Time.at(epoch).strftime("%a %-I:%M %p") }
+deadline = lambda do
+  v = UserVars.quit_at.to_s.strip
+  v =~ /\A\d+(?:\.\d+)?\z/ ? v.to_f : nil
+end
+
+arg = script.vars[1..-1].to_a.join(" ").strip.downcase
+unless arg.empty?
+  case arg
+  when /\Aoff\z|\Acancel\z|\Aclear\z/
+    UserVars.quit_at = nil
+    echo "timequit: one-off quit time cancelled."
+  when /\Astatus\z/
+    d = deadline.call
+    echo(d ? "timequit: quitting at the first rest after #{fmt.call(d)}." : "timequit: no one-off quit time set.")
+    echo "timequit: standing schedule: a rest during the #{quit_hours.fetch(Char.name, 5)}:00 hour quits."
+  when /\Ain\s+(.+)\z/
+    spec = $1
+    secs = 0
+    secs += $1.to_f * 3600 if spec =~ /(\d+(?:\.\d+)?)\s*h/
+    secs += $1.to_f * 60 if spec =~ /(\d+(?:\.\d+)?)\s*m/
+    secs = spec.to_f * 3600 if secs.zero? && spec =~ /\A\d+(?:\.\d+)?\z/   # bare number = hours
+    if secs <= 0
+      echo "timequit: couldn't read '#{spec}' -- try ;timequit in 4h"
+    else
+      UserVars.quit_at = (Time.now.to_f + secs).round.to_s
+      echo "timequit: will quit at the first rest after #{fmt.call(deadline.call)} (in #{(secs / 3600.0).round(1)} h)."
+    end
+  when /\Aat\s+(\d{1,2}):(\d{2})\s*(am|pm)?\z/
+    h, m, ap = $1.to_i, $2.to_i, $3
+    h = (h % 12) + (ap == "pm" ? 12 : 0) if ap
+    if h > 23 || m > 59
+      echo "timequit: '#{arg}' isn't a time of day -- try ;timequit at 16:45"
+    else
+      now = Time.now
+      at = Time.new(now.year, now.month, now.day, h, m, 0)
+      at += 86_400 if at <= now
+      UserVars.quit_at = at.to_f.round.to_s
+      echo "timequit: will quit at the first rest after #{fmt.call(at.to_f)}."
+    end
+  else
+    echo "timequit: usage -- ;timequit in 4h | at 16:45 | off | status   (no arguments = the check the rest scripts run)"
+  end
+  exit
+end
+
+t = Time.now
 quit_hour = quit_hours.fetch(Char.name, 5)
-if t.hour == quit_hour
+d = deadline.call
+if d && t.to_f - d > stale_secs
+  echo "timequit: the quit time (#{fmt.call(d)}) passed while you were away -- dropping it."
+  UserVars.quit_at = nil
+  d = nil
+end
+if d && t.to_f >= d
+  UserVars.quit_at = nil
+  echo "Quitting in 10 seconds (the quit time you set, #{fmt.call(d)}, has passed)"
+  pause 10
+  fput "quit"
+elsif t.hour == quit_hour
 	echo "Quitting in 10 seconds"
 	pause 10
 	fput "quit"
 else
-	echo "Not time to quit"
+	echo "Not time to quit#{d ? " (set to quit after #{fmt.call(d)})" : ''}"
     fput "sit"
     fput "rest"
     fput "meditate"
