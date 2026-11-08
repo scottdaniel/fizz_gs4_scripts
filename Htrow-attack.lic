@@ -1,12 +1,12 @@
 # Htrow-attack.lic
 # Bigshot custom attack routine for Htrowelzzif (Sorcerer who fights with a
-# longsword and shield). Drop it into a bigshot hunting-commands list as a
-# single command:
+# two-handed weapon). Drop it into a bigshot hunting-commands list as a single
+# command:
 #
 #   script Htrow-attack
 #
 # Built on Brayis-attack.lic rather than Fizzleworth's sorcerer scripts: she has
-# no Magic Item Use, so there's no wand fallback -- the finisher is her sword.
+# no Magic Item Use, so there's no wand fallback -- the finisher is her weapon.
 # bigshot pauses itself, runs this once against the target it already has
 # locked, then resumes to loot / wander / retarget -- so this does ONE pass of
 # her rotation per call and returns; bigshot re-invokes it every pass while the
@@ -17,7 +17,7 @@
 #
 #   stance guarded, then each spell in opener_spells -- Blood Burst (701), then
 #     Mana Disruption (702) -- each only if live mana covers it;
-#   stance offensive, then a plain attack with the longsword.
+#   stance offensive, then a plain attack with her two-hander.
 #
 # and bigshot's next call repeats it until the target is dead.
 #
@@ -36,7 +36,7 @@
 # hurts you, so each one is gated on the live checkmana against its cost,
 # re-read right before the incant (after the previous cast drained mana) --
 # the job (m1)/(m2) would do in a bigshot list. Short on mana just means fewer
-# casts; the sword swing happens either way.
+# casts; the swing happens either way.
 #
 # FREE ACCOUNT: she can't hunt carrying 5,000+ silver -- every cast and swing
 # just gets "[Because your account is free, you cannot hunt while carrying 5000
@@ -47,12 +47,14 @@
 # (reason "Carrying 5,000+ silver"), and Htrow-prerest.lic banks the coins.
 #
 # DISARM (from Brayis-attack.lic, where a death dirge disarmed Brayis twice and
-# he died fighting bare-fisted): her shield stays in the LEFT hand after a
-# disarm, so the check is the sword hand (right) being empty, not both hands.
-# On an empty right hand it tries GIRD once (the sword may just be in the
-# cloak); if that still leaves it empty it prints a DISARMED banner, sets
-# $bigshot_should_rest (reason "Disarmed") and exits without attacking.
-# Htrow-prep.lic stops bigshot in town if GIRD comes up empty there too.
+# he died fighting bare-fisted): GS4 holds a two-hander in the RIGHT hand
+# (Brayis: "...claidhmore in your right hand and nothing in your left hand."),
+# so the check is that hand being empty -- not both hands, so a box in the left
+# can't hide a disarm. On an empty right hand it tries READY 2WEAP once (the
+# weapon may just be in the cloak); if that still leaves it empty it prints a
+# DISARMED banner, sets $bigshot_should_rest (reason "Disarmed") and exits
+# without attacking. Htrow-prep.lic stops bigshot in town if READY 2WEAP comes
+# up empty there too.
 # A persistent DownstreamHook records the room any "Use the RECOVER ITEM
 # command" line arrives in, since a disarm can land while bigshot is walking.
 
@@ -73,7 +75,7 @@ end
 # --- patterns ----------------------------------------------------------------
 
 # A wound bad enough to block casting -- no roundtime, and every other cast
-# would fail the same way, so the pass skips straight to the sword.
+# would fail the same way, so the pass skips straight to the swing.
 CANT_CAST_WOUNDED = /can't think clearly enough to prepare a spell/i unless defined?(CANT_CAST_WOUNDED)
 
 # Still in cast roundtime from the last spell: the incant didn't go out.
@@ -154,8 +156,7 @@ def cast_openers(foe)
   end
 end
 
-# Offensive, then one swing with the longsword. No-ops if the openers already
-# killed it.
+# Offensive, then one swing. No-ops if the openers already killed it.
 def finish_attack(foe)
   return if target_dead?(foe)
   waitcastrt?
@@ -193,25 +194,24 @@ DownstreamHook.add('htrowelzzif_disarm_room', proc { |server_string|
   server_string
 }, persist: true)
 
-# GIRD puts the longsword in the right hand and the shield in the left, and a
-# disarm only takes the sword -- so the right hand is the one that matters.
-def sword_hand_empty?
+# READY 2WEAP puts the two-hander in the right hand -- the one that matters.
+def weapon_hand_empty?
   checkright.nil?
 end
 
-# Report the disarm loudly and send bigshot to rest rather than fight on with
-# just a shield. Htrow-prep.lic then stops bigshot if GIRD finds no sword.
+# Report the disarm loudly and send bigshot to rest rather than fight on
+# bare-handed. Htrow-prep.lic then stops bigshot if READY 2WEAP finds nothing.
 def handle_disarmed
   info  = $htrowelzzif_disarm
   fresh = info && (Time.now - info[:at]) < HTROWELZZIF_DISARM_FRESH_SECS
   here  = Room.current
-  echo "########## DISARMED -- no sword in the right hand ##########"
+  echo "########## DISARMED -- no weapon in the right hand ##########"
   if fresh
     echo "## the RECOVER ITEM line arrived #{(Time.now - info[:at]).round}s ago in room #{info[:room]} (#{info[:title]})"
   else
     echo "## disarm room unknown (no recent RECOVER ITEM line seen); noticed in room #{here&.id} (#{Array(here&.title).first})"
   end
-  echo "## not fighting with just a shield -- asking bigshot to rest"
+  echo "## not fighting bare-handed -- asking bigshot to rest"
   $bigshot_should_rest = true
   $rest_reason = "Disarmed"
 end
@@ -265,12 +265,12 @@ if silver_capped?
   exit
 end
 
-# Empty sword hand: try GIRD once (the sword may only be in the cloak), and
-# only call it a disarm if that doesn't bring it back.
-if sword_hand_empty?
-  fput "gird"
+# Empty weapon hand: try READY 2WEAP once (the weapon may only be in the
+# cloak), and only call it a disarm if that doesn't bring it back.
+if weapon_hand_empty?
+  fput "ready 2weap"
   pause 0.5
-  if sword_hand_empty?
+  if weapon_hand_empty?
     handle_disarmed
     exit
   end

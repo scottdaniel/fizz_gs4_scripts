@@ -1,15 +1,14 @@
 #Htrow-prep.lic
-#Sword-and-shield Sorcerer version of Brayis-prep.lic (Htrowelzzif). No Magic
+#Two-handed-weapon Sorcerer version of Brayis-prep.lic (Htrowelzzif). No Magic
 #Item Use, so no gold coin and no wands -- gearing up is clearing hands,
-#rubbing the five items that work without it, and GIRDing the longsword and
-#shield. Replaces the bounty profile's "gird" prep command.
+#rubbing the five items that work without it, and READY 2WEAP.
 
 module HtrowPrep
 
-# clear hands -- "store all" puts the longsword back in the hooded cloak and
-# slings the reinforced shield over her shoulder (her STORE settings); "stow
-# all" mops up anything else left in a hand.
-fput "store all"
+# clear hands -- "store 2weap" puts the two-hander (a scorched invar flail as of
+# 11/08) back in the hooded cloak per her STORE 2weapon setting; "stow all"
+# mops up anything else left in a hand.
+fput "store 2weap"
 fput "stow all"
 
 # rub stuff, but only if the spell isn't already active -- and only pause
@@ -36,19 +35,19 @@ unless Array(GameObj.loot).find { |i| i.name =~ /#{Char.name} disk/ }
   pause 3
 end
 
-# longsword to the right hand, shield to the left
-fput "gird"
+# two-hander to the right hand
+fput "ready 2weap"
 
-# No sword in the right hand: it's really gone (disarmed and never recovered,
-# or the STORE weapon setting points at something that isn't there). Don't let
-# bigshot walk back out with just a shield -- stop it here, in town, the same
-# way Brayis-prep.lic does. This runs before any travel (bigshot's
-# hunting_prep_commands happen at the start of pre_hunt). Right hand only: the
-# shield would still fill the left after a disarm.
+# No weapon in the right hand: it's really gone (disarmed and never recovered,
+# or the STORE 2weapon setting points at something that isn't there). Don't let
+# bigshot walk back out bare-handed -- stop it here, in town, the same way
+# Brayis-prep.lic does. This runs before any travel (bigshot's
+# hunting_prep_commands happen at the start of pre_hunt). Right hand only: GS4
+# holds a two-hander there, and the attack script checks the same hand.
 pause 0.5
 if checkright.nil?
-  echo "Htrow-prep: no sword in the right hand after GIRD -- stopping bigshot. " \
-       "Check the STORE weapon setting (STORE LIST)."
+  echo "Htrow-prep: no weapon in the right hand after READY 2WEAP -- stopping bigshot. " \
+       "Check the STORE 2weapon setting (STORE LIST)."
   Script.kill("bigshot") if Script.running?("bigshot")
   exit
 end
