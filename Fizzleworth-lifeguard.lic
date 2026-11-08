@@ -20,9 +20,21 @@
 #      SHIFT_GAP keeps a miss (no essence / on cooldown / out of uses) from being
 #      hammered; Return and Restoration still back it up. Rooted/immobile aren't
 #      detected (Lich only exposes stunned and webbed).
+#      11.08: the one real try outside Sonreeva (04:00:25, stunned at 45% on the Krag slopes) hit a
+#      climb fall's 10 s roundtime: "...wait 9 seconds." Now it waits the roundtime out and retries.
 #      11.03: in the Hollowlair Dreadgrounds (Sonreeva) the game refused it three times ("the
 #      demonic gates recede away from you ... You recoil back"), so after that reply SHIFT is
 #      skipped for the rest of that area (the title's first word); leaving it clears the block.
+#
+#   +. CLIMB FALL CAP (11.08): a climb that fails badly drops you with damage, a stun and 10 s of
+#      roundtime, and a fall can crit-kill at any HP (11.08 04:02:41, a throat crit at 66%, the
+#      9th straight fall at the Krag Slopes landslide while go2 kept retrying). So: once
+#      CLIMB_CAP damaging falls land inside CLIMB_WINDOW seconds, go2 is paused (no more climbs)
+#      and deadexit is asked to send the Discord message and quit the game (only when afk_now is
+#      on; otherwise go2 just stays paused -- ;unpause go2 to carry on). Every climb outcome on
+#      the landslide is also logged with health / encumbrance / wounds before and after, so the
+#      next streak can be explained from the log.
+#      ;vars set lifeguard_climb_cap=4     damaging falls that stop the climbing (0 = off)
 #
 # Written after 10.05: stunned for 6 rounds, then 20s + 10s roundtime in a crowd
 # of incubi/inciters; the animate (and luck) kept Fizzleworth alive. There is NO
@@ -57,6 +69,7 @@ module Lifeguard
                      Fizzleworth-attack-base sac4mana wander fizzsac] unless defined?(PAUSE_SCRIPTS)
 
   VOLN = (defined?(Lich::Gemstone::Societies::OrderOfVoln) ? Lich::Gemstone::Societies::OrderOfVoln : nil) unless defined?(VOLN)
+  CLIMB_HOOK = "lifeguard-climb" unless defined?(CLIMB_HOOK)
 
   def flag(name)
     v = UserVars.send(name)
@@ -167,7 +180,16 @@ module Lifeguard
     mine = freeze
     start = (Room.current.id rescue nil)
     begin
-      reply = dothistimeout("sacrifice shift", 6, SHIFT_REPLY).to_s
+      # 11.08 04:00:25: a climb fall left 10 s of roundtime, the game answered "...wait 9 seconds."
+      # (it does not queue the command), and that reply was taken for a miss -- no SHIFT, then
+      # SHIFT_GAP locked it out for two minutes and the next fall killed him. Wait the roundtime
+      # out first, and if the game still says wait, do it again.
+      reply = ""
+      3.times do
+        waitrt?
+        reply = dothistimeout("sacrifice shift", 6, SHIFT_REPLY).to_s
+        break unless reply =~ /\A\s*\.\.\.\s*wait \d+/i
+      end
       echo "[lifeguard] shift reply: #{reply.strip[0, 180]}"
       if reply =~ SHIFT_REFUSED
         echo "[lifeguard] SHIFT refused in #{region.empty? ? 'this room' : region} -- no more tries until you leave it; Return/Restoration still back it up."
@@ -186,14 +208,98 @@ module Lifeguard
     end
   end
 
+  # --- climb falls (see the header) ---------------------------------------------------------
+  # Tunables are methods, not constants: a guarded constant would keep its first value until
+  # Lich restarts.
+  def climb_cap
+    pct(:lifeguard_climb_cap, 4)
+  end
+
+  def climb_window
+    600   # secs
+  end
+
+  # "health 85%, encumbrance 20%, wounds: head 2, leftHand 1/scar 1" (rank after the part name)
+  def climb_state
+    parts = %w[head neck nsys back chest abdomen leftEye rightEye leftArm rightArm leftHand
+               rightHand leftLeg rightLeg leftFoot rightFoot].map do |p|
+      w = (Wounds.send(p).to_i rescue 0)
+      s = (Scars.send(p).to_i rescue 0)
+      next if w.zero? && s.zero?
+      "#{p} #{w}#{s > 0 ? "/scar #{s}" : ''}"
+    end.compact
+    enc = (Char.percent_encumbrance rescue nil)
+    "health #{hp_pct}%, encumbrance #{enc.nil? ? '?' : "#{enc}%"}, wounds: #{parts.empty? ? 'none' : parts.join(', ')}"
+  rescue StandardError
+    "state unavailable"
+  end
+
+  # Outcome lines are verified against the 11.07 Saga log. Falls: "...fall to the ground below",
+  # "...lose your grip and fall...", "...let go and fall." Slip: harmless, you catch yourself.
+  # The hook only queues; echoing and counting happen on the script's own thread.
+  def install_climb_hook
+    DownstreamHook.remove(CLIMB_HOOK) rescue nil
+    fall = /fall to the ground below|lose your grip and fall|will not finish the climb|let go and fall/i
+    slip = /attempt to climb the landslide\.\s+After only a few feet, you slip/i
+    good = /(?:Confidently, you climb up|Gracefully, you scamper up|You skillfully climb up) the landslide/i
+    DownstreamHook.add(CLIMB_HOOK, proc { |line|
+      begin
+        kind = if line =~ fall then :fall elsif line =~ slip then :slip elsif line =~ good then :ok end
+        $lifeguard_climb_q << [Time.now.to_f, kind] if kind
+      rescue StandardError
+        nil
+      end
+      line
+    })
+  end
+
+  def remove_climb_hook
+    DownstreamHook.remove(CLIMB_HOOK) rescue nil
+  end
+
+  # Called every poll: keep a few seconds of state history, log queued climb outcomes, enforce the cap.
+  def climb_tick
+    now = Time.now.to_f
+    if $lifeguard_hist.empty? || now - $lifeguard_hist.last[0] >= 1.0
+      $lifeguard_hist << [now, climb_state]
+      $lifeguard_hist.shift while $lifeguard_hist.size > 8
+    end
+    while (ev = $lifeguard_climb_q.shift)
+      t, kind = ev
+      before = $lifeguard_hist.reverse.find { |ts, _| t - ts >= 1.5 }
+      echo "[lifeguard] climb #{kind} -- before: #{before ? before[1] : 'n/a'} | now: #{climb_state}"
+      $lifeguard_falls << t if kind == :fall
+    end
+    $lifeguard_falls.reject! { |t| t < now - climb_window }
+    cap = climb_cap
+    return unless cap > 0 && $lifeguard_falls.size >= cap && !$lifeguard_climb_stopped
+    $lifeguard_climb_stopped = true
+    Script.pause("go2") if Script.running?("go2") && !Script.paused?("go2")
+    $deadexit_request = "#{$lifeguard_falls.size} damaging climb falls in #{(climb_window / 60.0).round} minutes" \
+                        " at #{XMLData.room_title.to_s[/\[([^\]]+)/, 1] || 'an unknown room'} (health #{hp_pct}%)"
+    echo "[lifeguard] !! #{$lifeguard_falls.size} damaging climb falls inside #{(climb_window / 60.0).round} minutes -- " \
+         "go2 paused so it stops climbing; asking deadexit to alert Discord and quit (only if afk_now is on). " \
+         "Carry on by hand with ;unpause go2."
+    Script.start("deadexit") unless Script.running?("deadexit")
+  rescue StandardError => e
+    echo "[lifeguard] climb guard error: #{e.class} #{e.message}"
+  end
+
   def run
-    echo "[lifeguard] watching health (shift <= #{pct(:lifeguard_shift_pct, 50)}% when stunned/webbed, restore <= #{pct(:lifeguard_restore_pct, 50)}%, return <= #{pct(:lifeguard_return_pct, 25)}%)."
+    $lifeguard_climb_q       = []
+    $lifeguard_falls         = []
+    $lifeguard_hist          = []
+    $lifeguard_climb_stopped = false
+    install_climb_hook
+    echo "[lifeguard] watching health (shift <= #{pct(:lifeguard_shift_pct, 50)}% when stunned/webbed, restore <= #{pct(:lifeguard_restore_pct, 50)}%, return <= #{pct(:lifeguard_return_pct, 25)}%; " \
+         "climb cap #{climb_cap > 0 ? "#{climb_cap} falls" : 'off'})."
     last_restore = 0.0
     last_return  = 0.0
     last_shift   = 0.0
     shift_blocked = nil   # area where the game refused a SHIFT; cleared by leaving it
     loop do
       Script.current.kill if checkdead
+      climb_tick if on?
       if on? && hostiles?
         hp = hp_pct
         now = Time.now.to_f
@@ -215,5 +321,7 @@ module Lifeguard
     echo "[lifeguard] error: #{e.class} #{e.message}"
   end
 end
+
+before_dying { Lifeguard.remove_climb_hook }
 
 Lifeguard.run

@@ -4,7 +4,7 @@
         game: gemstone
         tags: safety, bigshot
     requires: Lich > 5.14.2
-     version: 0.2
+     version: 0.3
         note: Written with assistance from Claude (Anthropic).
 
   Unattended death / low-health safety net for bigshot hunts.
@@ -25,6 +25,24 @@
   those still fire first; this is a belt-and-suspenders exit for whatever
   bigshot leaves behind.
 
+  Discord (0.3, 11/08): before it quits, it posts to the same webhook exp_check
+  uses (webhook_url in data/exp_check.yaml), one line, always prefixed with the
+  character's name:
+    "Sorry, you have died because <cause of death>."
+    "Game quit due to low health (22%) ... last hit: <cause>."
+    "Game quit due to <reason>."      (a request from another script, see below)
+  The cause comes from the last ~80 lines the game sent: the last damage that
+  came with a crit describing YOU ("... 44 points of damage!" / "Strike to your
+  throat removes it!"), traced back to what dealt it -- a climb fall, a creature's
+  attack line, or an explosion / spell line. If nothing matches it says so and
+  quotes the last few lines instead of guessing.
+  Add `death: false` to data/exp_check.yaml to mute these (exp_check's setup
+  window rewrites that file, so re-add it after using the setup window).
+
+  Other scripts can ask for an exit by setting $deadexit_request to a reason
+  string (Fizzleworth-lifeguard does after repeated climb falls). The Discord
+  line is sent either way; the quit only happens when afk_now is on.
+
   Gated by the UserVar afk_now, which defaults ON. When you're actually at
   the keyboard doing interactive hunting and would rather handle your own
   death or low health yourself (get rezzed, heal, keep playing), turn it off
@@ -44,12 +62,141 @@
   Stop:   ;kill deadexit
 =end
 
+require 'json'
+require 'net/http'
+require 'uri'
+require 'yaml'
+
 module DeadExit
   # === config =====================================================================
   BIGSHOT_SCRIPT_NAME    = "bigshot"
   CHECK_INTERVAL_SECONDS = 3
   BIGSHOT_GRACE_SECONDS  = 20 # bridges bigshot self-killing on death just before we poll
   LOW_HEALTH_PERCENT     = 25 # quit when health is strictly below this while afk
+  RECENT_MAX             = 120 # game lines kept for the cause of death
+  HOOK_NAME              = "deadexit-recent"
+  DEATH_LINE             = /you have died/i                       # "It seems you have died, my friend."
+  # Lines that are never the cause: chat, script chatter, familiar mana log, follower spam.
+  NOISE                  = /\A(?:!?[A-Z]{0,4}>|\[(?:Familiar|Thoughts|Speech|Help|Group|Private|Whisper|Lich|manalog)|--- Lich:|!)|followed\.?\z|arrives, following you/i
+  FALL                   = /fall to the ground below|lose your grip and fall|will not finish the climb|let go and fall/i
+  ROLL                   = /\A\s*(?:AS:|CS:|SMR|SvD|d100|1d100)|\bd100\b|\bvs DS\b/i
+  DAMAGE                 = /\.\.\.\s*(?:and hits for )?(\d+) points? of damage/i
+  AGAINST_YOU            = /\byour\b/i                            # a crit line that describes YOU ("...to your throat...")
+  # Dying drops every buff at once; those ~25 lines would push the real cause out of the buffer.
+  FADE                   = /\b(?:fades?|leaves you|wanes?|departing|dissipat\w+|returns? to normal|stops shimmering|detach itself|bursts in a bright flash|feel less confident|go back to normal|lose your extra|no longer|become solid again|leaves? you|feel your extra|quickly passes|stops? shimmering)\b/i
+  ATTACK                 = /\bat you[!.]?\z/i                      # "A krag yeti swings a monstrous hairy hand at you!"
+  HAZARD                 = /explodes|erupts|bursts|tendrils|boils?|sucked away|scalds|lightning|flames|shatters/i
+
+  # === the recent-lines buffer ======================================================
+
+  # Game text without XML, or nil when it's noise.
+  def self.clean(line)
+    t = line.to_s.gsub(/<[^>]*>/, "").gsub("&gt;", ">").gsub("&lt;", "<").gsub("&amp;", "&").strip
+    return nil if t.empty? || t =~ NOISE || t =~ FADE
+    t
+  end
+
+  def self.install_hook
+    DownstreamHook.remove(HOOK_NAME) rescue nil
+    DownstreamHook.add(HOOK_NAME, proc { |line|
+      begin
+        t = DeadExit.clean(line)
+        if t
+          $deadexit_recent << t
+          $deadexit_recent.shift while $deadexit_recent.size > RECENT_MAX
+        end
+      rescue StandardError
+        nil
+      end
+      line
+    })
+  end
+
+  def self.remove_hook
+    DownstreamHook.remove(HOOK_NAME) rescue nil
+  end
+
+  # === cause of death ===============================================================
+
+  # lines: cleaned game text, oldest first, ending at the death line (or now).
+  # => a short sentence fragment, or nil if nothing hit us.
+  def self.cause_from(lines)
+    lines = lines.last(70)
+    # The newest damage line whose next line is a crit describing us ("Strike to your throat removes it!").
+    di = nil
+    (lines.size - 1).downto(0) do |i|
+      next unless lines[i] =~ DAMAGE
+      nxt = lines[i + 1].to_s
+      if nxt =~ AGAINST_YOU && nxt !~ DAMAGE
+        di = i
+        break
+      end
+    end
+    unless di
+      # No crit line aimed at us (a plain "A hit!"): fall back to the last attack on us.
+      a = lines.reverse.find { |l| l =~ ATTACK || l =~ /\A(?:An?|The|Some) .+\b(?:tries to|swings|pounds|slashes|bites|claws|lunges|strikes|hurls|throws|fires|thrusts|punches|kicks|rakes|stabs|gores|grabs)\b.+ you[!.]\z/ }
+      return a ? "#{a.sub(/[!.]\z/, '')} (the last attack on you; no damage line followed it)" : nil
+    end
+    amount = lines[di][DAMAGE, 1]
+    crit   = lines[di + 1].to_s.strip
+    back   = lines[[di - 10, 0].max...di].reverse
+    source =
+      if (f = back.find { |l| l =~ FALL })
+        "a fall while climbing"
+      elsif (a = back.find { |l| l =~ ATTACK })
+        a.sub(/[!.]\z/, "")
+      elsif (h = back.find { |l| l =~ HAZARD && l !~ ROLL })
+        h.sub(/[!.]\z/, "")
+      else
+        (back.find { |l| l !~ ROLL } || "something unseen").sub(/[!.]\z/, "")
+      end
+    note = amount.to_i <= 10 ? "; only a small hit, so probably bleeding or an earlier wound" : ""
+    "#{source} (last hit, #{amount} damage: \"#{crit}\"#{note})"
+  end
+
+  # Cause from the buffer, anchored at the death line when it's there.
+  def self.cause_now
+    lines = $deadexit_recent.dup
+    di = lines.rindex { |l| l =~ DEATH_LINE }
+    lines = lines[0...di] if di
+    cause_from(lines)
+  end
+
+  def self.last_lines(n = 3)
+    $deadexit_recent.last(n).join(" / ")[0, 400]
+  end
+
+  def self.where
+    XMLData.room_title.to_s[/\[([^\]]+)/, 1].to_s.sub(/\s*-\s*\d+\z/, "").strip
+  rescue StandardError
+    ""
+  end
+
+  # === Discord ======================================================================
+
+  # Same webhook as exp_check. false when there is none, it's muted, or it failed.
+  def self.notify(text)
+    cfg = (YAML.safe_load(File.read(File.join(DATA_DIR, "exp_check.yaml"))) rescue nil)
+    cfg = {} unless cfg.is_a?(Hash)
+    url = cfg["webhook_url"].to_s.strip
+    return false if url.empty? || cfg["death"] == false
+    uri = URI(url)
+    return false unless uri.is_a?(URI::HTTPS)
+    body = { content: "[#{Char.name}] #{text}"[0, 1800] }.to_json
+    2.times do |i|
+      begin
+        res = Net::HTTP.start(uri.host, uri.port, use_ssl: true, open_timeout: 5, read_timeout: 5) do |http|
+          http.post(uri.request_uri, body, "Content-Type" => "application/json")
+        end
+        return true if res.is_a?(Net::HTTPSuccess)
+        echo "deadexit: webhook answered HTTP #{res.code}#{i < 1 ? ', retrying' : ''}"
+      rescue StandardError => e
+        echo "deadexit: webhook failed (#{e.class}: #{e.message})#{i < 1 ? ', retrying' : ''}"
+      end
+      sleep 2 if i < 1
+    end
+    false
+  end
 
   # === helpers ====================================================================
 
@@ -73,8 +220,23 @@ module DeadExit
     Char.percent_health < LOW_HEALTH_PERCENT
   end
 
+  # Tell Discord (once per reason), then quit. The quit is retried every poll until the
+  # connection drops; the message isn't.
+  def self.leave(reason_key, message, quit_note)
+    unless $deadexit_told[reason_key]
+      $deadexit_told[reason_key] = true
+      sent = notify(message)
+      echo "deadexit: #{message}#{sent ? ' [Discord sent]' : ' [no Discord message sent]'}"
+    end
+    echo "deadexit: #{quit_note}"
+    fput "quit"
+  end
+
   # === main =======================================================================
   def self.run
+    $deadexit_recent = []
+    $deadexit_told   = {}
+    install_hook
     echo "deadexit started! Watching for death or health below #{LOW_HEALTH_PERCENT}% while ;#{BIGSHOT_SCRIPT_NAME} is running (afk_now defaults ON)."
     echo "Hunting interactively? ;vars set afk_now=false to stop the auto-quit."
     echo "Stop with ;kill deadexit"
@@ -85,13 +247,27 @@ module DeadExit
       bigshot_last_seen = Time.now if Script.running?(BIGSHOT_SCRIPT_NAME)
       bigshot_recently_hunting = bigshot_last_seen && (Time.now - bigshot_last_seen) < BIGSHOT_GRACE_SECONDS
 
+      # Another script asked for an exit (e.g. lifeguard after repeated climb falls).
+      if (reason = $deadexit_request)
+        if afk_now?
+          leave(:request, "Game quit due to #{reason}.", "#{reason} and afk_now is on -- quitting.")
+        elsif !$deadexit_told[:request]
+          $deadexit_told[:request] = true
+          sent = notify("Stopped because of #{reason} (not quitting: afk_now is off).")
+          echo "deadexit: #{reason} -- afk_now is off, not quitting.#{sent ? ' [Discord sent]' : ''}"
+        end
+      end
+
       if bigshot_recently_hunting && afk_now?
         if dead?
-          echo "deadexit: you're dead and afk_now is on -- quitting so you don't decay or get rezzed unattended."
-          fput "quit"
+          cause = cause_now || "I couldn't read it from the game text (last lines: #{last_lines})"
+          where = self.where
+          leave(:dead, "Sorry, you have died because #{cause}#{where.empty? ? '' : " -- in #{where}"}.",
+                "you're dead and afk_now is on -- quitting so you don't decay or get rezzed unattended.")
         elsif low_health?
-          echo "deadexit: health is #{Char.percent_health}% (below #{LOW_HEALTH_PERCENT}%) and afk_now is on -- quitting before it turns into a death."
-          fput "quit"
+          hit = cause_now
+          leave(:low_health, "Game quit due to low health (#{Char.percent_health}%)#{hit ? ", last hit: #{hit}" : ''}.",
+                "health is #{Char.percent_health}% (below #{LOW_HEALTH_PERCENT}%) and afk_now is on -- quitting before it turns into a death.")
         end
       end
 
@@ -99,5 +275,7 @@ module DeadExit
     end
   end
 end
+
+before_dying { DeadExit.remove_hook }
 
 DeadExit.run
