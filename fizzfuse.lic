@@ -4,7 +4,7 @@
         game: gemstone
         tags: scroll infusion, infuse, unlock, runestone, scroll
     requires: Lich > 5.4.0
-     version: 1.6
+     version: 1.7
         note: Written with assistance from Claude (Anthropic).
 
 
@@ -60,6 +60,13 @@ Infuse!
 
 		;infuse help
 			- Show usage and your current settings
+
+	Any of the above (unlock-only and rune excepted, since they stow nothing) also
+	takes --cont=<container>, which puts the finished scroll in that container
+	instead of scrollsack/vibrantscrollsack - handy for scrolls you're passing
+	along to another character, e.g.:
+
+		;infuse --cont=kit
 
     NotAramund's note:        
 	I adapted Ashraam's infuse.lic to create this script. I had the following goals in mind:
@@ -124,11 +131,18 @@ Infuse!
           bright white aura" (scroll can't be unlocked further): the stop check only
           knew the "dim" wording and now matches "white aura". Also waits for the scroll
           to be back in hand after fetching a rune, instead of waving at a blank hand.
+        - Added --cont=<container> (e.g. ;infuse --cont=kit): stows the finished scroll
+          there instead of scrollsack/vibrantscrollsack, for scrolls meant for other
+          characters.
 
 =end
 
 # Globals
 $scroll_id = -1
+
+# Container override from --cont=<container>: where finished scrolls go instead
+# of scrollsack/vibrantscrollsack (nil = use the sacks).
+$cont_override = nil
 
 # Make the rune_name rune
 #
@@ -472,7 +486,10 @@ def check_charge
 	charge_line = dothistimeout "wave left at my #{GameObj.right_hand}", 5, /time remaining|charges remaining/
 	is_vibrant = charge_line =~ /time remaining/ ? true : false
 
-	if is_vibrant && UserVars.vibrantscrollsack && UserVars.vibrantscrollsack.length >= 3
+	if $cont_override
+		echo "Storing in #{$cont_override} (--cont override)."
+		fput "put right in my #{$cont_override}"
+	elsif is_vibrant && UserVars.vibrantscrollsack && UserVars.vibrantscrollsack.length >= 3
 		echo "Vibrant scroll detected, storing in vibrantscrollsack."
 		fput "put right in my #{UserVars.vibrantscrollsack}"
 	else
@@ -512,30 +529,42 @@ else
 	exit
 end
 
+# Pull --cont=<container> out of the arguments; what's left is the command.
+args = Script.current.vars[1..-1] || []
+cont_arg = args.find { |a| a =~ /\A--cont=/i }
+if cont_arg
+	args.delete(cont_arg)
+	$cont_override = cont_arg.sub(/\A--cont=/i, '').gsub(/\A["']|["']\z/, '').strip
+	if $cont_override.empty?
+		echo "--cont needs a container, e.g. ;infuse --cont=kit"
+		exit
+	end
+end
+
 # Main
-if Script.current.vars.length == 0
+if args.empty?
 	check_for_scroll
 	unlock_spells
 	infuse
 	check_charge
 
-elsif script.vars[1] == 'unlock'
+elsif args[0] == 'unlock'
 	check_for_scroll
 	unlock_spells
 
-elsif script.vars[1] == 'infuse'
+elsif args[0] == 'infuse'
 	check_for_scroll
 	infuse
 	check_charge
 
-elsif script.vars[1] == 'rune'
-	make_rune(Script.current.vars[2])
+elsif args[0] == 'rune'
+	make_rune(args[1])
 
-elsif script.vars[1] == 'check'
+elsif args[0] == 'check'
 	check_for_scroll
 	check_charge
 
-elsif script.vars[1] == 'help'
+elsif args[0] == 'help'
 	respond "First, set your <infusesack> and <scrollsack> (can be the same):"
 	respond "    ;vars set infusesack=<container name>"
     respond "    ;vars set scrollsack=<container name>"
@@ -559,13 +588,17 @@ elsif script.vars[1] == 'help'
 	respond "a flat 20,000 to cover runestones, ink, a cup, etc."
 	respond ""
 	respond "USAGE:"
-	respond "    ;infuse [unlock|infuse|rune <rune name>]"
+	respond "    ;infuse [unlock|infuse|check|rune <rune name>] [--cont=<container>]"
 	respond ""
 	respond "    ;infuse                    - Unlock & infuse scroll in your right hand"
 	respond "    ;infuse unlock             - Unlock the scroll in your right hand"
 	respond "    ;infuse infuse             - Infuse scroll in your right hand"
 	respond "    ;infuse rune <rune name>   - Make a runestone with rune <rune name>"
     respond "    ;infuse check              - Check for charges of a scroll in your right hand"
+	respond ""
+	respond "    --cont=<container>         - Put the finished scroll in <container> instead of"
+	respond "                                 scrollsack/vibrantscrollsack, e.g. ;infuse --cont=kit"
+	respond "                                 (for scrolls you're passing to another character)"
 	respond ""
 	exit
 end
