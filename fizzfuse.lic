@@ -4,7 +4,7 @@
         game: gemstone
         tags: scroll infusion, infuse, unlock, runestone, scroll
     requires: Lich > 5.4.0
-     version: 1.7
+     version: 1.8
         note: Written with assistance from Claude (Anthropic).
 
 
@@ -67,6 +67,16 @@ Infuse!
 	along to another character, e.g.:
 
 		;infuse --cont=kit
+
+	--spells=<n,n> limits unlocking to the spells you care about. quiss'fyn
+	unlocks a random locked spell each wave and only unlocked spells get
+	infused, so with this the script waves quiss'fyn, checks with odeir'cos, and
+	repeats until every listed spell is unlocked (ignoring the rest), then goes
+	on to link and infuse. It won't wave at all if a listed spell isn't on the
+	scroll, and it stops if the scroll can't be unlocked any further while a
+	listed spell is still locked. Works with unlock and the default command:
+
+		;infuse --spells=101,103
 
     NotAramund's note:        
 	I adapted Ashraam's infuse.lic to create this script. I had the following goals in mind:
@@ -134,6 +144,9 @@ Infuse!
         - Added --cont=<container> (e.g. ;infuse --cont=kit): stows the finished scroll
           there instead of scrollsack/vibrantscrollsack, for scrolls meant for other
           characters.
+        - Added --spells=101,103: unlock only until those spells are unlocked (waving
+          quiss'fyn and checking with odeir'cos in between), then infuse, ignoring the
+          other spells on the scroll.
 
 =end
 
@@ -143,6 +156,10 @@ $scroll_id = -1
 # Container override from --cont=<container>: where finished scrolls go instead
 # of scrollsack/vibrantscrollsack (nil = use the sacks).
 $cont_override = nil
+
+# Spell numbers from --spells=101,103: unlock only until these are unlocked
+# (nil = unlock everything).
+$target_spells = nil
 
 # Make the rune_name rune
 #
@@ -306,10 +323,35 @@ end
 # Preconditions:
 #	- Scroll in right hand
 def count_locked_spells
+	read_spell_status.values.count(false)
+end
+
+# Read the scroll in your right hand with the odeir'cos rune and return
+# { spell number => unlocked? } for every spell on it (see count_locked_spells
+# for how locked vs unlocked is told apart). Leaves the rune stowed again.
+#
+# Preconditions:
+#	- Scroll in right hand, left hand free
+def read_spell_status
 	find_rune("odeir'cos")
 	lines = collect_lines("wave left at my #{GameObj.right_hand}", /Roundtime/, 5)
 	fput "put left in my #{UserVars.infusesack}"
-	lines.count { |line| line =~ /^\s*\(\d+\)/ && line !~ /potential to add/ }
+	status = {}
+	lines.each do |line|
+		m = line.match(/^\s*\((\d+)\)/)
+		status[m[1].to_i] = !!(line =~ /potential to add/) if m
+	end
+	status
+end
+
+# Is this wave response the game saying nothing more can be unlocked?
+# There are several flavor-text variants ("shakes slightly"/"violently, but
+# nothing happens", "surrounded by a dim/bright white aura", ...), so match
+# loosely - another variant we haven't seen yet could turn up the same way
+# "bright white aura" did. The aura means the scroll can't be unlocked any
+# further, whatever the odeir'cos count says.
+def nothing_left_to_unlock?(wave_lines)
+	wave_lines.any? { |line| line =~ /but nothing happens|white aura/ }
 end
 
 # find_rune can put the scroll back in hand with "get", and GameObj lags the
@@ -333,6 +375,8 @@ end
 # Preconditions:
 #	- Scroll in right hand
 def unlock_spells
+	return unlock_target_spells($target_spells) if $target_spells
+
 	locked = count_locked_spells
 	if locked.zero?
 		echo "No locked spells found."
@@ -348,14 +392,8 @@ def unlock_spells
 		waitcastrt?
 		# Safety net: the game itself says nothing's left to unlock, so stop
 		# regardless of what our count says, rather than risk waving forever
-		# on a stale rune if the count is ever off. There are several flavor-
-		# text variants for this ("shakes slightly"/"violently", "surrounded
-		# by a dim/bright white aura", etc.) - match loosely instead of
-		# hardcoding one exact phrasing, since another variant we haven't seen
-		# yet could turn up the same way "bright white aura" did. (The aura
-		# means the scroll can't be unlocked any further - nothing more to gain
-		# from waving, even if the odeir'cos count says spells are still locked.)
-		if wave_lines.any? { |line| line =~ /but nothing happens|white aura/ }
+		# on a stale rune if the count is ever off.
+		if nothing_left_to_unlock?(wave_lines)
 			echo "Scroll reports no more locked spells."
 			break
 		end
@@ -367,6 +405,80 @@ def unlock_spells
 	end
 	echo "Scroll fully unlocked."
 	fput "put left in my #{UserVars.infusesack}"
+end
+
+# Unlock only until the given spells (an array of spell numbers) are unlocked.
+#
+# quiss'fyn unlocks a random locked spell per wave and only unlocked spells get
+# infused, so this waves, checks with odeir'cos, and repeats until every
+# target is unlocked - ignoring whatever else on the scroll happens to unlock
+# along the way. Each pass needs at least one "altered" wave per target still
+# locked, so it only re-checks after that many (saves swapping runes for a
+# check that can't have finished yet).
+#
+# Stops without wasting charges if a target isn't on the scroll at all, and
+# exits if the scroll can't be unlocked any further with targets still locked.
+#
+# Preconditions:
+#	- Scroll in right hand
+def unlock_target_spells(targets)
+	status = read_spell_status
+	if status.empty?
+		status = read_spell_status
+		if status.empty?
+			echo "Couldn't read the spells on this scroll."
+			exit
+		end
+	end
+
+	missing = targets.reject { |n| status.key?(n) }
+	unless missing.empty?
+		echo "Spell(s) #{missing.join(', ')} aren't on this scroll (it has #{status.keys.join(', ')}) - not wasting any runestone charges."
+		exit
+	end
+
+	pending = targets.reject { |n| status[n] }
+	if pending.empty?
+		echo "Spell(s) #{targets.join(', ')} already unlocked."
+		return
+	end
+	echo "Unlocking until #{targets.join(', ')} are unlocked (still locked: #{pending.join(', ')})..."
+
+	find_rune("quiss'fyn")
+	wait_for_right_hand
+	until pending.empty?
+		gained = 0
+		stuck = false
+		while gained < pending.size
+			wave_lines = collect_lines("wave left at my #{GameObj.right_hand}", /Roundtime/, 5)
+			waitrt?
+			waitcastrt?
+			if nothing_left_to_unlock?(wave_lines)
+				stuck = true
+				break
+			end
+			if wave_lines.any? { |line| line =~ /disintegrates/ }
+				find_rune("quiss'fyn")
+				wait_for_right_hand
+			end
+			gained += 1 if wave_lines.any? { |line| line =~ /has somehow been altered/ }
+		end
+
+		fput "put left in my #{UserVars.infusesack}"
+		status = read_spell_status
+		pending = targets.reject { |n| status[n] }
+		if pending.empty?
+			echo "Spell(s) #{targets.join(', ')} unlocked."
+			return
+		end
+		if stuck
+			echo "The scroll can't be unlocked any further, but spell(s) #{pending.join(', ')} are still locked - stopping."
+			exit
+		end
+		echo "Still locked: #{pending.join(', ')}"
+		find_rune("quiss'fyn")
+		wait_for_right_hand
+	end
 end
 
 # Cast the link (Scroll Infusion, 714) spell on the scroll in your right hand.
@@ -541,6 +653,17 @@ if cont_arg
 	end
 end
 
+spells_arg = args.find { |a| a =~ /\A--spells=/i }
+if spells_arg
+	args.delete(spells_arg)
+	list = spells_arg.sub(/\A--spells=/i, '').gsub(/\A["']|["']\z/, '').strip
+	if list !~ /\A\d+(?:\s*,\s*\d+)*\z/
+		echo "--spells needs a comma-separated list of spell numbers, e.g. ;infuse --spells=101,103"
+		exit
+	end
+	$target_spells = list.split(',').map { |n| n.strip.to_i }.uniq
+end
+
 # Main
 if args.empty?
 	check_for_scroll
@@ -588,7 +711,7 @@ elsif args[0] == 'help'
 	respond "a flat 20,000 to cover runestones, ink, a cup, etc."
 	respond ""
 	respond "USAGE:"
-	respond "    ;infuse [unlock|infuse|check|rune <rune name>] [--cont=<container>]"
+	respond "    ;infuse [unlock|infuse|check|rune <rune name>] [--cont=<container>] [--spells=<n,n>]"
 	respond ""
 	respond "    ;infuse                    - Unlock & infuse scroll in your right hand"
 	respond "    ;infuse unlock             - Unlock the scroll in your right hand"
@@ -599,6 +722,10 @@ elsif args[0] == 'help'
 	respond "    --cont=<container>         - Put the finished scroll in <container> instead of"
 	respond "                                 scrollsack/vibrantscrollsack, e.g. ;infuse --cont=kit"
 	respond "                                 (for scrolls you're passing to another character)"
+	respond "    --spells=101,103           - Unlock only until these spells are unlocked (checking"
+	respond "                                 with odeir'cos between waves), then infuse; ignores the"
+	respond "                                 rest of the scroll. Exits without waving if a listed"
+	respond "                                 spell isn't on the scroll."
 	respond ""
 	exit
 end
