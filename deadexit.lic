@@ -43,6 +43,10 @@
   string (Fizzleworth-lifeguard does after repeated climb falls). The Discord
   line is sent either way; the quit only happens when afk_now is on.
 
+  A script can also set $deadexit_notice to a string for a heads-up that is not an exit
+  (Fizzleworth-prep does when it holds a hunt for encumbrance): one Discord line, never a quit.
+  `notice: false` in data/exp_check.yaml mutes those, separately from `death: false`.
+
   Gated by the UserVar afk_now, which defaults ON. When you're actually at
   the keyboard doing interactive hunting and would rather handle your own
   death or low health yourself (get rezzed, heal, keep playing), turn it off
@@ -175,11 +179,11 @@ module DeadExit
   # === Discord ======================================================================
 
   # Same webhook as exp_check. false when there is none, it's muted, or it failed.
-  def self.notify(text)
+  def self.notify(text, mute_key = "death")
     cfg = (YAML.safe_load(File.read(File.join(DATA_DIR, "exp_check.yaml"))) rescue nil)
     cfg = {} unless cfg.is_a?(Hash)
     url = cfg["webhook_url"].to_s.strip
-    return false if url.empty? || cfg["death"] == false
+    return false if url.empty? || cfg[mute_key] == false
     uri = URI(url)
     return false unless uri.is_a?(URI::HTTPS)
     body = { content: "[#{Char.name}] #{text}"[0, 1800] }.to_json
@@ -246,6 +250,14 @@ module DeadExit
     loop do
       bigshot_last_seen = Time.now if Script.running?(BIGSHOT_SCRIPT_NAME)
       bigshot_recently_hunting = bigshot_last_seen && (Time.now - bigshot_last_seen) < BIGSHOT_GRACE_SECONDS
+
+      # A heads-up from another script that is NOT an exit (e.g. Fizzleworth-prep holding the hunt
+      # because it's too encumbered): one Discord line, no quit, whatever afk_now says.
+      if (note = $deadexit_notice)
+        $deadexit_notice = nil
+        sent = notify(note.to_s, "notice")
+        echo "deadexit: #{note}#{sent ? ' [Discord sent]' : ''}"
+      end
 
       # Another script asked for an exit (e.g. lifeguard after repeated climb falls).
       if (reason = $deadexit_request)

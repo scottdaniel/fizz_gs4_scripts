@@ -71,7 +71,7 @@ Between-hunt chain:
 
 | Script | What it does | Bigshot |
 |---|---|---|
-| `Fizzleworth-prep.lic` | Pre-hunt: tidies the staffs, clears hands, casts the scroll spell-up first (`scrollbuff3`), then does the rubs last plus Crooked Intent (thumb-ring), and readies the weapon. Also starts the companions below and `eloot_guard`, re-arms the per-hunt flags, tells the demon to follow, buys a spare animate weapon, syncs `ewander`'s boundaries to the loaded bigshot profile, and logs starting mind. Modes: `here` / `arena` (no walking; `fizzabyss` runs it before each arena entry) and `sever` (see below). | starts companions |
+| `Fizzleworth-prep.lic` | Pre-hunt: tidies the staffs, clears hands, casts the scroll spell-up first (`scrollbuff3`), then does the rubs last plus Crooked Intent (thumb-ring), and readies the weapon. Also starts the companions below and `eloot_guard`, re-arms the per-hunt flags, tells the demon to follow, buys a spare animate weapon, syncs `ewander`'s boundaries to the loaded bigshot profile, and logs starting mind. Encumbrance gate (11/08): logs the load after `buyweapon` and, at `prep_max_encumbrance` (default 45) or over, deposits silver and otherwise holds the hunt (bigshot waits on prep, so the climb to the hunting ground doesn't start) with one Discord line via `deadexit`. Modes: `here` / `arena` (no walking; `fizzabyss` runs it before each arena entry) and `sever` (see below). | starts companions |
 | `Fizzleworth-prep-sever.lic` | Prep for a spell-sever area (the Rift), where every spell outside the 100s, 400s, 700s and 1700s is stripped. Now a one-line wrapper for `;Fizzleworth-prep sever`: the full prep with the scroll spell-up limited to the 1700s and no white-crystal rub, and it starts `Fizzleworth-witchguard`. Put `script Fizzleworth-prep-sever` in the profile's hunting prep commands. | starts witchguard (via prep) |
 | `Fizzleworth-buyweapon.lic` | Makes sure the minor demon carries a spare weapon for `reanim`; buys one if not. Run from `-prep`. | - |
 | `Fizzleworth-prerest.lic` | Pre-rest: `unlost`, restarts companions, `reanim die` fallback, eherbs, `eloot_guard`, `diskwait`, eloot sell, `unburden`, `-rest`, `bounty_chooser` (minotaur list), buyitems, ewaggle, timequit, then `playsongs` if you're at the keyboard. | restarts companions |
@@ -81,7 +81,7 @@ Always-on companions (started from `-prep` / `-prerest`):
 
 | Script | What it does | Bigshot |
 |---|---|---|
-| `Fizzleworth-lifeguard.lic` | Health safety net: Symbol of Restoration at low health, Symbol of Return when critical, Sacrifice Shift if stunned/webbed. Pauses bigshot/go2/attack scripts so Return isn't interrupted, then tells bigshot to rest. `;vars set lifeguard=off` disables it. | companion |
+| `Fizzleworth-lifeguard.lic` | Health safety net: Symbol of Restoration at low health, Symbol of Return when critical, Sacrifice Shift if stunned/webbed. Pauses bigshot/go2/attack scripts so Return isn't interrupted, then tells bigshot to rest. `;vars set lifeguard=off` disables it. Also counts damaging Krag Slopes landslide climb falls (`lifeguard_climb_cap`, default 4 in 10 min, 0 = off): pauses go2 and asks `deadexit` to alert Discord and quit. | companion |
 | `Fizzleworth-anim-cleanup.lic` | The moment bigshot decides to rest, dismisses the `reanim` animate in the field and recovers its weapon, and sacrifices weakened creatures for shadow essence, before the walk home. | companion |
 | `Fizzleworth-webward.lic` | Clears stationary sticky-web hazards during travel; bigshot and go2 only wait webs out. | companion |
 | `Fizzleworth-witchguard.lic` | Rift hazards: while a witch, warlock, caedera, csetairi, worm or black void is around, sets bigshot's own global flee flag (`$bigshot_flee`) every poll so bigshot leaves through its normal flee path, whatever profile is loaded. Started by `Fizzleworth-prep` in `sever` mode, stopped by it in any other mode. | companion |
@@ -165,7 +165,7 @@ Scripts here are not tied to one character's name, though some need a particular
 | `condemn_charges.lic` | Cleric: reads how many empowered Condemn (309) charges are banked and how far along the next one is, and stores them in `$condemn_charges` / `$condemn_progress` for the Salvi attack scripts. `Salvi-prep` runs it once per hunt. | feeds attack scripts |
 | `fizzanim.lic` | Sorcerer, for interactive hunts: kills the target with Pain (711), checks the corpse is suitable, animates it (730), arms it and starts `animate_refresher`. Doesn't touch `reanim`'s state, so `Fizzleworth-anim-cleanup` doesn't know about an animate raised here. | - |
 | `wander_safe.lic` | `;ewander` on a leash: runs it as a child and kills it after 60 s (`wander_safe_limit`). What `fizzsac` and `sac4mana` call instead of `ewander`, as a backstop against a wayto that hangs. | backstop for companions |
-| `deadexit.lic` | Unattended-death safety net: if you die while bigshot is (or just was) running, quits the game instead of leaving a decaying, rezzable corpse. Gated by `UserVars.afk_now` (default on; flip it with `;afk`). Autostart it for every character. | companion |
+| `deadexit.lic` | Unattended-death safety net: if you die while bigshot is (or just was) running, quits the game instead of leaving a decaying, rezzable corpse. Gated by `UserVars.afk_now` (default on; flip it with `;afk`). Before it quits it posts the cause of death / low health to the `exp_check` Discord webhook (`death: false` in `exp_check.yaml` mutes it); scripts can ask it for an exit (`$deadexit_request`) or a no-quit heads-up (`$deadexit_notice`, `notice: false` mutes). Autostart it for every character. | companion |
 | `unlost.lic` | First line of every `-prerest`: if Lich can't tell which room you're in (an unmapped room makes every `;go2` fail), walks exits until it recognises one. If it can't, stops bigshot and posts to the Discord webhook. Silent when you're on the map. | called from the rest chain |
 | `stow_the_shiny.lic` | Called from the `-prerest` scripts right after `;eloot sell` (`;stow_the_shiny sell` does both): puts valuables eloot refused to sell (appraised above your limits) in the locker, but only while you're over bigshot's encumbrance limit. | called from the rest chain |
 
@@ -367,6 +367,8 @@ tracks `using_bigshot` only so the two don't fight over targets).
 | `items_to_buy` | `buyitems`. |
 | `scroll_buff_spells`, `scrollsack`, `vibrantscrollsack` | `scrollbuff3`, `scrollinv`, `fizzfuse`, the `-prep` scripts. |
 | `lifeguard` | `;vars set lifeguard=off` disables `Fizzleworth-lifeguard`. |
+| `lifeguard_climb_cap` | `Fizzleworth-lifeguard`: damaging landslide-climb falls in 10 minutes before it pauses go2 (default 4, 0 = off). |
+| `prep_max_encumbrance` | `Fizzleworth-prep`: encumbrance % at which the hunt is held after prep (default 45, 0 = off). |
 | `wander_safe_limit` | `wander_safe`: seconds before a running `ewander` is killed (default 60). |
 | `data/GSIV/<Char>/bounty_chooser.yaml` | `bounty_chooser`: allowed creatures, areas, gem towns when run without arguments. |
 
