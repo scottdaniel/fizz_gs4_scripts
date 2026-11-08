@@ -4,7 +4,7 @@
         game: gemstone
         tags: sorcerer, demon, minor summoning, 725, runestone
     requires: Lich > 5.14.2
-     version: 0.4
+     version: 0.5
         note: Written with assistance from Claude (Anthropic).
 
   Summons a Minor Summoning (725) demon of the valence or archetype you ask for.
@@ -48,9 +48,9 @@
   to return)? summond calls it back and offers to send it back and summon a new one (NOD).
   With --yes it waits 90 seconds for it first.
 
-  After a summon in Wehnimer's Landing, Icemule or Mist Harbor (where minor demons are legal)
-  it also says TELL MDEMON TO TOWN ON. With TOWN OFF a demon with no illusion on it won't walk
-  into a town by itself, only while following you, so one left behind in town never comes back.
+  After every summon it also says TELL MDEMON TO TOWN ON. With TOWN OFF a demon with no illusion
+  on it won't walk into a town by itself, only while following you, so one left behind in town
+  never comes back.
 
   Where your runestones and rune tools (brush, ink, cup) live:
     ;vars set runestonesack=<container name>
@@ -227,30 +227,20 @@ module Summond
     !Spell[725].active?
   end
 
-  # Takes a runestone with this rune out of the sack and returns it in hand, or nil. Rummage
-  # matches the rune exactly: asking for lorae'tyr with only a lorae'tyr-verlok stone finds nothing.
-  # gswiki Minor Summoning (725): minor demons are legal in Wehnimer's Landing, Icemule Trace and
-  # Mist Harbor (the Isle of Four Winds on the map); in other towns they fall under justice.
-  def self.demons_legal_here?
-    room = Room.current
-    return false unless room
-    town = Room[room.find_nearest_by_tag("town")]
-    !!(town && town.location.to_s =~ /Wehnimer's Landing|Icemule Trace|Isle of Four Winds|Mist Harbor/i)
-  rescue StandardError
-    false
-  end
-
   # 11/04-05: with TOWN OFF (the default) a demon with no illusion won't enter a town on its own,
   # only while following you. Each time go2 outran the grantris in Wehnimer's Landing, TELL MDEMON
   # RETURN "began to travel" for half an hour and nothing came (Rolfard on Discord; gswiki).
   #   >tell mdemon to town on
   #   Your verlok'asha will enter town without an illusion.
-  # Only where demons are legal, so an undisguised demon never walks into a justice town by itself.
+  # Every summon, wherever it is (Scott, 11/08). Until then it was only near Landing, Icemule and
+  # Mist Harbor, the towns where minor demons are legal (gswiki); TOWN ON only changes a demon
+  # travelling alone, since one following you walks into a town either way.
   def self.town_on
-    return unless demons_legal_here?
     fput "tell mdemon to town on"
   end
 
+  # Takes a runestone with this rune out of the sack and returns it in hand, or nil. Rummage
+  # matches the rune exactly: asking for lorae'tyr with only a lorae'tyr-verlok stone finds nothing.
   def self.take_runestone(rune)
     line = dothistimeout "rummage in my #{sack} runestone #{rune}", 5, /drawn on it|can't seem to locate|What were you referring to/
     return nil unless line =~ /rune drawn on it/
@@ -690,6 +680,7 @@ module Summond
         return
       elsif archetype_of(name).nil?
         msg "Summoned #{a(name)}, which isn't an archetype I recognize. Keeping it so you can check what it is."
+        town_on
         return
       else
         msg "Summoned #{a(name)}, not #{a(wanted)}. Sending it back."
