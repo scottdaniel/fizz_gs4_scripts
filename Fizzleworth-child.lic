@@ -1,0 +1,203 @@
+# Fizzleworth-child.lic
+# Rescue-child watcher for unattended hunting (11.08).
+#
+# The problem: a "Rescue Child" bounty hands you a child who finds you mid-hunt ("Out of the
+# corner of your eye, you notice a young human child watching you fight ... This must be the
+# child you've been sent to rescue.") and then follows you from room to room. In the Labyrinth
+# every minotaur that swings at her kills her in one hit: 11/07 02:42 and 03:57 both died that
+# way, an hour apart, and the task fails. bigshot's own "stop when the child finds you" rule only
+# exists in `;bigshot bounty` mode, and plain `;bigshot` ignores it, so the hunt just carried on
+# with the child in tow until the next rest, where bounty_chooser found her gone.
+#
+# What this does (started from Fizzleworth-prep every hunt, like the lifeguard):
+#   1. watches for the bounty reading "You have made contact with the child you are to rescue"
+#      (or the contact line itself) while bigshot is hunting and the child is in the room;
+#   2. the moment both are true it stops the hunt where you stand: waits out a running eloot
+#      (a few seconds, never longer than ELOOT_WAIT), pauses bigshot and the movers, kills the
+#      attack scripts and go2, releases any prepared spell;
+#   3. runs `;bounty_chooser deliver stay`, which does `;echild` right there (it walks her to the
+#      guard, casting its disablers on anything that threatens her) and collects the reward;
+#   4. tells bigshot to rest (so it goes to the resting room, then back out for the next hunt)
+#      and unpauses it. If the hand-over fails it waits RETRY_GAP seconds and tries again, up to
+#      MAX_TRIES times for that child, and posts a Discord line (deadexit's `$deadexit_notice`).
+#
+# Not interrupted: a child who arrives while bigshot is already resting or travelling
+# (bounty_chooser's deliver at the start of the rest still covers that).
+#
+#   ;vars set child_rescue=off       turn the watcher off (default on)
+#
+# Needs echild.lic and move2.lic. Stop with ;kill Fizzleworth-child.
+
+module FizzleworthChild
+  module_function
+
+  POLL       = 0.5
+  ELOOT_WAIT = 15    # secs to let a running eloot finish before freezing everything
+  RETRY_GAP  = 90    # secs between hand-over attempts for the same child
+  MAX_TRIES  = 3
+  HOOK       = "fizzleworth-child-hook"
+  CONTACT    = /made contact with the child you are to rescue/i
+  CONTACT_LINE = /This must be the child you've been sent to rescue|You have made contact with the child/i
+  CHILD      = /\bchild\b/i
+
+  # Tunable lists are methods: guarded constants would freeze across a script reload.
+  def freeze_scripts;  %w[bigshot sac4mana wander fizzsac]; end
+  def kill_scripts;    %w[Fizzleworth-attack-ultima Fizzleworth-attack-cat Fizzleworth-attack-base reanim go2]; end
+
+  def flag(name)
+    v = UserVars.send(name)
+    return true if v.nil?
+    return v if v == true || v == false
+    v.to_s !~ /\A\s*(?:0|false|off|no)\s*\z/i
+  end
+
+  def on?
+    flag(:child_rescue)
+  end
+
+  def install_hook
+    DownstreamHook.remove(HOOK) rescue nil
+    DownstreamHook.add(HOOK, proc { |line|
+      begin
+        $fizzleworth_child_contact_at = Time.now.to_f if line =~ CONTACT_LINE
+      rescue StandardError
+        nil
+      end
+      line
+    })
+  end
+
+  def remove_hook
+    DownstreamHook.remove(HOOK) rescue nil
+  end
+
+  # The bounty reads "made contact", or the contact line went by in the last 3 hours.
+  def contact?
+    return true if checkbounty.to_s =~ CONTACT
+    at = $fizzleworth_child_contact_at
+    !at.nil? && Time.now.to_f - at < 10_800
+  rescue StandardError
+    false
+  end
+
+  def child_here?
+    Array(GameObj.npcs).any? { |n| n.name.to_s =~ CHILD && n.status.to_s !~ /dead|gone/i }
+  rescue StandardError
+    false
+  end
+
+  # bigshot is out hunting (not resting, not on its way to rest).
+  def hunting?
+    Script.running?("bigshot") && ![:resting, :rest_stop].include?($bigshot_status)
+  end
+
+  def busy_elsewhere?
+    %w[echild ebounty bounty_chooser].any? { |s| Script.running?(s) }
+  end
+
+  def freeze
+    mine = freeze_scripts.select { |s| Script.running?(s) && !Script.paused?(s) }
+    mine.each { |s| Script.pause(s) }
+    sleep 0.3
+    mine
+  end
+
+  def thaw(mine)
+    mine.each { |s| Script.unpause(s) if Script.paused?(s) }
+  end
+
+  def notice(text)
+    $deadexit_notice = text
+  end
+
+  # One hand-over attempt. Returns :delivered, :failed or :none (the bounty is not in the contact
+  # state at all, so there was nothing to do).
+  def rescue_now(tries)
+    start = (Room.current.id rescue nil)
+    echo "[child] the rescue child is with you -- stopping the hunt and running echild (try #{tries}/#{MAX_TRIES})."
+    waited = 0.0
+    while Script.running?("eloot") && waited < ELOOT_WAIT
+      sleep 0.5
+      waited += 0.5
+    end
+    mine = freeze
+    begin
+      kill_scripts.each { |s| Script.kill(s) if Script.running?(s) }
+      fput "release" unless checkprep.to_s =~ /\A\s*(?:none)?\s*\z/i
+      waitrt?
+      waitcastrt?
+      $bounty_chooser_child_delivered = nil
+      Script.run("bounty_chooser", "deliver stay")
+      outcome = $bounty_chooser_child_delivered
+      return :none if outcome == :none
+      delivered = outcome == true
+      moved = (Room.current.id rescue nil) != start
+      if delivered
+        echo "[child] the child is home. bigshot will rest now."
+        notice("Rescue Child: delivered the child to the guard (stopped the hunt where she found me).")
+      else
+        echo "[child] the hand-over did not finish#{moved ? ' (and you are no longer where you started)' : ''}."
+        notice("Rescue Child: tried to escort the child out with echild but it did not finish (try #{tries}/#{MAX_TRIES}).")
+      end
+      if delivered || moved
+        $bigshot_should_rest = true
+        $rest_reason = delivered ? "rescue child delivered" : "rescue child hand-over interrupted"
+      end
+      delivered ? :delivered : :failed
+    ensure
+      thaw(mine)
+    end
+  end
+
+  # One poll. Returns the state symbol it acted on (for tests).
+  def tick
+    return :off unless on?
+    unless contact?
+      @tries = 0
+      @next_try = 0.0
+      @gave_up_said = false
+      return :no_contact
+    end
+    return :idle unless hunting?
+    return :busy if busy_elsewhere?
+    return :no_child unless child_here?
+    now = Time.now.to_f
+    @tries = @tries.to_i
+    @next_try = @next_try.to_f
+    if @tries >= MAX_TRIES
+      unless @gave_up_said
+        @gave_up_said = true
+        echo "[child] #{MAX_TRIES} hand-over attempts failed -- leaving her to bounty_chooser's deliver at the next rest."
+      end
+      return :gave_up
+    end
+    return :waiting if now < @next_try
+    @tries += 1
+    @next_try = now + RETRY_GAP
+    outcome = rescue_now(@tries)
+    if outcome == :delivered || outcome == :none
+      $fizzleworth_child_contact_at = nil   # done, or the contact line was stale: stop watching for her
+      @tries = 0
+    end
+    outcome
+  end
+
+  def run
+    $fizzleworth_child_contact_at = nil
+    install_hook
+    echo "[child] watching for the rescue child (stops the hunt and runs echild when she is with you; ;vars set child_rescue=off to disable)."
+    @tries = 0
+    @next_try = 0.0
+    loop do
+      Script.current.kill if checkdead
+      tick
+      sleep POLL
+    end
+  rescue StandardError => e
+    echo "[child] error: #{e.class} #{e.message}"
+  end
+end
+
+before_dying { FizzleworthChild.remove_hook }
+
+FizzleworthChild.run

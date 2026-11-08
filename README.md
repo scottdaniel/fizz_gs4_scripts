@@ -82,6 +82,7 @@ Always-on companions (started from `-prep` / `-prerest`):
 | Script | What it does | Bigshot |
 |---|---|---|
 | `Fizzleworth-lifeguard.lic` | Health safety net: Symbol of Restoration at low health, Symbol of Return when critical, Sacrifice Shift if stunned/webbed. Pauses bigshot/go2/attack scripts so Return isn't interrupted, then tells bigshot to rest. `;vars set lifeguard=off` disables it. Also counts damaging Krag Slopes landslide climb falls (`lifeguard_climb_cap`, default 4 in 10 min, 0 = off): pauses go2 and asks `deadexit` to alert Discord and quit. Also stops go2 BEFORE a landslide climb when encumbrance is at `lifeguard_climb_enc` (default 50) or over (same alert/quit; unpausing by hand is respected). | companion |
+| `Fizzleworth-child.lic` | Rescue-child watcher, started by `Fizzleworth-prep`. When the bounty reads "made contact with the child" and she is in your room while bigshot is hunting, it stops the hunt where you stand (waits out eloot, pauses bigshot, kills the attack scripts and go2), runs `bounty_chooser deliver stay` (echild to the guard + reward), then tells bigshot to rest. Retries 90 s apart, 3 times, and posts a Discord line through `deadexit`. Written because plain `;bigshot` has no stop-on-child rule (only `;bigshot bounty` does) and 11/07 two children died to minotaurs while he hunted on. `;vars set child_rescue=off` disables it. | companion |
 | `Fizzleworth-anim-cleanup.lic` | The moment bigshot decides to rest, dismisses the `reanim` animate in the field and recovers its weapon, and sacrifices weakened creatures for shadow essence, before the walk home. | companion |
 | `Fizzleworth-webward.lic` | Clears stationary sticky-web hazards during travel; bigshot and go2 only wait webs out. | companion |
 | `Fizzleworth-witchguard.lic` | Rift hazards: while a witch, warlock, caedera, csetairi, worm or black void is around, sets bigshot's own global flee flag (`$bigshot_flee`) every poll so bigshot leaves through its normal flee path, whatever profile is loaded. Started by `Fizzleworth-prep` in `sever` mode, stopped by it in any other mode. | companion |
@@ -161,7 +162,7 @@ Scripts here are not tied to one character's name, though some need a particular
 | `fizzsac.lic` | Sorcerer: harvests shadow essence from creatures in the room by sacrifice. Pauses bigshot/go2 while it works, or takes a bigshot-supplied target and spell (`script fizzsac target 719`). | callable with a target |
 | `sac4mana.lic` | Sorcerer: watches mana and does `sacrifice mana` when low. When shadow essence runs short it pauses bigshot, wanders to a fresh room and runs `fizzsac` to rebuild it, then backs off and lets bigshot's rest carry on if essence bottoms out. Meant to run alongside `fizzsac` during a hunt. | companion (pauses bigshot) |
 | `undead_bounty.lic` | **Published.** Rerolls Adventurer's Guild bounties until the creature is undead (for Voln favor), then stops so you can take over. Chained from the `-prerest` scripts with a creature filter, e.g. `;undead_bounty kill moaning spirit`; it suits a bigshot hunt/rest loop calling it. | called from the rest chain |
-| `bounty_chooser.lic` | Fork of `undead_bounty` that takes lists of allowed creatures, areas and gem towns instead of "must be undead". Also accepts heirloom, rescue-child and gem orders, and delivers a rescued child to the guard (`;bounty_chooser deliver`, via `echild`). Arguments or `data/GSIV/<char>/bounty_chooser.yaml`. v1.6. | called from the rest chain |
+| `bounty_chooser.lic` | Fork of `undead_bounty` that takes lists of allowed creatures, areas and gem towns instead of "must be undead". Also accepts heirloom, rescue-child and gem orders, and delivers a rescued child to the guard (`;bounty_chooser deliver`, via `echild`; `deliver stay` skips the walk back to where it started). Arguments or `data/GSIV/<char>/bounty_chooser.yaml`. v1.6. | called from the rest chain |
 | `condemn_charges.lic` | Cleric: reads how many empowered Condemn (309) charges are banked and how far along the next one is, and stores them in `$condemn_charges` / `$condemn_progress` for the Salvi attack scripts. `Salvi-prep` runs it once per hunt. | feeds attack scripts |
 | `fizzanim.lic` | Sorcerer, for interactive hunts: kills the target with Pain (711), checks the corpse is suitable, animates it (730), arms it and starts `animate_refresher`. Doesn't touch `reanim`'s state, so `Fizzleworth-anim-cleanup` doesn't know about an animate raised here. | - |
 | `wander_safe.lic` | `;ewander` on a leash: runs it as a child and kills it after 60 s (`wander_safe_limit`). What `fizzsac` and `sac4mana` call instead of `ewander`, as a backstop against a wayto that hangs. | backstop for companions |
@@ -310,6 +311,7 @@ they act, or set bigshot's rest flag.
 |---|---|
 | `deadexit` | Quits the game if you die while bigshot is running. |
 | `Fizzleworth-lifeguard` | Pauses bigshot/go2/attack scripts for Symbol of Return, then tells bigshot to rest. |
+| `Fizzleworth-child` | Pauses bigshot and kills the attack scripts/go2 to escort a rescue child out with echild, then tells bigshot to rest. |
 | `Fizzleworth-anim-cleanup` | Fires the moment bigshot's status says "hunt over, heading to rest"; freezes bigshot/go2 while it dismisses the animate. |
 | `Fizzleworth-webward` | Pauses bigshot/go2 to clear a web hazard. |
 | `Fizzleworth-witchguard` | Sets bigshot's `$bigshot_flee` while a Rift hazard is in the room, so it flees through its normal path. |
@@ -370,6 +372,7 @@ tracks `using_bigshot` only so the two don't fight over targets).
 | `lifeguard_climb_enc` | `Fizzleworth-lifeguard`: encumbrance % at which go2 is stopped before a landslide climb (default 50, 0 = off). |
 | `lifeguard_climb_cap` | `Fizzleworth-lifeguard`: damaging landslide-climb falls in 10 minutes before it pauses go2 (default 4, 0 = off). |
 | `prep_max_encumbrance` | `Fizzleworth-prep`: encumbrance % at which the hunt is held after prep (default 45, 0 = off). |
+| `child_rescue` | `;vars set child_rescue=off` disables `Fizzleworth-child` (default on). |
 | `wander_safe_limit` | `wander_safe`: seconds before a running `ewander` is killed (default 60). |
 | `data/GSIV/<Char>/bounty_chooser.yaml` | `bounty_chooser`: allowed creatures, areas, gem towns when run without arguments. |
 
@@ -379,7 +382,7 @@ tracks `using_bigshot` only so the two don't fight over targets).
 |---|---|
 | `$condemn_charges`, `$condemn_progress`, `$condemn_max`, `$condemn_every` | Set by `condemn_charges`; read by `Salvi-attack` and `Salvi-attack-web`. |
 | `$reserve_spells` | Set by `reservecheck`; read by `Picko-attack-fire`. `nil` means unknown, so it tries everything. |
-| `$bigshot_flee`, `$bigshot_should_rest` | Bigshot's own flags. `Fizzleworth-witchguard` sets the first; the Wizard and Cleric attack scripts and `Fizzleworth-lifeguard` set the second. |
+| `$bigshot_flee`, `$bigshot_should_rest` | Bigshot's own flags. `Fizzleworth-witchguard` sets the first; the Wizard and Cleric attack scripts, `Fizzleworth-lifeguard` and `Fizzleworth-child` set the second. |
 | `$reanim_animate_live`, `$ult_reanim_done`, `$demonmana_taken` | Shared by `reanim`, `Fizzleworth-attack-ultima`, `Fizzleworth-prep` and `sac4mana`. |
 
 **Scripts from outside this repo** that these depend on: `bigshot`, `eloot`, `eherbs`, `ewaggle`, `go2`, `qverb`,

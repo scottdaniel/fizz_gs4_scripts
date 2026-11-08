@@ -32,6 +32,7 @@
   usage:
     ;bounty_chooser help
     ;bounty_chooser deliver         (only hand over a rescue child who is in the room with you)
+    ;bounty_chooser deliver stay    (same, but don't walk back to where you started; used by Fizzleworth-child)
     ;bounty_chooser kill skeletal ice troll, cold guardian, frost giant --areas=Ice Plains, Icemule Trail
     ;bounty_chooser kill darkwoode, greater orc, werebear --kill-areas=Upper Trollfang
     ;bounty_chooser dangerous frost giant
@@ -635,9 +636,11 @@ module BountyChooser
   # true if the child was handed over and the reward collected, false if she isn't with you
   # (or echild couldn't finish) -- the task is left as it was either way.
   def self.deliver_child
+    $bounty_chooser_child_delivered = nil
     unless find_npc_in_room(CHILD_PATTERN, retries: 6)
       respond "BountyChooser: you've made contact with the child, but she isn't in this room - " \
               "keep hunting until she finds you again (bring her along to the next rest)."
+      $bounty_chooser_child_delivered = false
       return false
     end
 
@@ -649,26 +652,34 @@ module BountyChooser
     unless task && task.type == :taskmaster
       respond "BountyChooser: echild finished but the bounty still reads #{task ? task.type : 'nothing'} - " \
               "not turning in; check where the child is."
+      $bounty_chooser_child_delivered = false
       return false
     end
 
     respond 'BountyChooser: the guard has the child - collecting the reward...'
+    $bounty_chooser_child_delivered = true   # the child is safe; the turn-in below can't undo that
     finish_at_taskmaster
     true
   end
 
   # `;bounty_chooser deliver`: only the child hand-over, nothing else (no rerolls, no new
   # task). For the START of a rest, before any shopping walk can leave the child behind.
-  def self.deliver_only
+  # `;bounty_chooser deliver stay` does not walk back to the room it started in (the
+  # Fizzleworth-child watcher runs it from the hunting ground, where going back is the last
+  # thing wanted); the outcome is left in $bounty_chooser_child_delivered (true delivered, false not
+  # delivered, :none no child task at all, nil the script died first).
+  def self.deliver_only(stay: false)
+    $bounty_chooser_child_delivered = nil
     task = refresh_bounty_status
     unless task && task.type == :rescue_spawned
       respond 'BountyChooser: no child to deliver.'
+      $bounty_chooser_child_delivered = :none   # no rescue task in contact state at all
       return
     end
     start_room = Room.current.id
     deliver_child
   ensure
-    return_to_room(start_room) if start_room
+    return_to_room(start_room) if start_room && !stay
   end
 
   # checks status ONCE before touching anything, and handles whatever's
@@ -996,6 +1007,7 @@ module BountyChooser
     respond "    ;#{n} kill darkwoode, greater orc, werebear --kill-areas=Upper Trollfang"
     respond "    ;#{n} dangerous frost giant"
     respond "    ;#{n} deliver         - only hand a rescue child who is in the room to the guard (echild)"
+    respond "    ;#{n} deliver stay    - same, but don't walk back to the room you started in afterwards"
     respond "    ;#{n}                 - no arguments: everything comes from data/GSIV/<char>/bounty_chooser.yaml"
     respond ''
     respond 'Kill ("suppress X activity") and dangerous-creature bounties are kept when the'
@@ -1046,7 +1058,7 @@ if script.vars[1].to_s.strip =~ /^help$/i
 end
 
 if script.vars[1].to_s.strip =~ /^deliver$/i
-  BountyChooser.deliver_only
+  BountyChooser.deliver_only(stay: script.vars[2].to_s.strip =~ /\Astay\z/i ? true : false)
   exit
 end
 
