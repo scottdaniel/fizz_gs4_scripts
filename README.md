@@ -134,7 +134,7 @@ prefix `Htrow-`.
 |---|---|---|
 | `Picko-attack.lic` | Incant 903 in the stance dance while mana allows; low mana falls back to Symbol of Mana, then a wand. | cmd |
 | `Picko-attack-fire.lic` | Fire-focused variant: incant 908; the wand fallback is restricted to fire-damage wands. | cmd |
-| `Picko-prep.lic` | Wizard version of `Fizzleworth-prep`: stop `playsongs`, clear hands, scroll spell-up first, rubs last (a missed rub falls back to its scroll), ready weapon, log starting mind, start `eloot_guard`. | - |
+| `Picko-prep.lic` | Wizard version of `Fizzleworth-prep`: stop `playsongs`, clear hands, scroll spell-up first (once), rubs last (a missed rub just leaves that spell off), ready weapon, log starting mind, start `eloot_guard`. | - |
 | `Picko-prerest.lic` | `unlost`, eherbs, `eloot_guard`, `diskwait`, eloot sell, `stow_the_shiny`, `unburden`, `reservecheck`, `bounty_chooser`, buyitems, sweeps wands into the active bigshot profile's fresh-wand container, ewaggle, timequit, `playsongs` if you're at the keyboard. | config |
 | `Picko-duskattack.lic` | Duskruin routine: evoke 903, pray up to 3 times, Symbol of Mana, then wands (mirrors bigshot's wand handling). | - |
 | `charge_me_up_scotty.lic` | Recharges spent wands and magic items with Charge Item (517). See [Magic](#magic). | config |

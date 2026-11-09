@@ -67,9 +67,9 @@ def self.crooked_intent
   echo "[prep] thumb-ring TURN: #{r.strip.empty? ? 'no answer' : r.strip[0, 100]}" unless r =~ ok
 end
 
-# Spells the rubs give. The first scroll pass leaves them out (a scroll would take the spell and
-# the rub would then be skipped as already active); a rub that came up empty gets its scroll
-# afterwards instead.
+# Spells the rubs give. The one scroll pass leaves them out (a scroll would take the spell and the
+# rub would then be skipped as already active). A rub that comes up empty just leaves that spell
+# off; scrollbuff3 runs once, before the rubs, and never again.
 def self.rub_spells
   %w[1701 1712 1705 1711 509]
 end
@@ -330,15 +330,6 @@ unless GameObj.loot.find { |i| i.name =~ /#{Char.name} disk/ }
 end
 
 crooked_intent       # hands are empty here
-
-# A rub that gave nothing (item used up or missing) falls back to its scroll, as it did when the
-# scroll pass ran after the rubs. Only spells the scroll pass was meant to cast; scrollbuff3
-# skips any that are running.
-missed = (scroll_wanted & rub_spells).reject { |n| Spell[n.to_i].active? }
-unless missed.empty?
-  Script.run("scrollbuff3", missed.join(" "))
-  stray_scroll_away
-end
 
 fput "ready weapon"
 
