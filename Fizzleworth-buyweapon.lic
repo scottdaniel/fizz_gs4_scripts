@@ -10,7 +10,7 @@
   when the demon already has the weapon.
 
   A demon that is off somewhere is called with TELL MDEMON RETURN, re-sent every 15s, for up to
-  reanim_demon_wait secs (default 45; an imp can take 20-26s). If it never arrives the script
+  reanim_demon_wait secs (default 90 here; a raven has taken up to 49s, an imp 20-26s). If it never arrives the script
   buys NOTHING: it can't tell whether the demon has the weapon. Only "no minor demon at all"
   buys one and keeps it, for reanim to hand over itself.
 
@@ -56,11 +56,15 @@ module FizzBuyWeapon
 
   # How long to give a straggling demon, and how often to call it again while we wait. An imp
   # takes 20-26s to catch up after a return order (10.30 / 11.01 logs: the old 6s wait gave up on
-  # a demon that arrived at 21s and bought a second claidhmore). Same knob reanim.lic reads.
+  # a demon that arrived at 21s and bought a second claidhmore). Since 11/08 the raven has come in
+  # at 14-15 s, 31 s, or 47-49 s after leaving the shop (it travels in ~15 s legs), and the 45 s
+  # wait gave up on the 47-49 s ones four times, leaving the claidhmore in the cloak (Scott 11/09:
+  # that weight goes up the mountain with him), so the default is 90. Same UserVar reanim.lic and
+  # Fizzleworth-anim-cleanup read, but they keep their own 45 s default.
   # Methods, not constants, so edits apply to the next hunt.
   def demon_wait
     v = UserVars['reanim_demon_wait'].to_s.strip
-    v =~ /\A\d+\z/ ? v.to_i : 45
+    v =~ /\A\d+\z/ ? v.to_i : 90
   end
 
   def recall_every
