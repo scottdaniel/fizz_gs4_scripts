@@ -33,6 +33,9 @@
 
   Gems that aren't orbs stay where they were. Each cast is 4 mana, waited for
   and re-checked right before every cast.
+
+  When every jar has been checked it runs ;eloot reset gem, because the jars just changed
+  and eloot's saved full/not-full table for them would otherwise be stale.
 =end
 
 module OrbCheck
@@ -401,6 +404,13 @@ module OrbCheck
       check_jar(jar)
       return unless hands_free.call
     }
+
+    # Every jar was just emptied and refilled, so eloot's saved full/not-full table for them is
+    # stale. Put the hands back first (the same cleanup that runs when the script ends), then
+    # rebuild eloot's table. Only reached when every jar was checked.
+    cleanup
+    msg "Re-baselining eloot's gem jars (;eloot reset gem)."
+    Script.run("eloot", "reset gem")
   end
 
   # On ;kill: a gem in hand goes back loose (by hand: a phased one has a new ID), set-aside

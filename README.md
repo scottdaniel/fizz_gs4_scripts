@@ -174,7 +174,7 @@ Scripts here are not tied to one character's name, though some need a particular
 
 | Script | What it does |
 |---|---|
-| `orb_check.lic` | Sorcerer: finds orb (pure) gems in a container with Phase (704), including gems in jars, and moves them to another container (orbs feed Charge Item 517 and Holy Receptacle 325). |
+| `orb_check.lic` | Sorcerer: finds orb (pure) gems in a container with Phase (704), including gems in jars, and moves them to another container (orbs feed Charge Item 517 and Holy Receptacle 325). When every jar is checked it runs `;eloot reset gem` so eloot's full/not-full jar table isn't stale. |
 | `sellgem.lic` | Workaround for gems that won't sell with `;eloot sell`: goes to the gemshop, sells, deposits everything at the bank, returns to town. |
 | `orb_jars.lic` | Sorcerer: moves the gem jars most likely to hold orb gems from the locker's deep chest into the trunk, so `orb_check` and `charge_me_up_scotty` can use them. Stand in your locker with it open. |
 | `sell-ingot.lic` | Sells every bright gold ingot in your stow containers to the gem dealer, banks the silver and walks back; `eloot` doesn't sell them. In no prerest; run it by hand. |
