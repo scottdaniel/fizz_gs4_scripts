@@ -4,6 +4,8 @@
 #
 #   1. Dismiss the ;reanim animate buddy (cat / ultima) in the field, so we
 #      don't drag an animated corpse through the tunnels or lose its weapon.
+#      Exception, the minotaur hunt (see gate_room): it keeps the animate for the
+#      walk home and dismisses it at room 420, right outside the Landing gates.
 #   2. Sacrifice weakened creatures still in the room for shadow essence,
 #      before bigshot's oom rest and the walk home strand them. This is the
 #      only place essence gets rebuilt for the mana-hungry variants -- the
@@ -409,6 +411,28 @@ def explode_animate
   true
 end
 
+# Minotaur hunt (bigshot resting room 1259, the Raging Thrak in Wehnimer's Landing): the animate
+# stays up for the whole walk home and is dismissed right outside the Landing gates, room 420,
+# the last place it can follow (Scott 11/09). The route from the Labyrinth passes 420 on its way
+# to the Thrak (11/07 log). A METHOD so edits apply on the next hunt; add
+# "<resting room id>" => <gate room id> for another hunt.
+def gate_room
+  rest = UserVars.op.is_a?(Hash) ? UserVars.op["resting_room_id"].to_s.strip : ""
+  { "1259" => 420 }[rest]
+end
+
+# teardown has everything that could walk us off frozen, so walk to the gate ourselves with the
+# animate on follow (it's on attack mid-hunt), then do the usual hand-off there: spare weapon back
+# to the demon, tell anim die, loot the corpse.
+def dismiss_at_gate(gate)
+  echo "Fizzleworth-anim-cleanup: keeping the animate for the walk home -- dismissing it at room #{gate}, outside the gates."
+  ensure_follow
+  Script.run("go2", "#{gate} --disable-confirm") unless Room.current.id.to_i == gate
+  now = Room.current.id.to_i
+  echo "Fizzleworth-anim-cleanup: only got as far as room #{now}, not #{gate} -- dismissing it here." unless now == gate
+  Script.run(REANIM_SCRIPT, "die")
+end
+
 # Freeze the movers, do the end-of-hunt jobs, unfreeze only what we froze.
 def teardown
   mine = MOVERS.select { |s| Script.running?(s) && !Script.paused?(s) }
@@ -418,7 +442,10 @@ def teardown
 
   harvest_room if essence < HARVEST_BELOW
   if animate_up?
-    if hostile_here? && explode_animate
+    gate = gate_room
+    if gate
+      dismiss_at_gate(gate)
+    elsif hostile_here? && explode_animate
       # exploded in place (weapon recovery already ran) -- nothing left to defer
     elsif hostile_here?
       # Keep the weapon on the animate and bring it along; the hand-off happens
