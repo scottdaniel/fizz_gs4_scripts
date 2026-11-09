@@ -15,20 +15,72 @@ Script.run("diskwait")  # eloot only finds the disk's boxes if the disk is here 
 Script.run("eloot", "sell")
 Script.run("unburden")  # a box eloot left in hand -> sell again
 
-# Restocks the rub items Htrow-prep uses. Her list starts out empty
-# (UserVars are per character), so this fills it in once; after that it's
-# left alone, so change it in-game with:
-#   ;vars set items_to_buy=quartz orb, white crystal, black crystal, small statue, moonstone cube
-if UserVars.items_to_buy.to_s.strip.empty?
-  UserVars.items_to_buy = "quartz orb, white crystal, black crystal, small statue, moonstone cube"
+# Restocks the rub items Htrow-prep uses -- but only the ones she's short of.
+# buyitems on its own buys one of everything in items_to_buy every rest, used
+# or not: on 11/08 that was ~6,500 silver a rest against ~400 of loot (bank
+# 45,976 -> 28,727 in an hour), with 17 reusable small statues in the cloak and
+# the white crystal never rubbed because Strength (509) outlasts a rest.
+#
+# Each listed item is counted in her containers; she buys one only when she has
+# fewer than rub_item_keep of it, and skips the trip entirely when nothing is
+# short. A blank items_to_buy means no shopping at all (Scott cleared it on
+# 11/08 -- this no longer refills it). Turn it back on in-game with:
+#   ;vars set items_to_buy=quartz orb, moonstone cube, white crystal, black crystal, small statue
+
+# How many of an item to keep on hand. The orb and cube crumble on every
+# prep, so keep a spare in case the pawnshop table is out one rest; the
+# statue never gets used up and the crystals only now and then.
+def self.rub_item_keep(item)
+  { "quartz orb" => 2, "moonstone cube" => 2 }.fetch(item.downcase, 1)
 end
-Script.run("buyitems")
+
+# "quartz orb" -> /\bquartz\b.*\borb$/i: every word of the buy name, in order,
+# with the last one the noun -- so it counts a "heavy quartz orb", and a "white
+# crystal" never counts a black one.
+def self.rub_item_pattern(item)
+  words = item.downcase.split.map { |w| Regexp.escape(w) }
+  /\b#{words.join("\\b.*\\b")}$/i
+end
+
+# Copies carried in her containers (and one container down) plus her hands,
+# from the contents Lich tracks -- the same lists qverb searches when prep rubs
+# them. If Lich hasn't seen inside a container yet this undercounts, which
+# just means buying one, not skipping one she needs.
+def self.carried_count(item)
+  pattern = rub_item_pattern(item)
+  seen = {}
+  stack = Array(GameObj.inv).map { |o| [o, 0] }
+  count = [GameObj.right_hand, GameObj.left_hand].compact.count { |o| o.name.to_s =~ pattern }
+  until stack.empty?
+    obj, depth = stack.shift
+    next if seen[obj.id]
+    seen[obj.id] = true
+    Array(GameObj.containers[obj.id]).each do |inner|
+      count += 1 if inner.name.to_s =~ pattern
+      stack << [inner, depth + 1] if depth < 1
+    end
+  end
+  count
+end
+
+wanted = UserVars.items_to_buy.to_s.split(',').map(&:strip).reject(&:empty?)
+unless wanted.empty?
+  stock = wanted.map { |item| [item, carried_count(item)] }
+  short = stock.select { |item, have| have < rub_item_keep(item) }.map(&:first)
+  echo "Htrow-prerest: rub items on hand -- " +
+       stock.map { |item, have| "#{item} #{have}/#{rub_item_keep(item)}" }.join(", ")
+  if short.empty?
+    echo "Htrow-prerest: nothing short, skipping buyitems"
+  else
+    Script.run("buyitems", short.join(", "))
+  end
+end
 
 # A free account can't hunt carrying 5,000+ silver, and eherbs withdraws 8,000
 # for herbs and keeps the change (10/30: every swing refused until it was
-# banked by hand). buyitems' closing "deposit all" normally banks it, but not
-# when buyitems stops early (encumbered, bank short), so bank whatever is
-# still on hand and come back before the next hunt.
+# banked by hand). buyitems' closing "deposit all" banks it when she shops,
+# but not when she skips the trip or buyitems stops early (encumbered, bank
+# short), so bank whatever is still on hand and come back before the next hunt.
 if Lich::Util.silver_count > 0
   home = Room.current.id
   Script.run("go2", "bank")

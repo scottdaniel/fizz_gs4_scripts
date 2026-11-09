@@ -11,6 +11,11 @@
 #
 #   ;vars set items_to_buy=quartz orb, crystal amulet, black crystal, white crystal, small statue, moonstone cube
 #
+# A comma-separated list given as arguments is bought instead of that var,
+# just this once -- Htrow-prerest uses it to buy only what's run low:
+#
+#   ;buyitems quartz orb, moonstone cube
+#
 # Detects the town via Room.current.location and looks up how to reach that
 # pawnshop's arcana/magic table in TOWN_CONFIG. Add an entry for any town not
 # already listed (Room.current.location tells you the exact key to use).
@@ -34,12 +39,14 @@ def self.town_config
 	config
 end
 
-if UserVars.items_to_buy.to_s.strip.empty?
+_arg_list = Script.current.vars[0].to_s.strip
+_item_list = _arg_list.empty? ? UserVars.items_to_buy.to_s : _arg_list
+if _item_list.strip.empty?
 	echo "No items configured -- set your item list first, e.g.:"
 	echo "  ;vars set items_to_buy=quartz orb, crystal amulet, black crystal, white crystal, small statue, moonstone cube"
 	exit
 end
-ITEMS = UserVars.items_to_buy.split(',').map(&:strip).reject(&:empty?)
+ITEMS = _item_list.split(',').map(&:strip).reject(&:empty?)
 
 # "look on <table>" replies across multiple lines, e.g.:
 #   On the magic table:
