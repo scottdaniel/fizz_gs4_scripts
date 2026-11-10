@@ -1,79 +1,99 @@
-# timequit.lic -- called by the -prerest scripts; logs out once a deadline you set by hand has passed.
+# timequit.lic -- called by the -prerest scripts; logs out once a quit time you set has passed.
 #
-# Run from a rest (no arguments) it quits only if a deadline you set by hand (below) has passed;
-# there is no standing schedule. Otherwise it sits, rests and meditates.
-#
-# Deadline, set at the keyboard (stored in UserVars.quit_at, per character):
-#   ;timequit in 4h          quit at the first rest 4 hours from now (also 90m, 2h30m)
-#   ;timequit at 16:45       quit at the first rest after 16:45 (today, or tomorrow if past)
+# Set the quit time at the keyboard (stored in UserVars.quit_at, per character):
+#   ;timequit in 3h50m       a duration from now (3h, 90m, 2h30m, 1.5h; a bare number is hours)
+#   ;timequit at 8am         a time of day (8am, 8:30am, 8:30 pm, 20:15, 8): today, or tomorrow if
+#                            it has already passed. No am/pm = 24-hour clock.
 #   ;timequit off            cancel it
 #   ;timequit status         show what is set
-# "At the first rest" because it only runs between hunts, so the real quit lands up to a rest
-# after the time. A deadline more than 3 hours stale (you were logged out when it passed) is
+# With no arguments (what the rest scripts run) it quits if that time has passed, else it sits,
+# rests and meditates. There is no standing schedule: nothing quits unless you set a time.
+#
+# "At the first rest" because it only runs between hunts, so the real quit lands up to one rest
+# after the time. A quit time more than 3 hours stale (you were logged out when it passed) is
 # dropped, so it can't quit you the moment you log back in.
 
-stale_secs = 3 * 3600
+def tq_fmt(epoch)
+  Time.at(epoch).strftime("%a %-I:%M %p")
+end
 
-fmt = ->(epoch) { Time.at(epoch).strftime("%a %-I:%M %p") }
-deadline = lambda do
+def tq_quit_at
   v = UserVars.quit_at.to_s.strip
   v =~ /\A\d+(?:\.\d+)?\z/ ? v.to_f : nil
+end
+
+# "3h50m", "90m", "1.5h", "2 h 30 m", "3:50", or a bare number of hours -> seconds (0 if unreadable)
+def tq_parse_duration(spec)
+  spec = spec.to_s.strip
+  return $1.to_i * 3600 + $2.to_i * 60 if spec =~ /\A(\d+):(\d{2})\z/
+  return spec.to_f * 3600 if spec =~ /\A\d+(?:\.\d+)?\z/
+  return 0 unless spec =~ /\A(?:\d+(?:\.\d+)?\s*[hm]\s*)+\z/
+  hours = spec[/(\d+(?:\.\d+)?)\s*h/, 1].to_f
+  mins  = spec[/(\d+(?:\.\d+)?)\s*m/, 1].to_f
+  hours * 3600 + mins * 60
+end
+
+# "8am", "8:30 pm", "20:15", "8" -> the next moment that clock time occurs (a Time), or nil
+def tq_parse_clock(spec)
+  return nil unless spec.to_s.strip =~ /\A(\d{1,2})(?::(\d{2}))?\s*(am|pm|a|p)?\z/
+  h, m, ap = $1.to_i, $2.to_i, $3
+  if ap
+    return nil unless h.between?(1, 12)
+    h = (h % 12) + (ap.start_with?("p") ? 12 : 0)
+  end
+  return nil if h > 23 || m > 59
+  now = Time.now
+  at = Time.new(now.year, now.month, now.day, h, m, 0)
+  at += 86_400 if at <= now
+  at
 end
 
 arg = script.vars[1..-1].to_a.join(" ").strip.downcase
 unless arg.empty?
   case arg
-  when /\Aoff\z|\Acancel\z|\Aclear\z/
+  when /\A(?:off|cancel|clear)\z/
     UserVars.quit_at = nil
     echo "timequit: quit time cancelled."
   when /\Astatus\z/
-    d = deadline.call
-    echo(d ? "timequit: quitting at the first rest after #{fmt.call(d)}." : "timequit: no quit time set.")
+    d = tq_quit_at
+    echo(d ? "timequit: quitting at the first rest after #{tq_fmt(d)}." : "timequit: no quit time set.")
   when /\Ain\s+(.+)\z/
-    spec = $1
-    secs = 0
-    secs += $1.to_f * 3600 if spec =~ /(\d+(?:\.\d+)?)\s*h/
-    secs += $1.to_f * 60 if spec =~ /(\d+(?:\.\d+)?)\s*m/
-    secs = spec.to_f * 3600 if secs.zero? && spec =~ /\A\d+(?:\.\d+)?\z/   # bare number = hours
+    secs = tq_parse_duration($1)
     if secs <= 0
-      echo "timequit: couldn't read '#{spec}' -- try ;timequit in 4h"
+      echo "timequit: couldn't read '#{$1}' -- try ;timequit in 3h50m"
     else
       UserVars.quit_at = (Time.now.to_f + secs).round.to_s
-      echo "timequit: will quit at the first rest after #{fmt.call(deadline.call)} (in #{(secs / 3600.0).round(1)} h)."
+      echo "timequit: will quit at the first rest after #{tq_fmt(tq_quit_at)} (in #{(secs / 3600.0).round(1)} h)."
     end
-  when /\Aat\s+(\d{1,2}):(\d{2})\s*(am|pm)?\z/
-    h, m, ap = $1.to_i, $2.to_i, $3
-    h = (h % 12) + (ap == "pm" ? 12 : 0) if ap
-    if h > 23 || m > 59
-      echo "timequit: '#{arg}' isn't a time of day -- try ;timequit at 16:45"
-    else
-      now = Time.now
-      at = Time.new(now.year, now.month, now.day, h, m, 0)
-      at += 86_400 if at <= now
+  when /\Aat\s+(.+)\z/
+    at = tq_parse_clock($1)
+    if at
       UserVars.quit_at = at.to_f.round.to_s
-      echo "timequit: will quit at the first rest after #{fmt.call(at.to_f)}."
+      echo "timequit: will quit at the first rest after #{tq_fmt(at.to_f)}."
+    else
+      echo "timequit: '#{$1}' isn't a time of day -- try ;timequit at 8am"
     end
   else
-    echo "timequit: usage -- ;timequit in 4h | at 16:45 | off | status   (no arguments = the check the rest scripts run)"
+    echo "timequit: usage -- ;timequit in 3h50m | at 8am | off | status   (no arguments = the check the rest scripts run)"
   end
   exit
 end
 
-t = Time.now
-d = deadline.call
-if d && t.to_f - d > stale_secs
-  echo "timequit: the quit time (#{fmt.call(d)}) passed while you were away -- dropping it."
+d = tq_quit_at
+if d && Time.now.to_f - d > (3 * 3600)
+  echo "timequit: the quit time (#{tq_fmt(d)}) passed while you were away -- dropping it."
   UserVars.quit_at = nil
   d = nil
 end
-if d && t.to_f >= d
+
+if d && Time.now.to_f >= d
   UserVars.quit_at = nil
-  echo "Quitting in 10 seconds (the quit time you set, #{fmt.call(d)}, has passed)"
+  echo "Quitting in 10 seconds (the quit time you set, #{tq_fmt(d)}, has passed)"
   pause 10
   fput "quit"
 else
-	echo "Not time to quit#{d ? " (set to quit after #{fmt.call(d)})" : ''}"
-    fput "sit"
-    fput "rest"
-    fput "meditate"
+  echo "Not time to quit#{d ? " (set to quit after #{tq_fmt(d)})" : ''}"
+  fput "sit"
+  fput "rest"
+  fput "meditate"
 end
