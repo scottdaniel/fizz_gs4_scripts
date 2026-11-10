@@ -9,17 +9,42 @@
 # With no arguments (what the rest scripts run) it quits if that time has passed, else it sits,
 # rests and meditates. There is no standing schedule: nothing quits unless you set a time.
 #
+# A quit time belongs to the login it was set in: after a re-login (a new Lich process) it is
+# dropped, so a deadline set earlier can't quit you straight after you log back in.
+#
 # "At the first rest" because it only runs between hunts, so the real quit lands up to one rest
-# after the time. A quit time more than 3 hours stale (you were logged out when it passed) is
-# dropped, so it can't quit you the moment you log back in.
+# after the time. A quit time more than 3 hours past is dropped too.
 
 def tq_fmt(epoch)
   Time.at(epoch).strftime("%a %-I:%M %p")
 end
 
+# Names this login: a global lives as long as the Lich process, so a re-login gets a new one.
+def tq_session
+  $timequit_session ||= "#{Process.pid}-#{Time.now.to_i}"
+end
+
+# The quit time as epoch seconds, or nil. One set in an earlier login (or before logins were
+# tracked) is cleared here.
 def tq_quit_at
   v = UserVars.quit_at.to_s.strip
-  v =~ /\A\d+(?:\.\d+)?\z/ ? v.to_f : nil
+  return nil unless v =~ /\A\d+(?:\.\d+)?\z/
+  if UserVars.quit_session.to_s != tq_session
+    echo "timequit: the quit time (#{tq_fmt(v.to_f)}) was set before this login -- dropping it."
+    tq_clear
+    return nil
+  end
+  v.to_f
+end
+
+def tq_set(epoch)
+  UserVars.quit_session = tq_session
+  UserVars.quit_at = epoch.round.to_s
+end
+
+def tq_clear
+  UserVars.quit_at = nil
+  UserVars.quit_session = nil
 end
 
 # "3h50m", "90m", "1.5h", "2 h 30 m", "3:50", or a bare number of hours -> seconds (0 if unreadable)
@@ -52,7 +77,7 @@ arg = script.vars[1..-1].to_a.join(" ").strip.downcase
 unless arg.empty?
   case arg
   when /\A(?:off|cancel|clear)\z/
-    UserVars.quit_at = nil
+    tq_clear
     echo "timequit: quit time cancelled."
   when /\Astatus\z/
     d = tq_quit_at
@@ -62,13 +87,13 @@ unless arg.empty?
     if secs <= 0
       echo "timequit: couldn't read '#{$1}' -- try ;timequit in 3h50m"
     else
-      UserVars.quit_at = (Time.now.to_f + secs).round.to_s
+      tq_set(Time.now.to_f + secs)
       echo "timequit: will quit at the first rest after #{tq_fmt(tq_quit_at)} (in #{(secs / 3600.0).round(1)} h)."
     end
   when /\Aat\s+(.+)\z/
     at = tq_parse_clock($1)
     if at
-      UserVars.quit_at = at.to_f.round.to_s
+      tq_set(at.to_f)
       echo "timequit: will quit at the first rest after #{tq_fmt(at.to_f)}."
     else
       echo "timequit: '#{$1}' isn't a time of day -- try ;timequit at 8am"
@@ -82,12 +107,12 @@ end
 d = tq_quit_at
 if d && Time.now.to_f - d > (3 * 3600)
   echo "timequit: the quit time (#{tq_fmt(d)}) passed while you were away -- dropping it."
-  UserVars.quit_at = nil
+  tq_clear
   d = nil
 end
 
 if d && Time.now.to_f >= d
-  UserVars.quit_at = nil
+  tq_clear
   echo "Quitting in 10 seconds (the quit time you set, #{tq_fmt(d)}, has passed)"
   pause 10
   fput "quit"
