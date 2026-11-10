@@ -90,8 +90,8 @@ end
 
 Script.run("ewaggle")
 
-# Last, so a quit isn't preceded by anything pointless: quits at her quit hour (timequit.lic,
-# 8) or once a deadline set with ;timequit in 4h has passed.
+# Last, so a quit isn't preceded by anything pointless: quits once a deadline set with
+# ;timequit in 4h has passed (timequit.lic has no standing schedule).
 Script.run("timequit")
 
 end #End of module
