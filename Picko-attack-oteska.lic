@@ -192,6 +192,17 @@ def attack_spell(foe, plan)
   # Live mana right before the cast: casting short overextends you.
   return fput("stance defensive") if checkmana < plan[:floor]
 
+  # INCANT hits whatever the game has targeted, and the element was chosen for foe: if the game's
+  # target isn't foe (the swap hasn't settled), skip this pass rather than cast the wrong element.
+  # The next pass reads the settled target.
+  unless XMLData.current_target_id.to_i == foe.id.to_i
+    sleep 0.3
+    unless XMLData.current_target_id.to_i == foe.id.to_i
+      echo "target changed under us (wanted #{foe.name}) -- skipping this cast."
+      return fput("stance defensive")
+    end
+  end
+
   text = cast_and_collect("incant #{plan[:spell]}")
   if text =~ cant_cast_wounded
     Script.run("eherbs", "--spellcast")
@@ -366,18 +377,36 @@ end
 
 # --- main -------------------------------------------------------------------------------------
 
-foe = GameObj.targets.find { |t| t.id.to_i == XMLData.current_target_id.to_i } if XMLData.current_target_id
-foe ||= GameObj.targets.find { |t| t.status.to_s !~ /dead|gone/ && t.name !~ /animated/ }
+# The target Lich thinks the game has: the current target (even if dead, so the caller can hand
+# control back for looting), else the first live creature.
+def current_foe
+  foe = GameObj.targets.find { |t| t.id.to_i == XMLData.current_target_id.to_i } if XMLData.current_target_id
+  foe || GameObj.targets.find { |t| t.status.to_s !~ /dead|gone/ && t.name !~ /animated/ }
+end
+
+foe = current_foe
 
 # nothing (live) to hit -- hand control straight back to bigshot, which loots
 exit if target_dead?(foe)
 
-fput "target ##{foe.id}" unless XMLData.current_target_id.to_i == foe.id.to_i
-
 waitrt?
 waitcastrt?
 
+# Bigshot sends TARGET and starts this script in the same breath, and XMLData.current_target_id
+# trails the game by a moment, so right after a retarget the id above is still the OLD target.
+# 11/10: a hag appeared while fighting a troll (bigshot's target priority), the stale id said
+# "troll", the plan said fire, and Major Fire went at the hag the game had actually targeted.
+# So let it settle and take the target that survives two reads in a row.
+3.times do
+  sleep 0.5
+  latest = current_foe
+  break if latest.nil? || latest.id.to_i == foe.id.to_i
+  foe = latest
+end
+
 exit if target_dead?(foe)
+
+fput "target ##{foe.id}" unless XMLData.current_target_id.to_i == foe.id.to_i
 
 plan = plan_for(foe)
 if $oteska_last_plan != plan[:label]
