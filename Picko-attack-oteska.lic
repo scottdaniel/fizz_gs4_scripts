@@ -16,8 +16,9 @@
 #                        Spell: Major Shock (910, 10 mana). It beats Major Cold (907, 7 mana)
 #                        on damage factor (.750 vs .445 on cloth, gswiki), gets a lore bonus
 #                        from Picko's Air lore (Major Cold only scales with Water lore, which
-#                        he has 0 ranks of) and can apply Stun Shock. No reserve scrolls (his
-#                        are fire / Holy Bolt). Wands: tier 1 shock/cold (copper and slender
+#                        he has 0 ranks of) and can apply Stun Shock. Reserve scroll: Minor
+#                        Cold (1709) only -- his fire and Holy Bolt scrolls are never used on
+#                        a hag. Wands: tier 1 shock/cold (copper and slender
 #                        mithril = Major Shock, metal = Major Cold, silver and iron = Minor
 #                        Shock, slender blue = Minor Cold), tier 2 the non-fire, non-steam
 #                        allow-list (acid, earth, Elemental Blast, ...). Never fire, never
@@ -62,7 +63,7 @@ end
 def plan_for(foe)
   if hag_foe?(foe)
     { label: "swamp hag (cold/shock)", spell: 910, spell_name: "Major Shock",
-      floor: spell_mana(910, 10) + 1, scrolls: [], tiers: hag_wand_tiers }
+      floor: spell_mana(910, 10) + 1, scrolls: hag_reserve_scrolls, tiers: hag_wand_tiers }
   else
     { label: "fire", spell: 908, spell_name: "Major Fire",
       floor: spell_mana(908, 8) + 1, scrolls: reserve_scrolls, tiers: fire_wand_tiers }
@@ -115,6 +116,12 @@ def hag_wand_tiers
     ["shock/cold", hag_shock_cold_pattern, hag_shock_cold_get_nouns].freeze,
     ["other",      hag_other_pattern,      hag_other_get_nouns].freeze,
   ].freeze
+end
+
+# Combat-reserve scrolls for swamp hags: Minor Cold (1709) is on one of Scott's reserved
+# scrolls (11/10). Cold is fine against hags; fire (908, 111) and Holy Bolt never go on this list.
+def hag_reserve_scrolls
+  [[1709, "Minor Cold", false]].freeze
 end
 
 # Combat-reserve scrolls (fire targets only): [spell number, name, undead only?].
