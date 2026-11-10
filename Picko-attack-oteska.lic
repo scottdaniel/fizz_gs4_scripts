@@ -1,0 +1,389 @@
+# Picko-attack-oteska.lic
+# Bigshot custom attack routine for Picko (Wizard) in the Oteska / Miasmal Forest hunt
+# (River's Rest, profile oteska.yaml). Drop it into bigshot's hunting AND quick command
+# lists as a single command:
+#
+#   script Picko-attack-oteska
+#
+# Same contract as Picko-attack-fire.lic: bigshot runs it once against the target it has
+# locked, it makes ONE attack decision and returns, and bigshot calls it again every pass
+# while the target is up. A dead target just returns so bigshot loots.
+#
+# What differs is the ELEMENT, chosen per target from its name:
+#
+#   swamp hag            (living, level 42) -- IMMUNE to fire, and to steam; fire criticals
+#                        actually feed her mana (gswiki Swamp_hag). So: COLD or SHOCK only.
+#                        Spell: Major Shock (910, 10 mana). It beats Major Cold (907, 7 mana)
+#                        on damage factor (.750 vs .445 on cloth, gswiki), gets a lore bonus
+#                        from Picko's Air lore (Major Cold only scales with Water lore, which
+#                        he has 0 ranks of) and can apply Stun Shock. No reserve scrolls (his
+#                        are fire / Holy Bolt). Wands: tier 1 shock/cold (copper and slender
+#                        mithril = Major Shock, metal = Major Cold, silver and iron = Minor
+#                        Shock, slender blue = Minor Cold), tier 2 the non-fire, non-steam
+#                        allow-list (acid, earth, Elemental Blast, ...). Never fire, never
+#                        steam (golden/drake/electrum/ebony, Minor Water, green coral).
+#
+#   everything else      greater bog troll (takes DOUBLE fire damage, the burn keeps ticking and
+#                        it can't regenerate a fire wound), greater moor wight, greater fetid
+#                        corpse, luminous spectre -- all FIRE. Greater fetid corpses are immune
+#                        to COLD, so no cold on them either. Spell: Major Fire (908, 8 mana).
+#                        Then Symbol of Mana, the combat-reserve scrolls (908, 111, and Holy
+#                        Bolt 306 at undead only), then wands: fire wands first, then the
+#                        non-water/non-cold allow-list (same as Picko-attack-fire.lic).
+#
+# Order per pass: spell (if mana >= the spell's cost + 1) -> Symbol of Mana -> reserve scroll
+# -> wand. A wand in hand that's wrong for THIS target (a fire wand when the next target is a
+# hag) is put back in the fresh container first, never waved. Out of mana and out of suitable
+# wands -> flags bigshot to rest.
+#
+# OVEREXERTION: casting without the spell's full cost in hand overextends you ("You have
+# overextended yourself!") and blocks casting and wand-waving for the rest of the fight, so a
+# cast only goes out with the live mana at cost + 1 (re-checked right before the cast).
+#
+# A wound that blocks casting ("You can't think clearly enough to prepare a spell!") runs
+# ;eherbs --spellcast once instead of retrying.
+
+# --- plans: which element for which target ------------------------------------
+#
+# These are METHODS, not constants: a script's constants survive between runs (Lich
+# constants persist until a restart), so an edited list would not take effect until then.
+
+def spell_mana(num, fallback)
+  c = Spell[num].mana_cost.to_i
+  c.positive? ? c : fallback
+end
+
+def hag_foe?(foe)
+  foe.name.to_s =~ /swamp hag/i ? true : false
+end
+
+# A real fire target is anything that is not a hag (bog troll, moor wight, fetid corpse,
+# spectre). If a new creature ever shows up on this hunt it is treated as fire too.
+def plan_for(foe)
+  if hag_foe?(foe)
+    { label: "swamp hag (cold/shock)", spell: 910, spell_name: "Major Shock",
+      floor: spell_mana(910, 10) + 1, scrolls: [], tiers: hag_wand_tiers }
+  else
+    { label: "fire", spell: 908, spell_name: "Major Fire",
+      floor: spell_mana(908, 8) + 1, scrolls: reserve_scrolls, tiers: fire_wand_tiers }
+  end
+end
+
+# --- wands (types per https://gswiki.play.net/Wand) ---------------------------------------
+# Each tier is [label, pattern, GET nouns]. The pattern confirms one is in the container AND
+# vets whichever wand GET really handed back (GET matches the last adjective + noun, so "crystal
+# wand" can also grab a "wavy grey crystal wand"); patterns are anchored on the article for the
+# same reason. GET nouns are one adjective closest to "wand", tried in order.
+
+def fire_wand_pattern
+  /\b(?:an?|the)\s+(?:golden|drake|electrum|grooved ebony)\s+wand\b/i
+end
+def fire_wand_get_nouns
+  ["golden wand", "drake wand", "electrum wand", "ebony wand"].freeze
+end
+# Non-water, non-cold damage wands, for fire targets once the fire wands are gone.
+def fallback_wand_pattern
+  /\b(?:an?|the)\s+(?:crystal|(?:slender\s+)?mithril|bronze|faceted topaz|silver|iron|smooth crystalline|green coral|nacre-inlaid alabaster|whorled quartz|white starstone|black walnut|fluted black stone|copper|lapis lazuli)\s+wand\b/i
+end
+def fallback_wand_get_nouns
+  ["crystal wand", "mithril wand", "bronze wand", "topaz wand", "silver wand", "iron wand", "crystalline wand", "copper wand", "starstone wand", "alabaster wand", "quartz wand", "walnut wand", "black wand", "lazuli wand", "coral wand"].freeze
+end
+def fire_wand_tiers
+  [
+    ["fire",     fire_wand_pattern,     fire_wand_get_nouns].freeze,
+    ["fallback", fallback_wand_pattern, fallback_wand_get_nouns].freeze,
+  ].freeze
+end
+
+# Swamp hags: shock and cold first (strongest first)...
+def hag_shock_cold_pattern
+  /\b(?:an?|the)\s+(?:copper|slender mithril|metal|silver|iron|slender blue)\s+wand\b/i
+end
+def hag_shock_cold_get_nouns
+  ["copper wand", "mithril wand", "metal wand", "silver wand", "iron wand", "blue wand"].freeze
+end
+# ...then the rest of the allow-list MINUS everything fire or steam (golden/drake/electrum/
+# ebony are fire, green coral is Minor Steam; the shock/cold wands are already tier 1).
+def hag_other_pattern
+  /\b(?:an?|the)\s+(?:crystal|mithril|bronze|faceted topaz|smooth crystalline|nacre-inlaid alabaster|whorled quartz|white starstone|black walnut|fluted black stone|lapis lazuli)\s+wand\b/i
+end
+def hag_other_get_nouns
+  ["crystal wand", "mithril wand", "bronze wand", "topaz wand", "crystalline wand", "starstone wand", "alabaster wand", "quartz wand", "walnut wand", "black wand", "lazuli wand"].freeze
+end
+def hag_wand_tiers
+  [
+    ["shock/cold", hag_shock_cold_pattern, hag_shock_cold_get_nouns].freeze,
+    ["other",      hag_other_pattern,      hag_other_get_nouns].freeze,
+  ].freeze
+end
+
+# Combat-reserve scrolls (fire targets only): [spell number, name, undead only?].
+def reserve_scrolls
+  [[908, "Major Fire", false], [111, "Fire Spirit", false], [306, "Holy Bolt", true]].freeze
+end
+def undead_name_regex
+  /skelet|zombie|wraith|ghoul|ghost|spirit|lich\b|vampire|banshee|revenant|mummy|ghast|shade|phantom|wight|apparition|spectre|specter|lost soul|corpse/i
+end
+def undead_foe?(foe)
+  foe.type.to_s =~ /undead/i || foe.name.to_s =~ undead_name_regex ? true : false
+end
+
+# Fresh/dead wand containers come from bigshot's loaded profile (UserVars.op), read on every
+# use so a profile change applies without a restart.
+def fresh_container
+  c = (defined?(UserVars) && UserVars.op.is_a?(Hash)) ? UserVars.op["fresh_wand_container"].to_s.strip : ""
+  c.empty? ? "sack" : c
+end
+def dead_container
+  c = (defined?(UserVars) && UserVars.op.is_a?(Hash)) ? UserVars.op["dead_wand_container"].to_s.strip : ""
+  c.empty? ? "bag" : c
+end
+
+def cant_cast_wounded
+  /can't think clearly enough to prepare a spell/i
+end
+def symbol_retry_secs
+  180
+end
+def scroll_retry_secs
+  600
+end
+
+# --- helpers --------------------------------------------------------------------------------
+
+# Monster-agnostic death check off GameObj status (what bigshot itself uses).
+def target_dead?(foe)
+  return true if foe.nil?
+  return true if foe.status.to_s =~ /dead|gone/
+  !GameObj.targets.any? { |t| t.id.to_i == foe.id.to_i && t.status.to_s !~ /dead|gone/ }
+end
+
+# Sends cast_cmd and collects every line through the roundtime message. Stops early on the
+# wounded-can't-cast line, which never gets a roundtime.
+def cast_and_collect(cast_cmd)
+  text_lines = []
+  put cast_cmd
+  end_time = Time.now.to_f + 5
+  loop do
+    line = get?
+    if line.nil?
+      sleep 0.1
+    else
+      text_lines << line
+      break if line =~ /Roundtime: \d+ sec|Cast Roundtime \d+ Seconds?\.?/i || line =~ cant_cast_wounded
+    end
+    break if Time.now.to_f >= end_time
+  end
+  text_lines.join(' ')
+end
+
+# incant the plan's spell at the target in stance offensive, then back to defensive.
+def attack_spell(foe, plan)
+  fput "release" if checkprep != "None"
+  fput "stance offensive" if stance != "offensive"
+
+  # Live mana right before the cast: casting short overextends you.
+  return fput("stance defensive") if checkmana < plan[:floor]
+
+  text = cast_and_collect("incant #{plan[:spell]}")
+  if text =~ cant_cast_wounded
+    Script.run("eherbs", "--spellcast")
+    fput "stance defensive"
+    return
+  end
+  waitcastrt?
+  waitrt?
+  fput "stance defensive"
+end
+
+# Contents of the fresh container from a full multi-line LOOK IN (a categorizing container
+# prints "Wands [20]: a slender blue wand, a golden wand (2), ..." over several lines).
+def fresh_wand_text
+  fput "open my #{fresh_container}"
+  lines = []
+  put "look in my #{fresh_container}"
+  deadline = Time.now.to_f + 3
+  until Time.now.to_f >= deadline
+    line = get?
+    if line.nil?
+      sleep 0.05
+      next
+    end
+    lines << line
+    break if line =~ /^Total items:|^In .+ you see |There (?:is|are) nothing|is closed|can't look/i
+  end
+  lines.join(' ')
+end
+
+def rest_out_of_wands(plan)
+  echo "out of mana and no usable #{plan[:label]} wands left in #{fresh_container} -- resting."
+  $bigshot_should_rest = true
+  $rest_reason = "Out of mana, no usable wands"
+end
+
+# Wands in either hand.
+def held_wands
+  [GameObj.right_hand, GameObj.left_hand].compact.select { |o| o.name.to_s =~ /\bwand\b/i }
+end
+
+# Is this held wand one the plan allows? The hand may report just the short GET form
+# ("coral wand"), so match either the full pattern or the noun.
+def wand_ok_for_plan?(obj, plan)
+  n = "a #{obj.name}"
+  plan[:tiers].any? do |_, pattern, nouns|
+    n =~ pattern || nouns.any? { |noun| obj.name.to_s =~ /\b#{Regexp.escape(noun)}\b/i }
+  end
+end
+
+# A wand in hand that is wrong for this target (a fire wand against a hag) goes back to the
+# fresh container instead of being waved.
+def put_away_wrong_wands(plan)
+  held_wands.each do |o|
+    next if wand_ok_for_plan?(o, plan)
+    echo "#{o.name} is wrong for #{plan[:label]} -- putting it back."
+    fput "put ##{o.id} in my #{fresh_container}"
+    deadline = Time.now.to_f + 2
+    sleep 0.1 while held_wands.any? { |h| h.id == o.id } && Time.now.to_f < deadline
+  end
+end
+
+def wand_in_hand?(plan)
+  held_wands.any? { |o| wand_ok_for_plan?(o, plan) }
+end
+
+# Draws one wand: the first tier whose pattern shows in the container, trying that tier's GET
+# nouns in order; whatever GET hands back is vetted against the tier pattern and a wrong one
+# goes straight back. @return [Boolean] true if a wanted wand is now in hand.
+def draw_wand(plan)
+  text = fresh_wand_text
+  plan[:tiers].each do |label, pattern, nouns|
+    next unless text =~ pattern
+    nouns.each do |noun|
+      r = dothistimeout("get #{noun} from my #{fresh_container}", 3,
+                        /You (?:remove|slip|slide|get|pull)|Get what\?|What were you referring to|I could not find|free hand/i).to_s
+      return true if r =~ /free hand/i && wand_in_hand?(plan)
+      next unless r =~ /You (?:remove|slip|slide|get|pull)/i
+      drawn = r[/You (?:remove|slip|slide|get|pull) ((?:an?|the|some) .+?) (?:from|out of)\b/i, 1].to_s
+      if drawn =~ pattern
+        echo "drew #{drawn} (#{label} wand)" unless label == "fire"
+        return true
+      end
+      echo "'#{noun}' pulled #{drawn.empty? ? 'something unexpected' : drawn} -- putting it back."
+      fput "put my wand in my #{fresh_container}"
+    end
+  end
+  false
+end
+
+# One wand wave. A spent wand (no roll or roundtime) is retired to the dead container.
+def wave_wand(foe, plan)
+  put_away_wrong_wands(plan)
+  unless wand_in_hand?(plan) || draw_wand(plan)
+    rest_out_of_wands(plan)
+    return
+  end
+
+  fput "stance offensive" if stance != "offensive"
+  result = cast_and_collect("wave my wand at ##{foe.id}")
+  fput "stance defensive"
+
+  fired = result =~ /d100|You hurl|Roundtime: \d+ sec|Cast Roundtime \d+ Seconds?/i
+  fput "put my wand in my #{dead_container}" unless fired
+end
+
+# Symbol of Mana costs Voln favor; with too little the cooldown never starts and a bare
+# cooldown check re-picks it forever, so back off after a failure.
+def symbol_of_mana_ready?
+  Spell[9813].known? && !Effects::Cooldowns.active?("Symbol of Mana") &&
+    Time.now.to_f >= $picko_symbol_retry_at.to_f
+end
+
+def try_symbol_of_mana
+  r = dothistimeout("symbol of mana", 3,
+                    /special blessing from Koar|surge of mana|unable to call forth enough power/i).to_s
+  return true unless r =~ /unable to call forth enough power/i
+  $picko_symbol_retry_at = Time.now.to_f + symbol_retry_secs
+  echo "Symbol of Mana: not enough Voln favor -- wands for the next #{symbol_retry_secs}s"
+  false
+end
+
+# INVOKE one reserved scroll's spell and cast it at foe. @return [Boolean] false if the
+# scroll couldn't be invoked (nothing was cast).
+def cast_scroll(number, name, foe)
+  $picko_scroll_retry_at ||= {}
+  fput "release" if checkprep != "None"
+  waitrt?
+  waitcastrt?
+  r = dothistimeout("invoke #{number}", 4, /That spell is not on|raise the .+? and gesture to invoke/i).to_s
+  if r =~ /That spell is not on/i
+    $reserve_spells.delete(number) if $reserve_spells.is_a?(Array)
+    $picko_scroll_retry_at[number] = Time.now.to_f + scroll_retry_secs
+    echo "invoke #{number} (#{name}): #{r.strip} -- that spell is gone from the reserve."
+    return false
+  end
+  deadline = Time.now.to_f + 3
+  sleep 0.2 until checkprep != "None" || Time.now.to_f >= deadline
+  if checkprep == "None"
+    $picko_scroll_retry_at[number] = Time.now.to_f + scroll_retry_secs
+    echo "invoke #{number} (#{name}) didn't ready a spell -- skipping that scroll for #{scroll_retry_secs / 60} min"
+    return false
+  end
+
+  fput "stance offensive" if stance != "offensive"
+  text = cast_and_collect("cast ##{foe.id}")
+  if text =~ cant_cast_wounded
+    Script.run("eherbs", "--spellcast")
+    fput "release" if checkprep != "None"
+    fput "stance defensive"
+    return true
+  end
+  fput "release" if checkprep != "None"
+  waitcastrt?
+  waitrt?
+  fput "stance defensive"
+  true
+end
+
+# First reserve scroll that applies to foe and works. The plan decides the list (empty for
+# hags). @return [Boolean]
+def cast_reserve_scroll(foe, plan)
+  $picko_scroll_retry_at ||= {}
+  plan[:scrolls].each do |number, name, undead_only|
+    next if undead_only && !undead_foe?(foe)
+    next if $reserve_spells.is_a?(Array) && !$reserve_spells.include?(number)
+    next if Time.now.to_f < $picko_scroll_retry_at[number].to_f
+    return true if cast_scroll(number, name, foe)
+  end
+  false
+end
+
+# --- main -------------------------------------------------------------------------------------
+
+foe = GameObj.targets.find { |t| t.id.to_i == XMLData.current_target_id.to_i } if XMLData.current_target_id
+foe ||= GameObj.targets.find { |t| t.status.to_s !~ /dead|gone/ && t.name !~ /animated/ }
+
+# nothing (live) to hit -- hand control straight back to bigshot, which loots
+exit if target_dead?(foe)
+
+fput "target ##{foe.id}" unless XMLData.current_target_id.to_i == foe.id.to_i
+
+waitrt?
+waitcastrt?
+
+exit if target_dead?(foe)
+
+plan = plan_for(foe)
+if $oteska_last_plan != plan[:label]
+  echo "#{foe.name}: #{plan[:label]} -- #{plan[:spell_name]} (#{plan[:spell]}), needs #{plan[:floor]} mana"
+  $oteska_last_plan = plan[:label]
+end
+
+if checkmana >= plan[:floor]
+  attack_spell(foe, plan)
+elsif symbol_of_mana_ready? && try_symbol_of_mana
+  nil
+elsif cast_reserve_scroll(foe, plan)
+  nil
+else
+  wave_wand(foe, plan)
+end
