@@ -192,6 +192,12 @@ end
 def cast_condemn(foe)
   return false if checkmana < SPELL_309_MANA
 
+  # Never send the cast into a live roundtime: fput only resends on "Wait N sec." when that is
+  # the FIRST line back, so a room line landing first makes it return with the cast unsent and
+  # the hold below sits out a DoT that was never cast (see Salvi-attack-web.lic, 11/11).
+  waitcastrt?
+  waitrt?
+
   condemn_state
   empowered = $condemn_charges >= 1
 

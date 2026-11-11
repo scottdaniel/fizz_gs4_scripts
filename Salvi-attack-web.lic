@@ -293,6 +293,15 @@ end
 def cast_condemn(foe)
   return false if checkmana < SPELL_309_MANA
 
+  # Never send the cast into a live roundtime. Web leaves 2 s of cast roundtime, and when the
+  # game answers "Wait N sec." fput only resends if that is the FIRST line back; if a room line
+  # ("A greater bog troll struggles fruitlessly...", "Your disk arrives...") lands first, fput
+  # takes it as the reply and returns, the "Wait" is never seen, and Condemn silently never goes
+  # out -- then the 10 s hold below sits out a DoT that was never cast (11/11, three times in
+  # five minutes: the monsters got free attacks).
+  waitcastrt?
+  waitrt?
+
   condemn_state
   empowered = $condemn_charges >= 1
 
