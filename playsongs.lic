@@ -136,14 +136,16 @@ module Playsongs
 
   # Song-start lines. The first is the one seen live for the tambourine; the next
   # three are the soft / fast / slow starts from
-  # https://gswiki.play.net/Instrument_messaging_percussion; the last is the drum's.
+  # https://gswiki.play.net/Instrument_messaging_percussion; the last two are the
+  # drum's (soft, then fast and slow, seen live 11/11).
   # Only used to time the song from when it really began.
   START_REGEX = Regexp.union(
     /You lift your .+? and begin to tap out a beat\./,
     /You softly shake your .+?, starting a gentle and lulling rhythm\./,
     /You test your .+? with a gentle thump, then raise your head with a smile and begin a rapid beat\./,
     /You slowly raise your .+? and begin to tap out a slow, soothing beat\./,
-    /You begin to \w+ tap on your .+?\./
+    /You begin to \w+ tap on your .+?\./,
+    /You begin to beat a .+? rhythm on your .+?\./
   )
 
   # The game's answer to a style an instrument doesn't have.
@@ -194,7 +196,11 @@ module Playsongs
   # finishing theirs. Each new instrument can bring its own ending line.
   STOP_REGEX = Regexp.union(
     /As the last whispered note fades from the stilled air, you slowly smile and put your hand over your .+?, bowing with a flourish\./,
-    /The music moves slower and slower until finally, with a last hovering beat, it fades away\. You look up from your .+? and smile\./,
+    # Slow. The game prints this as two sentences with TWO spaces between them
+    # ("...fades away.  You look up from your tambourine and smile."), so the old
+    # pattern, which had one space, never matched -- slow songs always timed out.
+    # Ending at the first sentence avoids depending on the spacing at all.
+    /The music moves slower and slower until finally, with a last hovering beat, it fades away\./,
     /The air suddenly stills as you halt your whirling rhythm as suddenly as you began, silencing your .+?\./,
     /You complete the last beat with a flourish, lowering your .+?\./,
     /With quiet grace, you allow your .+?'s melody to drop off, ever softer, until there is nothing but the intense silence left in its wake\./,
@@ -202,9 +208,12 @@ module Playsongs
     # STOP_REGEX match and just hangs forever after a song actually ended --
     # playsongs looked "running" but never played again.
     /You bring your quiet performance to a close with three descending harmonics; these last notes ring on, barely heard, as you let your arms fall to your sides\./,
-    # Drum, played soft. The adjective is the style ("soft beats"), so match any
-    # rather than only soft -- fast/slow drum songs presumably say their own.
-    /You let the .+? beats on your .+? trail away into silence\./
+    # Drum, seen live 11/11 (soft / slow / fast):
+    #   "You let the soft beats on your rosewood drum trail away into silence."
+    #   "You let the slow beats on your rosewood drum gradually come to rest."
+    #   "You bring your rapid drumming to an abrupt halt on your rosewood drum."
+    /You let the .+? beats on your .+? (?:trail away into silence|gradually come to rest)\./,
+    /You bring your rapid \w+ to an abrupt halt on your .+?\./
   )
 
   # Backstop for the next ending message nobody has seen yet: a song is 5-5.5
@@ -441,9 +450,17 @@ module Playsongs
   end
 
   # Sends TUNE and returns the game's answer, minus blank and XML-tag lines.
+  # The capture has to START on one of the known replies: starting on the first
+  # line of anything (/\S/) grabbed whatever unrelated line arrived first (room
+  # exits, "You feel more courageous.", song-manager spam), and the real reply
+  # fell outside the capture -- so a successful tune was reported as
+  # unrecognised and retried hourly (11/11 log). No reply within the timeout
+  # comes back as an empty list.
+  TUNE_REPLY_REGEX = Regexp.union(TUNED_REGEX, TUNE_UNSKILLED_REGEX, TWO_HANDED_REGEX)
+
   def self.send_tune
     waitrt?
-    lines = Array(Lich::Util.issue_command("tune my #{INSTRUMENT}", /\S/, /<prompt/, include_end: false, timeout: 8))
+    lines = Array(Lich::Util.issue_command("tune my #{INSTRUMENT}", TUNE_REPLY_REGEX, /<prompt/, include_end: false, timeout: 8))
     lines.map { |l| l.to_s.strip }.reject { |l| l.empty? || l.start_with?('<') }
   end
 
@@ -653,14 +670,15 @@ module Playsongs
     fput "play my #{INSTRUMENT} #{style}"
 
     give_up_at = Time.now + SONG_TIMEOUT_SECONDS
-    recent = []
+    recent = []        # last few non-empty lines of anything
+    about_it = []      # last few lines that mention the instrument
 
     loop do
       line = get?
       if line.nil?
         if Time.now > give_up_at
           Lich::Messaging.msg("bold", "[Playsongs] No song-ending message for #{SONG_TIMEOUT_SECONDS}s -- assuming it ended and playing again. " \
-                                      "If this keeps happening, the ending text is new: add it to STOP_REGEX. Last lines seen: #{recent.join(' | ')}")
+                                      "If this keeps happening, the ending text is new: add it to STOP_REGEX. Last lines about the #{INSTRUMENT}: #{(about_it.empty? ? recent : about_it).join(' | ')}")
           record_rank_ups_only(rank_ups, advance_style: true)
           return
         end
@@ -672,6 +690,11 @@ module Playsongs
       unless stripped.empty? || stripped =~ /\A[<>]/
         recent << stripped[0, 120]
         recent.shift while recent.length > 5
+        # a bard's song-magic spam can bury the real ending in `recent`
+        if stripped.downcase.include?(INSTRUMENT.split.last)
+          about_it << stripped[0, 160]
+          about_it.shift while about_it.length > 4
+        end
       end
 
       if line =~ INVALID_STYLE_REGEX
