@@ -6,20 +6,28 @@
     - deadexit.lic: when ON (away) and you die while bigshot is hunting, it quits
       the game. OFF (at the keyboard) leaves dying to you.
     - the *-prerest / *-prep scripts: music (playsongs) only starts when it's OFF.
+      Exception: Fizzlestiks is a bard, so his prep/prerest play music either way.
 
     - voicemail.lic: ;afk also flips its in-game AFK auto-reply and Discord relay to
       match (afk on -> both on, afk off -> both off). Those are in-memory flags that
       reset to off whenever voicemail restarts, so they follow whatever you last
       told ;afk this session. If voicemail is not running they are left alone.
 
+  ;afk on also starts the scripts in afk_scripts below (if not already running) and
+  ;afk off stops them:
+    - go4invoker.lic: takes bigshot to the invoker on Four Winds Isle for a spell-up
+      about every 4 hours. A character with no FWI trinket set in go2 just gets a
+      message and the script exits.
+
   An unset afk_now counts as ON (away) everywhere, so a character that never had
   it set gets no music and an armed deadexit.
 
   Usage:  ;afk off      at the keyboard: music plays, deadexit won't quit on death,
-                        voicemail AFK reply + relay off
-          ;afk on       walking away: no music, deadexit armed, voicemail AFK reply +
-                        relay on
-          ;afk          show the current setting (and voicemail's) for this character
+                        voicemail AFK reply + relay off, go4invoker stopped
+          ;afk on       walking away: no music (except Fizzlestiks), deadexit armed,
+                        voicemail AFK reply + relay on, go4invoker started
+          ;afk          show the current setting (and voicemail's and go4invoker's) for
+                        this character
 
   Also accepted: here/back/no/false/0 for "off", away/yes/true/1 for "on".
 =end
@@ -55,6 +63,48 @@ module Afk
     $vm_afk_sent.clear if !on && $vm_afk_sent.respond_to?(:clear)
   end
 
+  # Scripts ;afk on starts and ;afk off stops. Methods, not constants, so an edit
+  # applies on the next run without restarting Lich.
+  def self.afk_scripts
+    %w[go4invoker]
+  end
+
+  # Characters whose prep/prerest play music even when AFK (display only: the
+  # exception itself lives in their own prep/prerest scripts).
+  def self.always_music?
+    %w[Fizzlestiks].include?(Char.name)
+  end
+
+  def self.start_afk_scripts
+    afk_scripts.each do |name|
+      next if Script.running?(name)
+
+      if Script.exists?(name)
+        Script.start(name)
+      else
+        echo "  #{name}: script not found, not started"
+      end
+    end
+  end
+
+  def self.stop_afk_scripts
+    afk_scripts.each do |name|
+      next unless Script.running?(name)
+
+      Script.kill(name)
+      deadline = Time.now + 5 # kill is async; let it finish before show reports it
+      sleep 0.1 while Script.running?(name) && Time.now < deadline
+    end
+  end
+
+  def self.show_afk_scripts
+    afk_scripts.each do |name|
+      running = Script.running?(name)
+      detail = name == "go4invoker" && running && $go4invoker_status ? " -- #{$go4invoker_status}" : ""
+      echo "  #{name}: #{running ? 'running' : 'not running'}#{detail}"
+    end
+  end
+
   def self.show_voicemail
     return echo("  voicemail: not running") unless voicemail_running?
 
@@ -69,8 +119,14 @@ module Afk
     state = afk_now? ? "ON (away)" : "OFF (at the keyboard)"
     set   = UserVars.afk_now.nil? ? " -- not set, so it defaults ON" : ""
     echo "#{Char.name}: afk_now is #{state}#{set}"
-    echo "  music in prerest/prep: #{afk_now? ? 'skipped' : 'plays'}; deadexit auto-quit on death: #{afk_now? ? 'armed' : 'off'}"
+    music = if always_music?
+              "plays (bard: AFK or not)"
+            else
+              afk_now? ? 'skipped' : 'plays'
+            end
+    echo "  music in prerest/prep: #{music}; deadexit auto-quit on death: #{afk_now? ? 'armed' : 'off'}"
     show_voicemail
+    show_afk_scripts
     return if UserVars.afk_on.nil?
 
     echo "  note: a stray afk_on=#{UserVars.afk_on.inspect} is saved too -- nothing reads that name. " \
@@ -85,10 +141,12 @@ module Afk
   when AT_KEYBOARD
     UserVars.afk_now = false
     set_voicemail(false)
+    stop_afk_scripts
     show
   when AWAY
     UserVars.afk_now = true
     set_voicemail(true)
+    start_afk_scripts
     show
   else
     echo "Unknown option '#{arg}'. Use ;afk on, ;afk off, or ;afk to see the current setting."

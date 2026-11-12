@@ -58,25 +58,16 @@ Script.start("Fizzlestiks-disarmguard") unless Script.running?("Fizzlestiks-disa
 # leave you fighting with your hands full (see eloot_guard.lic).
 Script.start("eloot_guard") unless Script.running?("eloot_guard")
 
-# playsongs only when you're actually at the keyboard. Same afk_now UserVar that
-# gates deadexit (unset counts as ON, i.e. AFK -> no music):
-#   ;vars set afk_now=false   # at the keyboard: music plays during the hunt
-#   ;vars set afk_now=true    # walking away: no music (and deadexit stays armed)
-def self.afk_now?
-  value = UserVars.afk_now
-  return true if value.nil?
-  return value if value == true || value == false
-
-  value.to_s !~ /\A\s*(?:0|false|off|no)\s*\z/i
-end
-
+# Music whether or not you're AFK: he's a bard, so unlike the other characters'
+# prep scripts this ignores the afk_now UserVar (11/12).
+#
 # Tambourine for the hunt: one-handed, so it sits in the left hand while the
 # mace stays in the right. Only if READY WEAPON actually put the weapon in
 # hand -- playsongs would otherwise happily fill the free right hand and he'd
 # walk out unarmed. Killed again by Fizzlestiks-prerest.lic when he returns to
 # town to rest.
 pause 0.5
-if checkright && !(afk_now? || Script.running?("playsongs"))
+if checkright && !Script.running?("playsongs")
   Script.start("playsongs", "tambourine")
 end
 

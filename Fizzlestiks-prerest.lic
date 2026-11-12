@@ -32,25 +32,16 @@ Script.run("eloot", "sell")
 # Darkwoodes, greater orcs and werebears all live in the Upper Trollfang rooms his
 # profile hunts (10/30: darkwoode alone came up 3 times in 281 offers). The latter two
 # also get bounties in Cairnfang and the foothills of Zeltoph, hence --kill-areas.
-Script.run("bounty_chooser", "kill darkwoode, greater orc, werebear --kill-areas=Upper Trollfang")
+#Script.run("bounty_chooser", "kill darkwoode, greater orc, werebear --kill-areas=Upper Trollfang")
 Script.run("ewaggle")
 
-# playsongs only when you're actually at the keyboard. Same afk_now UserVar that
-# gates deadexit (unset counts as ON, i.e. AFK -> no music):
-#   ;vars set afk_now=false   # at the keyboard: music plays during rest
-#   ;vars set afk_now=true    # walking away: no music (and deadexit stays armed)
-def self.afk_now?
-  value = UserVars.afk_now
-  return true if value.nil?
-  return value if value == true || value == false
-
-  value.to_s !~ /\A\s*(?:0|false|off|no)\s*\z/i
-end
-
+# Music whether or not you're AFK: he's a bard, so unlike the other characters'
+# prerest scripts this ignores the afk_now UserVar (11/12).
+#
 # Music while safe/resting -- Fizzlestiks-prep.lic kills this again before combat
 # resumes (which also stows the drum, see playsongs.lic's before_dying) and
 # starts the tambourine for the hunt. The drum is two-handed; playsongs' own
 # "requires two hands" retry handles the right hand if anything is in it.
-Script.start("playsongs", "drum") unless afk_now? || Script.running?("playsongs")
+Script.start("playsongs", "drum") unless Script.running?("playsongs")
 
 end #End of module

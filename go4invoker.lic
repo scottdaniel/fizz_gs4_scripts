@@ -1,0 +1,516 @@
+=begin
+  go4invoker.lic -- keeps the invoker's spells up while bigshot hunts AFK.
+
+  The invoker comes to Honeysuckle and Rose Avenue (room 3677) on Four Winds Isle at every
+  even hour, game time (US Eastern), and leaves about 15 minutes later. From the logs: she
+  thinks "...arriving ... in approximately 15 minutes" at :45, "...currently at Honeysuckle and
+  Rose Avenue" at :00, was still answering at :08, and at :15 ASK got "Who are you trying to
+  ask?". A spell-up costs 10,000 silver and lasts about 4 hours, so this goes at every other
+  visit: when the last spell-up is at least 3.5 hours old by the time she arrives.
+
+  What a visit looks like (all automatic, only when one is due and bigshot is running):
+    * From 12 minutes before she arrives until 3 minutes after, a hunting bigshot is told to
+      rest ($bigshot_should_rest). It finishes the fight, walks home and does its normal
+      pre-rest chores. A bigshot that is already resting is simply caught there.
+    * Once bigshot is resting in its resting room, it is paused. This waits for its rest
+      chores (the profile's resting commands and scripts, and go2) to finish. Then, a minute
+      before she arrives:
+        - with less than 10,000 silver on hand: go2 bank (the bank nearest the resting room)
+          and withdraw what's missing. Bank accounts are per town: on 11/10 Picko's withdraw
+          at the Mist Harbor bank failed, so the money has to come from home first;
+        - go2 3677 (go2 uses your FWI trinket both ways), wait for her, ASK her twice
+          (the first ASK only quotes the price);
+        - go2 back to the resting room, restart playsongs if it was playing, unpause bigshot.
+    * If something goes wrong (no silver, she never showed, couldn't get there or back), a
+      Discord line goes out through deadexit ($deadexit_notice), and bigshot is unpaused
+      either way.
+
+  Usage:
+    ;go4invoker            watch and go when due (;afk on starts this, ;afk off stops it)
+    ;go4invoker now        go right now and come back (she must be there or arriving within
+                           15 minutes). Pauses bigshot for the trip if it's running.
+    ;go4invoker status     last spell-up, next visit, whether that visit is due
+    ;go4invoker done       record a spell-up you just got some other way
+
+  While the watcher runs, Lich won't start a second copy, so `status`, `now` and `done` are for
+  when it isn't running; `;afk` shows the watcher's status.
+
+  The last spell-up time is UserVars.go4invoker_last. Any "You hand over your payment to ...
+  invoker" line seen while this runs counts, including a trip you make by hand.
+
+  Settings:
+    ;vars set go4invoker_hours=3.5   how old the last spell-up must be (when she arrives)
+                                     before going again
+
+  Needs go2's FWI trinket setting (;go2 --fwi-trinket=<name>); without one the watcher says so
+  and exits. On 11/12 Brayis, Htrowelzzif and Eepo had none set.
+=end
+
+module Go4Invoker
+  module_function
+
+  INVOKER_ROOM = 3677
+  COST         = 10_000
+  HOOK         = "go4invoker-hook"
+
+  # Game text, from the saga logs (Salvi 11/11 10:00, Picko 11/10 08:04, Salvi 10/22 10:15).
+  PRICE  = /The cost for my services is 10,000 silver/i
+  PAID   = /You hand over your payment to .*invoker/i
+  POOR   = /You do not have enough for my services/i
+  ABSENT = /Who are you trying to ask\?/i
+  WITHDRAW_RESULT = /hands you [\d,]+ silvers|already spent what you're trying to withdraw|don't have that much|promissory note|You have no account|insufficient/i
+
+  # Tunables are methods so an edit applies on the next start (constants survive in Lich).
+  # Minutes relative to her arrival (0 = she arrives, negative = before).
+  def window_open;  -12; end   # start bringing bigshot home / catching it resting
+  def force_until;    3; end   # last minute to tell a hunting bigshot to rest
+  def leave_at;      -1; end   # leave the resting room for the island
+  def last_leave;    10; end   # too late to start the trip after this
+  def give_up_at;    14; end   # stop waiting for her / asking
+  def poll_seconds;   5; end
+
+  # Scripts that may be running in the resting room but never need waiting for.
+  def never_wait_for; %w[playsongs rested timequit go4invoker]; end
+
+  def say(msg)
+    echo "[go4invoker] #{msg}"
+  end
+
+  # deadexit posts it to Discord with "[Name]" in front.
+  def notice(text)
+    $deadexit_notice = text
+  end
+
+  # ---- time -------------------------------------------------------------------
+
+  # US Eastern time (game time) whatever this computer's zone is. DST runs from the second
+  # Sunday of March 2:00 to the first Sunday of November 2:00.
+  def eastern(t = Time.now)
+    utc = t.getutc
+    y = utc.year
+    mar8 = Time.utc(y, 3, 8)
+    dst_start = mar8 + ((7 - mar8.wday) % 7) * 86_400 + 7 * 3600
+    nov1 = Time.utc(y, 11, 1)
+    dst_end = nov1 + ((7 - nov1.wday) % 7) * 86_400 + 6 * 3600
+    utc.getlocal((utc >= dst_start && utc < dst_end ? -4 : -5) * 3600)
+  end
+
+  # Minutes from her nearest visit: 0..59.99 after an even-hour arrival, -60..-0.01 before one.
+  def rel_minutes(t = Time.now)
+    e = eastern(t)
+    m = (e.hour % 2) * 60 + e.min + e.sec / 60.0
+    m >= 60 ? m - 120 : m
+  end
+
+  # Epoch second of the arrival rel_minutes is measured from.
+  def visit_epoch(t = Time.now)
+    ((t.to_f - rel_minutes(t) * 60) / 60.0).round * 60
+  end
+
+  def clock(epoch)
+    eastern(Time.at(epoch)).strftime("%H:%M")
+  end
+
+  def ago(seconds)
+    s = seconds.to_i
+    s.negative? ? "just now" : format("%dh%02dm ago", s / 3600, (s % 3600) / 60)
+  end
+
+  # ---- the 4-hour clock ---------------------------------------------------------
+
+  def refresh_seconds
+    h = UserVars['go4invoker_hours'].to_s.strip.to_f
+    h = 3.5 unless h.positive?
+    (h * 3600).to_i
+  end
+
+  def last_spellup
+    v = UserVars['go4invoker_last']
+    v.to_s =~ /\A\d+\z/ ? v.to_i : nil
+  end
+
+  def record_spellup(at = Time.now.to_i)
+    UserVars['go4invoker_last'] = at.to_i
+  end
+
+  def due_for?(visit)
+    last = last_spellup
+    last.nil? || visit - last >= refresh_seconds
+  end
+
+  # The first visit (this one if it's still on, else the next) that is due.
+  def next_due_visit(t = Time.now)
+    v = visit_epoch(t)
+    v += 7200 if rel_minutes(t) > last_leave
+    v += 7200 until due_for?(v)
+    v
+  end
+
+  def status_line
+    last = last_spellup
+    nxt = next_due_visit
+    "last spell-up #{last ? "#{ago(Time.now.to_i - last)} (#{clock(last)})" : 'unknown'}; " \
+      "next trip at the #{clock(nxt)} visit (every #{(refresh_seconds / 3600.0).round(2)} h)"
+  end
+
+  # Any spell-up counts, a manual one included. The hook only sets a global; the main loop saves it.
+  def install_hook
+    DownstreamHook.remove(HOOK) rescue nil
+    DownstreamHook.add(HOOK, proc { |line|
+      begin
+        $go4invoker_paid_at = Time.now.to_i if line =~ PAID
+      rescue StandardError
+        nil
+      end
+      line
+    })
+  end
+
+  def remove_hook
+    DownstreamHook.remove(HOOK) rescue nil
+  end
+
+  def save_paid
+    at = $go4invoker_paid_at
+    return unless at
+
+    $go4invoker_paid_at = nil
+    record_spellup(at)
+  end
+
+  # ---- where things are -----------------------------------------------------------
+
+  def op
+    v = UserVars['op']
+    v.is_a?(Hash) ? v : {}
+  end
+
+  def resting_room
+    id = op['resting_room_id'].to_s.strip
+    id =~ /\A\d+\z/ ? id.to_i : nil
+  end
+
+  def room_id
+    Room.current&.id
+  rescue StandardError
+    nil
+  end
+
+  # go2 only gets to Four Winds with the trinket (every mapped way onto the isle is a
+  # trinket teleport). No path search here: one that never finds 3677 walks the whole map.
+  def fwi_trinket
+    UserVars['mapdb_fwi_trinket'].to_s.strip
+  end
+
+  def invoker_here?
+    (Array(GameObj.npcs) + Array(GameObj.loot)).any? { |o| o.noun.to_s =~ /\Ainvoker\z/i || o.name.to_s =~ /\binvoker\b/i }
+  rescue StandardError
+    false
+  end
+
+  def go(target)
+    Script.run("go2", "#{target} --disable-confirm", { quiet: true })
+  end
+
+  # ---- bigshot --------------------------------------------------------------------
+
+  def bigshot?
+    Script.running?("bigshot")
+  end
+
+  def resting_at_home?
+    home = resting_room
+    !home.nil? && $bigshot_status == :resting && room_id == home
+  end
+
+  # Scripts bigshot runs and waits on around a rest: the profile's "script X" resting and
+  # hunting-prep commands, its resting scripts, and go2. Prep is in there because bigshot can
+  # turn from resting to gearing up in the instant between the check and the pause.
+  def rest_chores
+    cmds = (Array(op['resting_commands']) + Array(op['hunting_prep_commands'])).join(',').split(',').map(&:strip)
+    named = cmds.filter_map { |c| c[/\Ascript\s+(\S+)/i, 1] }
+    named += Array(op['resting_scripts']).join(',').split(',').filter_map { |s| s.strip.split(/\s+/).first }
+    (named + %w[go2]).uniq(&:downcase).reject { |n| never_wait_for.any? { |x| x.casecmp?(n) } }
+  end
+
+  def busy_chores
+    rest_chores.select { |n| Script.running?(n) }
+  end
+
+  def pause_bigshot
+    return false unless bigshot? && !Script.paused?("bigshot")
+
+    Script.pause("bigshot")
+    @paused_bigshot = true
+  end
+
+  def unpause_bigshot
+    return unless @paused_bigshot
+
+    @paused_bigshot = false
+    Script.unpause("bigshot") if Script.running?("bigshot") && Script.paused?("bigshot")
+  end
+
+  # ---- music ----------------------------------------------------------------------
+
+  # Stops playsongs (its before_dying stows the instrument) and returns its arguments for the restart.
+  def stop_music
+    s = Script.running.find { |x| x.name.to_s.casecmp?("playsongs") }
+    return nil unless s
+
+    args = s.vars[0].to_s
+    Script.kill("playsongs")
+    deadline = Time.now + 15
+    sleep 0.2 while Script.running?("playsongs") && Time.now < deadline
+    args
+  end
+
+  def restart_music(args)
+    return if args.nil? || Script.running?("playsongs")
+
+    args.strip.empty? ? Script.start("playsongs") : Script.start("playsongs", args)
+  end
+
+  # ---- the trip -------------------------------------------------------------------
+
+  def silver_on_hand
+    Lich::Util.silver_count.to_i
+  rescue StandardError
+    0
+  end
+
+  # Have 10,000 silver in hand, from the bank nearest to where we stand. Returns true/false.
+  def ensure_silver
+    have = silver_on_hand
+    return true if have >= COST
+
+    need = COST - have
+    go("bank")
+    waitrt?
+    line = dothistimeout("withdraw #{need} silver", 6, WITHDRAW_RESULT).to_s
+    have = silver_on_hand
+    return true if have >= COST
+
+    say "only #{have} silver after the withdraw (the teller said: #{line.strip[0, 120].inspect})."
+    false
+  end
+
+  # Returns :paid, :poor, :absent or :no_answer.
+  def ask_invoker
+    2.times do
+      waitrt?
+      line = dothistimeout("ask invoker for spells", 5, Regexp.union(PRICE, PAID, POOR, ABSENT)).to_s
+      if line =~ PAID
+        record_spellup
+        $go4invoker_paid_at = nil
+        return :paid
+      end
+      return :poor if line =~ POOR
+      return :absent if line =~ ABSENT
+      return :no_answer unless line =~ PRICE
+    end
+    :no_answer
+  end
+
+  # Standing in 3677: wait for her to show, then ask. Asks blind every 20 s from her arrival time
+  # on, in case she doesn't show up in the room objects.
+  def get_spells
+    next_probe = Time.now
+    loop do
+      r = rel_minutes
+      if invoker_here? || (r >= 0 && Time.now >= next_probe)
+        result = ask_invoker
+        return result unless result == :absent
+
+        next_probe = Time.now + 20
+      end
+      return :absent if r >= give_up_at || r < -20
+
+      sleep 1
+    end
+  end
+
+  # Bank if needed, island, spells, home. Returns :paid, :poor, :no_silver, :absent,
+  # :no_answer or :unreachable.
+  def trip
+    home = room_id
+    music = stop_music
+    result = nil
+    begin
+      waitrt?
+      waitcastrt?
+      unless ensure_silver
+        result = :no_silver
+        return result
+      end
+      go(INVOKER_ROOM)
+      if room_id != INVOKER_ROOM
+        go(INVOKER_ROOM) # one retry: go2 sometimes stops after a teleport
+      end
+      if room_id != INVOKER_ROOM
+        result = :unreachable
+        return result
+      end
+      result = get_spells
+    ensure
+      if home && room_id != home
+        go(home)
+        go(home) if room_id != home
+      end
+      back = home.nil? || room_id == home
+      say "!! couldn't get back to room #{home} (in #{room_id.inspect})." unless back
+      notice("go4invoker could not get back to room #{home} after the invoker trip (now in #{room_id.inspect}).") unless back
+      restart_music(music) if back
+    end
+    result
+  end
+
+  def report(result, visit)
+    case result
+    when :paid
+      say "spelled up. #{status_line}."
+    when :no_silver
+      notice("invoker trip skipped: couldn't get 10,000 silver from the bank (#{clock(visit)} visit).")
+      say "!! couldn't get 10,000 silver -- no spells this visit."
+    when :poor
+      notice("the invoker said I didn't have enough silver (#{clock(visit)} visit).")
+      say "!! she said you don't have enough silver."
+    when :absent
+      notice("the invoker never showed at Honeysuckle and Rose Avenue (#{clock(visit)} visit).")
+      say "!! she never showed by #{give_up_at} past the hour."
+    when :unreachable
+      notice("go4invoker couldn't get to room #{INVOKER_ROOM} (FWI trinket?) for the #{clock(visit)} visit.")
+      say "!! couldn't get to room #{INVOKER_ROOM}. Is go2's FWI trinket set (;go2 --fwi-trinket=<name>)?"
+    else
+      notice("the invoker didn't answer (#{clock(visit)} visit).")
+      say "!! no answer from the invoker."
+    end
+  end
+
+  # bigshot is resting at home inside the window: hold it, let the chores finish, go.
+  def run_visit(visit)
+    pause_bigshot
+    say "holding bigshot for the invoker's #{clock(visit)} visit."
+    said = false
+    until (busy = busy_chores).empty?
+      if rel_minutes > last_leave
+        say "rest chores (#{busy.join(', ')}) still running at #{last_leave} past -- skipping this visit."
+        notice("invoker trip skipped: bigshot's rest chores (#{busy.join(', ')}) ran past #{clock(visit + last_leave * 60)}.")
+        return :late
+      end
+      say "waiting for #{busy.join(', ')} to finish." unless said
+      said = true
+      sleep 1
+    end
+    sleep 1 while rel_minutes < leave_at
+    result = trip
+    report(result, visit)
+    result
+  ensure
+    unpause_bigshot
+  end
+
+  # One poll of the watcher. Returns a symbol saying what it did (for tests).
+  def tick(now = Time.now)
+    save_paid
+    visit = visit_epoch(now)
+    r = rel_minutes(now)
+    return :outside if r < window_open || r > last_leave
+    return :not_due unless due_for?(visit)
+    return :handled if @handled_visit == visit
+    return :no_bigshot unless bigshot?
+    return :bigshot_paused if Script.paused?("bigshot") # someone else (deader, disarmguard) paused it
+    return :no_resting_room if resting_room.nil?
+
+    if resting_at_home?
+      @handled_visit = visit
+      run_visit(visit)
+      return :visited
+    end
+    return :resting_elsewhere if $bigshot_status == :resting # on its way home
+    return :too_late_to_force if r > force_until
+    return :forced if @forced_visit == visit
+
+    @forced_visit = visit
+    $rest_reason = "invoker spell-up." if $rest_reason.to_s.strip.empty?
+    $bigshot_should_rest = true
+    say "the invoker arrives at #{clock(visit)} -- sending bigshot home to rest first."
+    :force_rest
+  end
+
+  def watch
+    if fwi_trinket.empty?
+      say "go2 has no FWI trinket for #{Char.name}, so it can't get to the invoker on Four Winds Isle. " \
+          "Set one with ;go2 --fwi-trinket=<name> and start this again. Exiting."
+      return
+    end
+    say "watching. #{status_line}."
+    loop do
+      exit if checkdead
+      begin
+        tick
+      rescue StandardError => e
+        say "error: #{e.class} #{e.message}"
+        unpause_bigshot
+      end
+      $go4invoker_status = status_line
+      sleep poll_seconds
+    end
+  end
+
+  def now_command
+    if fwi_trinket.empty?
+      say "go2 has no FWI trinket for #{Char.name} (;go2 --fwi-trinket=<name>), so it can't get to Four Winds Isle."
+      return
+    end
+    r = rel_minutes
+    visit = visit_epoch
+    if r >= give_up_at || r < -15
+      nxt = visit + (r >= 0 ? 7200 : 0)
+      say "she isn't there now; next visit at #{clock(nxt)}."
+      return
+    end
+    pause_bigshot
+    begin
+      waitrt?
+      result = trip
+      report(result, visit)
+    ensure
+      unpause_bigshot
+    end
+  end
+
+  def run(arg)
+    @paused_bigshot = false
+    @handled_visit = nil
+    @forced_visit = nil
+    $go4invoker_paid_at = nil
+    case arg.to_s.strip.downcase
+    when ""
+      install_hook
+      watch
+    when "now"
+      install_hook
+      now_command
+      save_paid
+    when "status"
+      say status_line
+      say "bigshot #{bigshot? ? 'running' : 'not running'}; resting room #{resting_room.inspect}; " \
+          "FWI trinket #{UserVars['mapdb_fwi_trinket'].inspect}"
+    when "done"
+      record_spellup
+      say "recorded a spell-up now. #{status_line}."
+    else
+      say "Unknown option '#{arg}'. Use ;go4invoker, ;go4invoker now, ;go4invoker status or ;go4invoker done."
+    end
+  end
+end
+
+before_dying do
+  Go4Invoker.unpause_bigshot
+  Go4Invoker.remove_hook
+  Go4Invoker.save_paid
+  $go4invoker_status = nil
+end
+
+Go4Invoker.run(Script.current.vars[1])
