@@ -4641,7 +4641,8 @@ module BlackArts
       return_room = Room.current.id
 
       forage_list = { herb_string => repetitions }
-      Actions.forage(forage_list)
+      short = Actions.forage(forage_list)
+      Util.msg("yellow", " Couldn't find all of them: still #{short.values.first} short.") unless short.empty?
       Util.travel(return_room)
       Hunting.post_hunt
     end
@@ -8710,7 +8711,20 @@ module BlackArts
       Util.silver_deposit
     end
 
+    # 11/11: hill trolls, forest trolls and a carrion worm chased fizzarts out of all 10 rooms
+    # forage_find offered ("Run from creatures" is on) with 9 of 18 twisted twigs. It carried on,
+    # bought the rest (walking Landing -> Icemule -> Landing past the Glatoph bandits) and then
+    # exited mid-recipe with "Error: Missing twisted twig" after 3 of 6 wands. Now each pass takes
+    # the next 10 nearest rooms not tried yet, and once none are left it starts over from the
+    # nearest (the creatures may have moved on), up to forage_passes passes. Returns the herbs
+    # still short, { herb => how many more }, so callers can stop before spending anything.
+    # A method, not a constant (Lich keeps constants until a restart).
+    def self.forage_passes
+      4
+    end
+
     def self.forage(forage_list)
+      short = {}
       for herb, num in forage_list.dup
 
         location_list = Actions.forage_find(herb)
@@ -8737,93 +8751,112 @@ module BlackArts
 
         Util.mapped_room
 
-        location_list.each { |room|
-          Util.travel(room)
-          Util.wait_rt
-          unless (GameObj.targets.count.positive? && BlackArts.data.settings[:forage_options].include?("run"))
-            loop {
-              unless Util.in_town?
+        tried = []
+        Actions.forage_passes.times { |pass|
+          if pass.positive?
+            location_list = Actions.forage_find(herb_key, skip: tried)
+            if location_list.empty?
+              tried = []
+              location_list = Actions.forage_find(herb_key)
+            end
+            break if location_list.empty?
+
+            Util.msg("yellow", " #{Util.title_case(forage_item)}: #{found_count} / #{num} after #{tried.size} rooms; trying #{location_list.size} more (pass #{pass + 1} of #{Actions.forage_passes}).")
+          end
+
+          location_list.each { |room|
+            tried << room
+              Util.travel(room)
+              Util.wait_rt
+              unless (GameObj.targets.count.positive? && BlackArts.data.settings[:forage_options].include?("run"))
+                loop {
+                  unless Util.in_town?
+                    if Char.prof =~ /Cleric|Empath/i && BlackArts.data.settings[:forage_options].include?("use_213")
+                      lines = Util.get_lines("sense", /You open your soul to the lesser/)
+                      if lines.any? { |l| l =~ /Nothing stands out to you/ }
+                        Util.cast_spell(213)
+                      end
+                    end
+
+                    Util.get_lines("spell active", /<dialogData id='Active Spells'/)
+
+                    if BlackArts.data.settings[:forage_options].include?("use_709") && !GameObj.npcs.any? { |c| c.name =~ /^(?:arm|appendage|claw|limb|pincer|tentacle)s?$|^(?:palpus|palpi)$/i } && GameObj.targets.count.positive?
+                      Util.cast_spell(709)
+                    end
+
+                    # Cast any helper spells before kneeling
+                    Util.cast_spell(919) if !Effects::Buffs.to_h.has_key?(919) && !Effects::Cooldowns.to_h.has_key?(919) && BlackArts.data.settings[:forage_options].include?("use_919")
+                    Util.cast_spell(140) if !Effects::Buffs.to_h.has_key?(140) && !Effects::Cooldowns.to_h.has_key?(140) && BlackArts.data.settings[:forage_options].include?("use_140")
+                    Util.cast_spell(9704) if !Effects::Buffs.to_h.has_key?(5309) && BlackArts.data.settings[:forage_options].include?("use_resolve")
+                  end
+
+                  Util.cast_spell(506) if !Effects::Buffs.to_h.has_key?(506) && !Effects::Cooldowns.to_h.has_key?(506) && BlackArts.data.settings[:forage_options].include?("use_506")
+
+                  empty_hands
+
+                  until kneeling?
+                    result = fput 'kneel'
+                    break if result =~ /That's not possible to do while swimming|How can you do that while swimming?|Don't be silly...you're in a creek!/
+                    sleep 0.2
+                  end
+
+                  forage_result = dothistimeout "forage for #{forage_item}", 2, BlackArts.data.forage_result
+                  Util.wait_rt
+                  if forage_result =~ /^You forage briefly and manage to find/
+                    item = [GameObj.right_hand, GameObj.left_hand].find { |i| i.noun != nil }
+
+                    forage_list[herb_key] = forage_list[herb_key].to_i - herb_dose
+                    found_count += herb_dose
+
+                    Inventory.store_item(BlackArts.data.sacks["herb"], item)
+
+                    Util.msg "yellow", " #{Util.title_case(forage_item)}: #{found_count} / #{num}"
+                    _respond
+
+                    break if found_count >= num.to_i
+
+                  elsif forage_result =~ BlackArts.data.forage_injury
+                    Util.wait_rt
+                    Util.cast_spell(114) if poisoned?
+                  elsif forage_result.nil? || (forage_result =~ /^As you carefully forage around you (can find no hint|see no evidence) of what you are looking for(?: right now, though you are fairly certain this is where it can be found)?\.|As you forage around, you notice that someone has been foraging here recently and you are unable to find anything useful/)
+                    break
+                  end
+
+                  if XMLData.injuries.any? { |_a, h| h['wound'] > 1 || h['scar'] > 1 } || percenthealth < 70
+                    return_room = Room.current.id
+                    Util.travel("#{Char.prof.downcase} alchemy administrator")
+                    Script.run('eherbs')
+                    Util.go2(return_room)
+                  end
+
+                  break if GameObj.targets.count.positive? && BlackArts.data.settings[:forage_options].include?("run")
+                }
+
+                fput 'stand' until standing?
+
+                fill_hands
+
                 if Char.prof =~ /Cleric|Empath/i && BlackArts.data.settings[:forage_options].include?("use_213")
                   lines = Util.get_lines("sense", /You open your soul to the lesser/)
-                  if lines.any? { |l| l =~ /Nothing stands out to you/ }
-                    Util.cast_spell(213)
+                  if lines.any? { |l| l =~ /An obvious presence of peace saturates the area and a feeling of safety overwhelms you/ }
+                    fput "stop 213"
                   end
                 end
 
-                Util.get_lines("spell active", /<dialogData id='Active Spells'/)
-
-                if BlackArts.data.settings[:forage_options].include?("use_709") && !GameObj.npcs.any? { |c| c.name =~ /^(?:arm|appendage|claw|limb|pincer|tentacle)s?$|^(?:palpus|palpi)$/i } && GameObj.targets.count.positive?
-                  Util.cast_spell(709)
-                end
-
-                # Cast any helper spells before kneeling
-                Util.cast_spell(919) if !Effects::Buffs.to_h.has_key?(919) && !Effects::Cooldowns.to_h.has_key?(919) && BlackArts.data.settings[:forage_options].include?("use_919")
-                Util.cast_spell(140) if !Effects::Buffs.to_h.has_key?(140) && !Effects::Cooldowns.to_h.has_key?(140) && BlackArts.data.settings[:forage_options].include?("use_140")
-                Util.cast_spell(9704) if !Effects::Buffs.to_h.has_key?(5309) && BlackArts.data.settings[:forage_options].include?("use_resolve")
-              end
-
-              Util.cast_spell(506) if !Effects::Buffs.to_h.has_key?(506) && !Effects::Cooldowns.to_h.has_key?(506) && BlackArts.data.settings[:forage_options].include?("use_506")
-
-              empty_hands
-
-              until kneeling?
-                result = fput 'kneel'
-                break if result =~ /That's not possible to do while swimming|How can you do that while swimming?|Don't be silly...you're in a creek!/
-                sleep 0.2
-              end
-
-              forage_result = dothistimeout "forage for #{forage_item}", 2, BlackArts.data.forage_result
-              Util.wait_rt
-              if forage_result =~ /^You forage briefly and manage to find/
-                item = [GameObj.right_hand, GameObj.left_hand].find { |i| i.noun != nil }
-
-                forage_list[herb_key] = forage_list[herb_key].to_i - herb_dose
-                found_count += herb_dose
-
-                Inventory.store_item(BlackArts.data.sacks["herb"], item)
-
-                Util.msg "yellow", " #{Util.title_case(forage_item)}: #{found_count} / #{num}"
-                _respond
-
                 break if found_count >= num.to_i
 
-              elsif forage_result =~ BlackArts.data.forage_injury
-                Util.wait_rt
-                Util.cast_spell(114) if poisoned?
-              elsif forage_result.nil? || (forage_result =~ /^As you carefully forage around you (can find no hint|see no evidence) of what you are looking for(?: right now, though you are fairly certain this is where it can be found)?\.|As you forage around, you notice that someone has been foraging here recently and you are unable to find anything useful/)
-                break
               end
-
-              if XMLData.injuries.any? { |_a, h| h['wound'] > 1 || h['scar'] > 1 } || percenthealth < 70
-                return_room = Room.current.id
-                Util.travel("#{Char.prof.downcase} alchemy administrator")
-                Script.run('eherbs')
-                Util.go2(return_room)
-              end
-
-              break if GameObj.targets.count.positive? && BlackArts.data.settings[:forage_options].include?("run")
-            }
-
-            fput 'stand' until standing?
-
-            fill_hands
-
-            if Char.prof =~ /Cleric|Empath/i && BlackArts.data.settings[:forage_options].include?("use_213")
-              lines = Util.get_lines("sense", /You open your soul to the lesser/)
-              if lines.any? { |l| l =~ /An obvious presence of peace saturates the area and a feeling of safety overwhelms you/ }
-                fput "stop 213"
-              end
-            end
-
-            break if found_count >= num.to_i
-
-          end
+          }
+          break if found_count >= num.to_i
         }
+        short[herb_key] = num.to_i - found_count if found_count < num.to_i
 
       end
+      short
     end
 
-    def self.forage_find(herb)
+    # skip: rooms already tried this forage, so the next 10 nearest are offered instead
+    def self.forage_find(herb, skip: [])
       Util.msg("debug", "Actions.forage_find: herb - #{herb}")
       herb = Util.normalize_herb(herb)
 
@@ -8844,6 +8877,8 @@ module BlackArts
           Room[room].title.join(' ').scan(/\btable\b|\branger\b/i).any? ||
           BlackArts.data.no_forage.include?(room)
       }
+
+      location_list -= skip
 
       # Sort the list and reduce to the top 10
       _previous, shortest_distances = BlackArts.data.current_room.dijkstra
@@ -8944,12 +8979,17 @@ module BlackArts
         Actions.kill_for(check_info[:kill_for])
       end
       if check_info[:forage].size.positive?
-        Actions.forage(check_info[:forage])
+        short = Actions.forage(check_info[:forage])
         Util.travel("#{Char.prof.downcase} alchemy administrator")
         if XMLData.injuries.any? { |_a, h| h['wound'] > 0 || h['scar'] > 0 } || percenthealth < 95
           Script.run('eherbs')
         end
         Hunting.post_hunt
+        # Not enough to make the recipe: stop before buying the rest (see Actions.forage)
+        unless short.empty?
+          Util.msg("yellow", " Couldn't forage enough: still need #{short.map { |herb, count| "#{count} #{herb}" }.join(', ')}. Stopping before buying anything; run ;fizzarts again later.")
+          exit
+        end
       end
       if check_info[:buy].size.positive?
         Actions.buy(check_info[:buy])
