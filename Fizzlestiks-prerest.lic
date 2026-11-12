@@ -26,6 +26,12 @@ end
 fput "store weapon"
 
 Script.run("eherbs")
+# Purify this trip's gems with Purification Song (1004) before the gem shop buys them
+# (11/12). Gems go back where they were (eloot sells them); orb gems go to the linen
+# pouch, which isn't a STOW target, so eloot never sells from it. fizzpure stops each
+# gem at "improves somewhat", heals with eherbs itself if one explodes, and gives up
+# (leaving the rest for sale) if mana or hit points don't come back within 10 minutes.
+Script.run("fizzpure", "--raw=cloak,backpack,haversack --orbs=linen.pouch")
 Script.start("eloot_guard") unless Script.running?("eloot_guard")  # unpauses eloot when its containers are full
 Script.run("diskwait")  # eloot only finds the disk's boxes if the disk is here when the sell starts (10/28)
 Script.run("eloot", "sell")

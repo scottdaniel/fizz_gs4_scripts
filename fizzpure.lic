@@ -1,0 +1,574 @@
+# fizzpure.lic
+=begin
+      author: Fizzlestiks (fork of puritan.lic 1.2.0 by Ondreian)
+        name: fizzpure
+        game: gemstone
+        tags: bard, 1004, purify, purification song, gems, orb gem, pure gem
+    requires: Lich > 5.14.2
+     version: 1.0.0
+        note: Written with assistance from Claude (Anthropic).
+
+  Purifies your gems with Purification Song (1004), one gem at a time, and stops
+  singing to a gem as soon as it gets risky. Orb (pure) gems go to their own container.
+
+  Usage:
+    ;fizzpure --raw=cloak --orbs=linen.pouch
+    ;fizzpure --raw=cloak,backpack,haversack --orbs=linen.pouch
+    ;fizzpure --raw=cloak --orbs=pouch --dry-run     list what it would sing to, no singing
+
+  Options:
+    --raw=<containers>     where the gems are (comma list; adjective.noun like the game)
+    --orbs=<container>     where orb gems go (required, keep it out of what eloot sells)
+    --sung=<container>     where purified gems go (default: back where each came from)
+    --filter=<words>       only gems whose name has one of these (comma list)
+    --max-rounds=<n>       most songs per gem (default 20)
+    --min-value=<silver>   skip gems that appraise under this (needs 25+ trading)
+    --min-health=<hp>      don't sing below this many hit points (default 70)
+    --mana-wait=<seconds>  how long to wait for mana before giving up (default 600)
+    --dry-run              list the gems and stop
+    --silent               no per-gem report
+
+  When it stops singing to a gem (gswiki, Purification Song (1004), 2026-11-12):
+    keeps singing  "...becomes more perfect." / "the gem hums in response to the resonance
+                   of your voice" (getting close to what your ranks can do)
+    STOPS          "...the crystalline structure of the gem improves somewhat."
+                   That's the last fairly safe message; the next ones are "crack loudly and
+                   strain" and "severely affecting", and then the gem explodes in your hand.
+    STOPS          "cannot be purified any further" (as good as it gets)
+    ORB            "...the very essence flows into it filling the imperfections." (just
+                   turned into an orb) or "As the gem resonates in response to your voice,
+                   you sense that it cannot be purified any further." (already an orb)
+  Tiny pearls are always orbs (gswiki "Pure gem"; orb_check found one 2026-10-20), so they
+  go straight to the orb container without a song. Mother-of-pearl is skipped (puritan:
+  always misfires). Gems on eloot's sell_exclude list are left alone.
+
+  Every song is gated: at least the spell's mana cost in hand right before the SING (no
+  overexertion), at least --min-health hit points (an exploding gem can do about 60),
+  no wounds worse than minor and not stunned. If a gem explodes, eherbs runs before the
+  next one. Anything it can't sort out (no mana after --mana-wait, can't heal) ends the
+  run with the rest of the gems left as they are, so a prerest can carry on and sell them.
+
+  Changes from puritan.lic 1.2.0:
+    - Stops at "improves somewhat" and at "severely affecting" (puritan kept singing).
+    - Tells an orb ("resonates ... cannot be purified") from a maxed gem ("vibrates ...")
+      by the song text, so no loresinging; --loresing and --mage are gone.
+    - Purified gems go back to the container they came from unless --sung is given, and
+      --raw takes several containers.
+    - Never takes armor off (puritan did by default), never waits forever for healing or
+      mana, and never raises an error mid-run: it puts the gem back and stops.
+    - Tiny pearls go to the orb container instead of being skipped.
+    - Gems already finished this session are remembered by ID and not sung again.
+    - --regain-mana, --herbs, --skip-armor and the hunting.rb team requests are gone.
+=end
+
+require 'yaml'
+
+module FizzPure
+  VERSION = '1.0.0'
+  SPELL   = 1004
+  NAME    = 'Purification Song'
+
+  # ---- song outcomes. None of these have been seen in our own logs yet (no 1004 casts
+  # as of 2026-11-12): ESSENCE and SOMEWHAT are quoted by Scott, the rest are gswiki's.
+  # (the empty right hand afterwards is the real test, see sing)
+  SHATTER  = /Your focused voice causes .+ to shatter/
+  ESSENCE  = /very essence flows into it filling the imperfections/
+  ORB_MAX  = /resonates in response to your voice, you sense that it cannot be purified/
+  MAX      = /cannot be purified any further/
+  SEVERE   = /resonance of your voice is severely affecting/
+  STRAIN   = /crack loudly and strain/
+  SOMEWHAT = /crystalline structure of the gem improves somewhat/
+  BETTER   = /becomes more perfect|hums in response to the resonance of your voice|smoother and more pure in color|sparkles a little more/
+  MISFIRE  = /song misfires|misfires/
+  HINDERED = /^\[Spell Hindrance for /
+  NOT_HELD = /must be holding|^What were you referring to|^I could not find|^Sing at what|^You are not holding/
+  NO_MANA  = /^But you don't have any mana|don't have enough mana|^You don't have a spell prepared|spellsong is not ready/
+  SING_RT  = /Sing Roundtime|Cast Roundtime|^Roundtime/
+  # any line that says the song was answered, so a short quiet spell after it ends the read
+  ANSWERED = Regexp.union(SHATTER, ESSENCE, MAX, SEVERE, STRAIN, SOMEWHAT, BETTER, MISFIRE, HINDERED)
+  SING_DONE = Regexp.union(SING_RT, NOT_HELD, NO_MANA)
+
+  PREP_DONE = /^Your spell(?:song)? is ready\.|^You already have a spell readied|^You can't think clearly enough|^You are concentrating too intently|^You are too injured|^But you don't have any mana|^You can't make that dextrous|^You do not know that spell|cough up some blood/
+  GET_DONE  = /^You (?:remove|get|grab|pull|take|pick up|carefully remove|retrieve)|^Get what\?|^I could not find|^What were you referring to|^You need a free hand|^You can't/
+  PUT_DONE  = /^You (?:put|place|slip|tuck|add|drop|carefully place|gently place)|^I could not find|^What were you referring to|won't fit|^That is closed|too (?:full|heavy|large)/
+  APPRAISE  = /worth (?:approximately |about )?(?<value>[\d,]+) silvers?/
+
+  TINY_PEARL = /\btiny .*pearl\b/
+  SKIP_NAMES = /mother-of-pearl/
+
+  # ---------------------------------------------------------------- options
+  def self.opts
+    @opts ||= Script.current.vars[1..-1].to_a.each_with_object({}) { |arg, h|
+      if arg =~ /\A--([\w-]+)(?:=(.*))?\z/m
+        h[Regexp.last_match(1).tr('-', '_').to_sym] = Regexp.last_match(2).nil? ? true : Regexp.last_match(2)
+      else
+        h[arg.downcase.to_sym] = true
+      end
+    }
+  end
+
+  def self.list_opt(key)
+    opts[key].to_s.split(',').map(&:strip).reject(&:empty?)
+  end
+
+  def self.int_opt(key, default)
+    opts[key].to_s =~ /\A\d+\z/ ? opts[key].to_i : default
+  end
+
+  def self.msg(text)
+    respond "[fizzpure] #{text}"
+  end
+
+  def self.bold(text)
+    _respond "<pushBold/>[fizzpure] #{text}<popBold/>"
+  end
+
+  # ---------------------------------------------------------------- containers
+  # "linen.pouch", "linen pouch", "my pouch", "pouch": the last word is the noun and every
+  # other word starts a word of the name (same as orb_check / charge_me_up_scotty)
+  def self.matches?(obj, name)
+    words = name.to_s.strip.sub(/\Amy\s+/i, '').split(/[\s.]+/)
+    return false if words.empty?
+
+    obj.noun.to_s.casecmp?(words.last) && words[0..-2].all? { |word| obj.name.to_s =~ /\b#{Regexp.escape(word)}/i }
+  end
+
+  def self.find_container(name)
+    GameObj.inv.find { |obj| matches?(obj, name) }
+  end
+
+  # a fresh LOOK IN so the IDs are live (cached contents go stale)
+  def self.look_in(container)
+    fput "look in ##{container.id}"
+    container.contents.to_a
+  end
+
+  # ---------------------------------------------------------------- eloot's keep list
+  def self.sell_exclude
+    return @sell_exclude if defined?(@sell_exclude)
+
+    path = File.join(DATA_DIR, XMLData.game, Char.name, 'eloot.yaml')
+    settings = (YAML.respond_to?(:unsafe_load_file) ? YAML.unsafe_load_file(path) : YAML.load_file(path)) rescue nil
+    list = settings.is_a?(Hash) ? Array(settings[:sell_exclude] || settings['sell_exclude']) : []
+    @sell_exclude = list.empty? ? nil : Regexp.union(list.map { |entry| /\b(?:#{entry})\b/ })
+  end
+
+  # ---------------------------------------------------------------- reading the game
+  # put, not fput (fput swallows the first reply line). Reads until `done`, or, once a line
+  # matching `settle` has been seen, until a second goes by with nothing new.
+  def self.collect(action, done, timeout: 6, settle: nil)
+    lines = []
+    Script.current.clear
+    put action
+    end_time = Time.now + timeout
+    last_line = Time.now
+    loop do
+      line = get?
+      if line
+        lines << line
+        last_line = Time.now
+        if line =~ /^(?:\.\.\.w|W)ait ([0-9]+) sec/
+          sleep [Regexp.last_match(1).to_i - 0.5, 0.3].max
+          put action
+          end_time = Time.now + timeout
+          next
+        end
+        break if line =~ done
+      else
+        break if settle && Time.now - last_line > 1.0 && lines.any? { |l| l =~ settle }
+        sleep 0.1
+      end
+      break if Time.now > end_time
+    end
+    lines
+  end
+
+  def self.wait_for(seconds)
+    end_time = Time.now + seconds
+    until yield
+      return false if Time.now > end_time
+      sleep 0.5
+    end
+    true
+  end
+
+  def self.worst_wound
+    Wounds.all_wounds.values.map(&:to_i).max.to_i
+  rescue StandardError
+    0
+  end
+
+  def self.gem_in_hand
+    hand = GameObj.right_hand
+    hand.id.nil? ? nil : hand
+  end
+
+  # ---------------------------------------------------------------- moving gems
+  def self.hold(gem)
+    return true if GameObj.right_hand.id.to_s == gem.id.to_s
+
+    waitrt?
+    collect("get ##{gem.id}", GET_DONE, timeout: 4)
+    wait_for(2) { GameObj.right_hand.id.to_s == gem.id.to_s }
+  end
+
+  # whatever's in the right hand goes into `container`; true if the hand ends up empty
+  def self.stash(container)
+    hand = gem_in_hand
+    return true if hand.nil?
+
+    waitrt?
+    lines = collect("put ##{hand.id} in ##{container.id}", PUT_DONE, timeout: 4)
+    return true if wait_for(2) { GameObj.right_hand.id.nil? }
+
+    msg "Couldn't put #{hand.name} in #{container.name}: #{lines.last}"
+    false
+  end
+
+  # ---------------------------------------------------------------- staying safe
+  # true when it's safe and affordable to sing right now. Waits (up to --mana-wait) for
+  # mana and hit points to come back; stuns are waited out.
+  def self.ready_to_sing?
+    cost = Spell[SPELL].mana_cost
+    unless wait_for(60) { !stunned? }
+      @stop_reason = 'still stunned after a minute'
+      return false
+    end
+    if worst_wound > 1
+      @stop_reason = 'wounded (worse than minor)'
+      return false
+    end
+    if checkhealth < @min_health
+      msg "Waiting for #{@min_health} hit points before singing (you have #{checkhealth})."
+      unless wait_for(@mana_wait) { checkhealth >= @min_health }
+        @stop_reason = "hit points stayed under #{@min_health}"
+        return false
+      end
+    end
+    if checkmana < cost
+      msg "Waiting for #{cost} mana (you have #{checkmana})."
+      unless wait_for(@mana_wait) { checkmana >= cost }
+        @stop_reason = "mana stayed under #{cost} for #{@mana_wait} seconds"
+        return false
+      end
+    end
+    true
+  end
+
+  # eherbs after an explosion. Hands must be empty first (eherbs needs them).
+  def self.heal!
+    return true if worst_wound <= 1 && checkhealth >= @min_health
+    return false if @heal_runs >= 3
+
+    @heal_runs += 1
+    msg 'Healing up with eherbs before the next gem.'
+    Script.run('eherbs')
+    wait_for(5) { worst_wound <= 1 }
+  end
+
+  # ---------------------------------------------------------------- the song
+  def self.prepare
+    return true if checkprep == NAME
+
+    waitrt?
+    waitcastrt?
+    collect('release', /^You feel the magic|^You don't have a prepared spell|^You release|^You let/, timeout: 3) unless checkprep == 'None'
+    lines = collect("prepare #{SPELL}", PREP_DONE, timeout: 4)
+    return true if wait_for(2) { checkprep == NAME }
+
+    msg "Couldn't prepare #{NAME}. The game said:"
+    lines.last(4).each { |line| respond "    #{line}" }
+    false
+  end
+
+  def self.classify(lines)
+    text = lines.join("\n")
+    return :shatter  if text =~ SHATTER
+    return :orb      if text =~ ESSENCE || text =~ ORB_MAX
+    return :max      if text =~ MAX
+    return :severe   if text =~ SEVERE
+    return :strain   if text =~ STRAIN
+    return :somewhat if text =~ SOMEWHAT
+    return :misfire  if text =~ MISFIRE
+    return :better   if text =~ BETTER
+    return :hindered if text =~ HINDERED
+    return :not_held if text =~ NOT_HELD
+    return :no_mana  if text =~ NO_MANA
+
+    :unknown
+  end
+
+  # one song at the gem in the right hand; returns [outcome, lines]
+  def self.sing(gem)
+    Spell.lock_cast
+    begin
+      return [:no_prep, []] unless prepare
+
+      # re-read mana right before the SING: never cast short of the full cost
+      cost = Spell[SPELL].mana_cost
+      return [:no_mana, []] if checkmana < cost
+
+      waitrt?
+      waitcastrt?
+      lines = collect("sing ##{gem.id}", SING_DONE, timeout: 8, settle: ANSWERED)
+      outcome = classify(lines)
+      # the hand is the real test of an explosion: no gem, no gem
+      outcome = :shatter if outcome != :not_held && gem_in_hand.nil?
+      [outcome, lines]
+    ensure
+      Spell.unlock_cast
+    end
+  end
+
+  def self.appraise(gem)
+    return nil unless @appraise && gem
+
+    waitrt?
+    lines = collect("appraise ##{gem.id}", APPRAISE, timeout: 4)
+    found = lines.join(' ')[APPRAISE, :value]
+    found && found.delete(',').to_i
+  end
+
+  # ---------------------------------------------------------------- one gem
+  def self.finish(gem_name, home, result, rounds)
+    dest = result == :orb ? @orbs : (@sung || home)
+    hand = gem_in_hand
+    unless stash(dest)
+      # the orb container is full or gone: back where it came from (eloot will sell it,
+      # so say so loudly)
+      dest = [home, @sung].compact.find { |container| stash(container) }
+      if result == :orb
+        @orbs_found.delete(gem_name)
+        @orbs_stranded << gem_name
+        bold "#{gem_name} is an ORB but wouldn't go in #{@orbs.name}; it's in #{dest ? dest.name : 'your hand'}."
+      end
+    end
+    $fizzpure_done[hand.id.to_s] = result if hand && result != :stopped
+    @report << [gem_name, result, rounds]
+    msg "#{gem_name}: #{describe(result)} after #{rounds} #{rounds == 1 ? 'song' : 'songs'}#{result == :orb && dest == @orbs ? " -> #{@orbs.name}" : ''}." unless opts[:silent]
+  end
+
+  def self.describe(result)
+    {
+      orb: 'ORB', max: 'as pure as it gets', somewhat: 'stopped at "improves somewhat"',
+      strain: 'stopped at "crack loudly and strain"', severe: 'stopped at "severely affecting"',
+      misfire: 'song misfired', capped: 'hit --max-rounds', unknown: 'unrecognized reply, stopped',
+      hindered: 'armor kept spoiling the song', not_held: 'lost track of it', stopped: 'run stopped'
+    }.fetch(result, result.to_s)
+  end
+
+  # returns false when the whole run should stop
+  def self.purify(gem, home)
+    unless hold(gem)
+      msg "Couldn't pick up #{gem.name}; skipping it."
+      return true
+    end
+    name = gem.name
+
+    start_value = appraise(gem)
+    if @min_value && start_value && start_value < @min_value
+      msg "#{name} appraises at #{start_value}, under --min-value; leaving it."
+      stash(home)
+      return true
+    end
+
+    rounds = 0
+    hindered = 0
+    loop do
+      if rounds >= @max_rounds
+        finish(name, home, :capped, rounds)
+        return true
+      end
+      unless ready_to_sing?
+        finish(name, home, :stopped, rounds)
+        return false
+      end
+
+      held = gem_in_hand
+      if held.nil?
+        msg "#{name} isn't in your hand any more; moving on."
+        return true
+      end
+      outcome, lines = sing(held)
+      case outcome
+      when :better
+        rounds += 1
+        hindered = 0
+      when :hindered
+        hindered += 1
+        if hindered >= 3
+          finish(name, home, :hindered, rounds)
+          return true
+        end
+      when :orb
+        rounds += 1
+        @orbs_found << name
+        track_earnings(start_value)
+        finish(name, home, :orb, rounds)
+        return true
+      when :max, :somewhat, :strain, :severe, :misfire
+        rounds += 1
+        track_earnings(start_value)
+        finish(name, home, outcome, rounds)
+        return true
+      when :shatter
+        @shattered << name
+        bold "#{name} exploded after #{rounds + 1} #{rounds.zero? ? 'song' : 'songs'}."
+        lines.each { |line| respond "    #{line}" } if lines.none? { |l| l =~ SHATTER }
+        @earnings -= start_value if start_value
+        return heal! ? true : (@stop_reason = 'still hurt after eherbs'; false)
+      when :no_mana, :no_prep
+        @stop_reason = outcome == :no_prep ? "couldn't prepare #{NAME}" : 'ran out of mana'
+        finish(name, home, :stopped, rounds)
+        return false
+      else # :not_held, :unknown
+        msg "Didn't recognize the reply to singing at #{name}; leaving it. The game said:"
+        lines.last(6).each { |line| respond "    #{line}" }
+        finish(name, home, outcome, rounds)
+        return true
+      end
+    end
+  end
+
+  # the purified gem is still in hand here: appraise it before it's put away
+  def self.track_earnings(start_value)
+    return unless start_value
+
+    final_value = appraise(gem_in_hand)
+    @earnings += final_value - start_value if final_value
+  end
+
+  # ---------------------------------------------------------------- the run
+  def self.candidates(container)
+    words = list_opt(:filter)
+    look_in(container).select { |obj|
+      obj.type.to_s.split(',').include?('gem') &&
+        obj.name !~ SKIP_NAMES &&
+        !(sell_exclude && obj.name =~ sell_exclude) &&
+        !$fizzpure_done.key?(obj.id.to_s) &&
+        (words.empty? || words.any? { |word| obj.name.include?(word) })
+    }
+  end
+
+  def self.setup
+    $fizzpure_done ||= {}
+    @report     = []
+    @orbs_found = []
+    @orbs_stranded = []
+    @shattered  = []
+    @earnings   = 0
+    @heal_runs  = 0
+    @max_rounds = int_opt(:max_rounds, 20)
+    @min_health = int_opt(:min_health, 70)
+    @mana_wait  = int_opt(:mana_wait, 600)
+    @appraise   = Skills.trading > 24
+    @min_value  = opts[:min_value] ? opts[:min_value].to_i : nil
+    msg '--min-value needs 25 ranks of Trading to APPRAISE; ignoring it.' if @min_value && !@appraise
+    @min_value = nil unless @appraise
+
+    unless Spell[SPELL].known?
+      msg "You don't know #{NAME} (#{SPELL})."
+      exit
+    end
+
+    raw_names = list_opt(:raw)
+    if raw_names.empty? || opts[:orbs].nil? || opts[:help]
+      respond <<~HELP
+        [fizzpure #{VERSION}] purify gems with #{NAME} (#{SPELL})
+          ;fizzpure --raw=cloak --orbs=linen.pouch
+          ;fizzpure --raw=cloak,backpack,haversack --orbs=linen.pouch --dry-run
+          --raw= (required) --orbs= (required) --sung= --filter= --max-rounds=20
+          --min-value= --min-health=70 --mana-wait=600 --dry-run --silent
+      HELP
+      exit
+    end
+
+    @raw = raw_names.map { |name|
+      found = find_container(name)
+      msg "Can't find a container called #{name}; skipping it." unless found
+      found
+    }.compact
+    @orbs = find_container(opts[:orbs])
+    @sung = opts[:sung] && find_container(opts[:sung])
+    unless @orbs
+      msg "Can't find your orb container (#{opts[:orbs]}). Not singing: an orb would get sold."
+      exit
+    end
+    if opts[:sung] && @sung.nil?
+      msg "Can't find --sung=#{opts[:sung]}."
+      exit
+    end
+    if @raw.any? { |container| container.id == @orbs.id }
+      msg "The orb container is also one of the --raw containers; pick a separate one."
+      exit
+    end
+  end
+
+  def self.main
+    setup
+    work = @raw.flat_map { |container| candidates(container).map { |gem| [gem, container] } }
+    if work.empty?
+      msg 'No gems to purify.'
+      return
+    end
+
+    if opts[:dry_run]
+      msg "Would sing to #{work.size} #{work.size == 1 ? 'gem' : 'gems'}:"
+      work.each { |gem, home|
+        note = gem.name =~ TINY_PEARL ? " (tiny pearl: straight to #{@orbs.name})" : ''
+        respond "    #{gem.name} in #{home.name}#{note}"
+      }
+      return
+    end
+
+    before_dying { FizzPure.cleanup }
+    empty_hands
+    @emptied_hands = true
+    unless heal!
+      msg "Too hurt to sing safely (#{@stop_reason || 'wounds'}); leaving the gems."
+      return
+    end
+
+    work.each_with_index { |(gem, home), index|
+      if gem.name =~ TINY_PEARL
+        @current_home = home
+        if hold(gem)
+          @orbs_found << gem.name
+          finish(gem.name, home, :orb, 0)
+        end
+        next
+      end
+      @current_home = home
+      next if purify(gem, home)
+
+      left = work.size - index
+      bold "Stopping: #{@stop_reason}. #{left} #{left == 1 ? 'gem' : 'gems'} left as #{left == 1 ? 'it is' : 'they are'}."
+      break
+    }
+    @current_home = nil
+    summary
+  end
+
+  def self.summary
+    sung = @report.count { |_, result, _| ![:stopped, :not_held, :unknown].include?(result) }
+    text = "Done: #{sung} #{sung == 1 ? 'gem' : 'gems'} sung"
+    text << ", #{@orbs_found.size} #{@orbs_found.size == 1 ? 'orb' : 'orbs'} -> #{@orbs.name} (#{@orbs_found.join(', ')})" unless @orbs_found.empty?
+    text << ", #{@shattered.size} exploded (#{@shattered.join(', ')})" unless @shattered.empty?
+    text << ", #{@orbs_stranded.size} ORB(S) LEFT WHERE ELOOT WILL SELL THEM (#{@orbs_stranded.join(', ')})" unless @orbs_stranded.empty?
+    text << ", worth #{@earnings >= 0 ? '+' : ''}#{@earnings} silver" if @appraise
+    bold "#{text}."
+  end
+
+  # ;kill or a crash: put a gem in hand back where it came from
+  def self.cleanup
+    Spell.unlock_cast
+    if gem_in_hand && @current_home && GameObj.right_hand.type.to_s.split(',').include?('gem')
+      stash(@sung || @current_home)
+    end
+    fill_hands if @emptied_hands
+  rescue StandardError => e
+    respond "[fizzpure] cleanup: #{e.message}"
+  end
+end
+
+FizzPure.main
