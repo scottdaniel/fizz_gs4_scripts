@@ -60,7 +60,7 @@ module MdemonRefresh
   STUCK_WARN_MINUTES       = 10  # still "on its way" after this long: say once that it may be lost
   RETURN_REPLY = /already here!|acknowledges your order|interfering with your|You have no minor demon at this time/i
   DEMON_LINK   = %r{(?:[Bb]ut your|Your|your) <pushBold/><a exist="(\d+)" noun="([\w,'-]+)">([\w\-' ]+)</a><popBold/>}
-  # No vakra runestone left: true = fuse a new one with fizzfuse (a bank + alchemist trip,
+  # No vakra runestone left: true = fuse a new one with fizzfuse (a bank + general store + alchemist trip,
   # then it walks back). With FUSE_ONLY_WHEN_RESTING_IN_TOWN it never starts that
   # mid-hunt -- it waits until you're resting in town. false = ask you to NOD first.
   AUTO_FUSE_RUNESTONE     = true
@@ -84,9 +84,18 @@ module MdemonRefresh
     return :missing if result =~ /can't seem to locate/
 
     waitrt?
-    fput "rub my runestone"
+    # A stone fused from a general-store smooth stone has the noun "stone", not
+    # "runestone" (2026-11-11), so address the item by id rather than by noun.
+    stone = nil
+    30.times {
+      stone = [GameObj.right_hand, GameObj.left_hand].compact.find { |o| o.id.to_s =~ /\A\d+\z/ && o.noun =~ /stone/ }
+      break if stone
+      sleep 0.1
+    }
+    ref = stone ? "##{stone.id}" : "my runestone"
+    fput "rub #{ref}"
     waitrt?
-    fput "put runestone in my kit"
+    fput "put #{ref} in my kit"
     :ok
   ensure
     if held_item_id

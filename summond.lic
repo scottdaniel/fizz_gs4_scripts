@@ -4,7 +4,7 @@
         game: gemstone
         tags: sorcerer, demon, minor summoning, 725, runestone
     requires: Lich > 5.14.2
-     version: 0.5
+     version: 0.6
         note: Written with assistance from Claude (Anthropic).
 
   Summons a Minor Summoning (725) demon of the valence or archetype you ask for.
@@ -23,9 +23,12 @@
       forays into interplanar summoning") is retried every minute and doesn't count
       as a try.
     - Missing runestones are made on the spot, only for runes you know (RUNE COMMON /
-      RUNE UNCOMMON): bank (only if you carry less than 15,000 silvers), the nearest
-      alchemist for a runestone (plus ink, a cup to rinse a dried brush, or a rune
-      brush if you have none), draw the rune, then deposit what's left.
+      RUNE UNCOMMON): bank (only if you carry less than 15,000 silvers), then a smooth
+      stone from the general store's backroom and an aish'vrak potion from the nearest
+      alchemist, poured together into a blank runestone (about 6k; with no backroom
+      access, or ;vars set infuse_smooth_stone=false, it buys the alchemist's premade
+      runestone for about 10k instead), plus ink, a cup to rinse a dried brush, or a
+      rune brush if you have none, draw the rune, then deposit what's left.
 
   Valences and archetypes (gswiki Minor Summoning (725)):
     grik'tyr   - grik, imp
@@ -82,7 +85,7 @@ module Summond
   EXTRA_CHAMBERS = [34780].freeze
 
   PULL_REGEX    = /you succeed in opening an interplanar rift from which you manage to pull (?:an? )?(.+?)\.\s*$/
-  SHATTER_REGEX = /runestone shatters into a thousands? fragments/
+  SHATTER_REGEX = /(?:rune)?stone shatters into a thousands? fragments/
   # Casting before the post-summon cooldown is up (seen in-game 4 minutes after a summon)
   TOO_SOON_REGEX = /you feel weak from your recent forays into interplanar summoning/
 
@@ -245,7 +248,8 @@ module Summond
     line = dothistimeout "rummage in my #{sack} runestone #{rune}", 5, /drawn on it|can't seem to locate|What were you referring to/
     return nil unless line =~ /rune drawn on it/
 
-    wait_for_hand { |hand| hand.noun == 'runestone' }
+    # a stone made from a general-store smooth stone has the noun "stone", not "runestone"
+    wait_for_hand { |hand| hand.noun =~ /stone/ }
   end
 
   # Runes this character can draw, from RUNE COMMON / RUNE UNCOMMON ("    - lorae'tyr   - vakra ...")
@@ -331,10 +335,51 @@ module Summond
     item
   end
 
-  # At an alchemist: get the brush inked, buy a runestone, draw the rune. Returns the stone in hand.
+  # Make blank runestones from a general-store smooth stone + an alchemist's aish'vrak potion
+  # (about 6k) instead of buying the premade one (10k)? Same switch fizzfuse uses.
+  def self.smooth_stone?
+    UserVars.infuse_smooth_stone.to_s !~ /\A(?:false|no|off|0)\z/i
+  end
+
+  # At the general store: buys a smooth stone (needs backroom access) and puts it in the
+  # sack. Returns its id, or nil if it isn't for sale / is switched off.
+  def self.buy_smooth_stone
+    return nil unless smooth_stone?
+
+    go2('general store')
+    stone = buy(/smooth stone/, 'a smooth stone for a runestone')
+    return nil if stone.nil?
+
+    put_away(stone)
+    stone.id
+  end
+
+  # At the alchemist: pours an aish'vrak potion on the smooth stone from buy_smooth_stone.
+  # Returns the blank runestone's id (pouring can change it), stowed in the sack, or nil if
+  # the potion isn't sold / the pour didn't work (the premade runestone is bought instead).
+  # Needs both hands, so it has to run before the brush comes out.
+  def self.pour_blank_stone(stone_id)
+    return nil if stone_id.nil?
+
+    fput "get ##{stone_id}"
+    held = wait_for_hand { |hand| hand.id.to_s == stone_id.to_s }
+    potion = held && buy(/aish'vrak/, "an aish'vrak potion")
+    poured = potion && collect_lines("pour potion on stone", /shatters into twinkling dust|What were you referring to|Pour what/)
+    blank = (poured && poured.any? { |line| line =~ /shatters into twinkling dust/ } && wait_for_hand { |hand| hand.noun =~ /stone/ }) || nil
+    msg "Couldn't make a blank runestone from the smooth stone - buying the premade one." unless blank
+    [GameObj.right_hand, GameObj.left_hand].each { |hand| put_away(hand) if hand.id && (blank.nil? || hand.id != blank.id) }
+    return nil unless blank
+
+    put_away(blank)
+    blank.id
+  end
+
+  # At an alchemist: get the brush inked, get a blank runestone (the one made from stone_id, else
+  # a premade one), draw the rune. Returns the stone in hand.
   # Brush states, from fizzfuse runs: "covered in a rich <color> ink" (ready), "covered with dry
   # <color> ink" (rinse in a cup, then ink), "clean and smooth" (ink)
-  def self.draw_runestone(rune)
+  def self.draw_runestone(rune, stone_id = nil)
+    blank_id = pour_blank_stone(stone_id)
     brush = get_tool('brush') || buy(/\bbrush\b/, 'a rune brush')
     return nil if brush.nil?
 
@@ -355,17 +400,21 @@ module Summond
       put_away(ink)
     end
 
-    stone = buy(/runestone/, 'a runestone')
+    if blank_id
+      fput "get ##{blank_id}"
+      stone = wait_for_hand { |hand| hand.id.to_s == blank_id.to_s }
+    end
+    stone ||= buy(/runestone/, 'a runestone')
     return nil if stone.nil?
 
-    line = dothistimeout "draw #{rune} rune on runestone", 5, /you draw the|trace out the shape|cleaned off first|will need ink|Roundtime/
+    line = dothistimeout "draw #{rune} rune on #{stone.noun}", 5, /you draw the|trace out the shape|cleaned off first|will need ink|Roundtime/
     waitrt?
     unless line =~ /you draw the|trace out the shape/
       msg "Drawing the #{rune} rune didn't work: #{line || 'no response'}"
       return nil
     end
     # The drawn runestone is a new item (new id); take it from the hand
-    wait_for_hand { |hand| hand.noun == 'runestone' && hand.id != stone.id } || runestone_in_hand(stone)
+    wait_for_hand { |hand| hand.noun =~ /stone/ && hand.id != stone.id } || runestone_in_hand(stone)
   end
 
   # Bank (only if needed), alchemist, draw, deposit what's left. Returns the new stone in hand.
@@ -382,8 +431,9 @@ module Summond
       withdrew = true
     end
 
+    stone_id = buy_smooth_stone
     go2('alchemist')
-    stone = draw_runestone(rune)
+    stone = draw_runestone(rune, stone_id)
     [GameObj.right_hand, GameObj.left_hand].each { |hand| put_away(hand) if @tools.include?(hand.id) }
 
     if withdrew
@@ -461,7 +511,7 @@ module Summond
   # got "Cast at what?"), so always cast at the runestone actually in hand
   def self.runestone_in_hand(stone)
     hands = [GameObj.right_hand, GameObj.left_hand]
-    hands.find { |hand| stone && hand.id == stone.id } || hands.find { |hand| hand.noun == 'runestone' } || stone
+    hands.find { |hand| stone && hand.id == stone.id } || hands.find { |hand| hand.noun =~ /stone/ } || stone
   end
 
   def self.cast_at(stone)
