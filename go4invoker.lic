@@ -218,9 +218,12 @@ module Go4Invoker
     Script.running?("bigshot")
   end
 
+  # Waiting in its rest loop, bigshot reads :ready, not :resting: should_hunt? calls
+  # group_should_hunt?, which sets :ready for a solo hunter on every pass (bigshot.lic ~866).
+  # 11/12 08:00 Fizzlestiks sat in 1259 like that and was never caught.
   def resting_at_home?
     home = resting_room
-    !home.nil? && $bigshot_status == :resting && room_id == home
+    !home.nil? && %i[resting ready].include?($bigshot_status) && room_id == home
   end
 
   # Scripts bigshot runs and waits on around a rest: the profile's "script X" resting and
