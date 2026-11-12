@@ -185,7 +185,30 @@ module Go4Invoker
     v.is_a?(Hash) ? v : {}
   end
 
+  # The running bigshot's own settings ($bigshot is the instance bigshot.lic sets when it
+  # starts). They win over UserVars.op, which can change under a running bigshot: on 11/11
+  # 23:25 ;huntplan rewrote op (resting room 228) while the bigshot started at 23:20 kept
+  # 1259, so at the 11/12 08:00 visit this waited for room 228 and never caught Fizzlestiks.
+  def live_bigshot_setting(name)
+    bs = $bigshot
+    return nil unless bs && bigshot? && bs.respond_to?(name)
+
+    bs.public_send(name)
+  rescue StandardError
+    nil
+  end
+
+  # A list setting (resting commands etc.) as an array of strings: live bigshot first, then op.
+  def bigshot_list(live_name, op_key)
+    v = live_bigshot_setting(live_name)
+    v = op[op_key] if v.nil?
+    Array(v).join(',').split(',').map(&:strip).reject(&:empty?)
+  end
+
   def resting_room
+    live = live_bigshot_setting(:RESTING_ROOM_ID)
+    return live.to_i if live.to_s =~ /\A\d+\z/ && live.to_i.positive?
+
     id = op['resting_room_id'].to_s.strip
     id =~ /\A\d+\z/ ? id.to_i : nil
   end
@@ -230,9 +253,9 @@ module Go4Invoker
   # hunting-prep commands, its resting scripts, and go2. Prep is in there because bigshot can
   # turn from resting to gearing up in the instant between the check and the pause.
   def rest_chores
-    cmds = (Array(op['resting_commands']) + Array(op['hunting_prep_commands'])).join(',').split(',').map(&:strip)
+    cmds = bigshot_list(:RESTING_COMMANDS, 'resting_commands') + bigshot_list(:HUNTING_PREP_COMMANDS, 'hunting_prep_commands')
     named = cmds.filter_map { |c| c[/\Ascript\s+(\S+)/i, 1] }
-    named += Array(op['resting_scripts']).join(',').split(',').filter_map { |s| s.strip.split(/\s+/).first }
+    named += bigshot_list(:RESTING_SCRIPTS, 'resting_scripts').filter_map { |s| s.split(/\s+/).first }
     (named + %w[go2]).uniq(&:downcase).reject { |n| never_wait_for.any? { |x| x.casecmp?(n) } }
   end
 
