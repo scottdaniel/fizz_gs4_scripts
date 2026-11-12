@@ -512,6 +512,10 @@ module FizzPure
   end
 
   def self.main
+    # Lich keeps this module, and every @variable in it, between runs. 11/12: the options
+    # from a manual --dry-run were still cached when the prerest ran it, so the prerest run
+    # only listed the gems and eloot sold all six unsung. Start every run from nothing.
+    instance_variables.each { |var| remove_instance_variable(var) }
     setup
     work = @raw.flat_map { |container| candidates(container).map { |gem| [gem, container] } }
     if work.empty?
