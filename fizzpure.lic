@@ -5,7 +5,7 @@
         game: gemstone
         tags: bard, 1004, purify, purification song, gems, orb gem, pure gem
     requires: Lich > 5.14.2
-     version: 1.0.0
+     version: 1.1.0
         note: Written with assistance from Claude (Anthropic).
 
   Purifies your gems with Purification Song (1004), one gem at a time, and stops
@@ -42,6 +42,11 @@
   go straight to the orb container without a song. Mother-of-pearl is skipped (puritan:
   always misfires). Gems on eloot's sell_exclude list are left alone.
 
+  Before the first song it kills song-manager and STOPs every other song, so no song renewal
+  can come due while 1004 is spending the mana (11/12: Song of Peace renewed on an empty pool
+  and he overextended). song-manager is restarted in the background once there's mana to sing
+  them all again and pay a renewal. A song that won't stop keeps its renewal cost in reserve.
+
   Every song is gated: at least the spell's mana cost in hand right before the SING (no
   overexertion), at least --min-health hit points (an exploding gem can do about 60),
   no wounds worse than minor and not stunned. If a gem explodes, eherbs runs before the
@@ -58,13 +63,14 @@
       mana, and never raises an error mid-run: it puts the gem back and stops.
     - Tiny pearls go to the orb container instead of being skipped.
     - Gems already finished this session are remembered by ID and not sung again.
+    - Pauses song-manager and stops the other songs while singing (1.1.0).
     - --regain-mana, --herbs, --skip-armor and the hunting.rb team requests are gone.
 =end
 
 require 'yaml'
 
 module FizzPure
-  VERSION = '1.0.0'
+  VERSION = '1.1.0'
   SPELL   = 1004
   NAME    = 'Purification Song'
 
@@ -95,6 +101,13 @@ module FizzPure
   # Verified 2026-11-12 (Fizzlestiks): "In the velvet cloak:" ... "Total items: 13" and
   # "There is nothing in the backpack."
   LOOK_DONE = /^Total items|^There is nothing in|^In the .+? you see|^Inside the .+? you see|^I could not find|^What were you referring to/
+
+  # SONG STATUS, read the way song-manager.lic reads it: "    (1003) Fortitude Song" lines, then
+  # "Your current renewal cost is 28 mana." or "You are not singing any songs."
+  SONG_STATUS_DONE = /Your current renewal cost is \d+ mana\.|You are not singing any songs\./
+  SONG_LINE        = /^\s+\((10\d\d)\) /
+  # Verified 2026-11-12: "You stop singing Song of Valor."
+  STOP_DONE        = /^You stop singing|^You are not singing|^You aren't singing|^Stop what|^What were you referring to/
 
   TINY_PEARL = /\btiny .*pearl\b/
   SKIP_NAMES = /mother-of-pearl/
@@ -252,10 +265,11 @@ module FizzPure
         return false
       end
     end
-    if checkmana < cost
-      msg "Waiting for #{cost} mana (you have #{checkmana})."
-      unless wait_for(@mana_wait) { checkmana >= cost }
-        @stop_reason = "mana stayed under #{cost} for #{@mana_wait} seconds"
+    need = cost + @song_reserve.to_i
+    if checkmana < need
+      msg "Waiting for #{need} mana (you have #{checkmana})."
+      unless wait_for(@mana_wait) { checkmana >= need }
+        @stop_reason = "mana stayed under #{need} for #{@mana_wait} seconds"
         return false
       end
     end
@@ -271,6 +285,84 @@ module FizzPure
     msg 'Healing up with eherbs before the next gem.'
     Script.run('eherbs')
     wait_for(5) { worst_wound <= 1 }
+  end
+
+  # ---------------------------------------------------------------- other songs
+  # 11/12 11:25: fizzpure had spent the mana in the rest room, song-manager couldn't stop Song
+  # of Peace (it sings 1011 in the rest room and its auto-stop list leaves 1011 out), and the
+  # renewal went through anyway: "You have overextended yourself! You feel yourself going into
+  # shock!" So while 1004 is using the mana, song-manager is killed and every song is stopped,
+  # and song-manager comes back once the mana has.
+  def self.song_status
+    lines = collect('song status', SONG_STATUS_DONE, timeout: 4)
+    text = lines.join("\n")
+    renew = text[/Your current renewal cost is (\d+) mana/, 1]
+    {
+      songs: lines.map { |line| line[SONG_LINE, 1] }.compact.uniq,
+      renew: renew && renew.to_i,
+      none: text.include?('You are not singing any songs')
+    }
+  end
+
+  def self.quiet_songs
+    # a song-manager restart still waiting from an earlier run stands down
+    $fizzpure_songs_token = $fizzpure_songs_token.to_i + 1
+    if Script.running?('song-manager')
+      Script.kill('song-manager')
+      wait_for(5) { !Script.running?('song-manager') }
+      @song_manager_stopped = true
+    end
+    waitrt?
+    waitcastrt?
+    status = song_status
+    @stopped_songs = status[:songs]
+    @stopped_songs.each { |num|
+      waitrt?
+      waitcastrt?
+      collect("stop #{num}", STOP_DONE, timeout: 3)
+    }
+    after = @stopped_songs.empty? ? status : song_status
+    @song_reserve = after[:none] ? 0 : (after[:renew] || 30)
+    what = @stopped_songs.empty? ? 'no songs were running' : "stopped #{@stopped_songs.map { |num| Spell[num.to_i].name rescue num }.join(', ')}"
+    msg "Paused song-manager (#{what}) so no renewal comes due while #{NAME} uses the mana." if @song_manager_stopped
+    msg "Stopped #{@stopped_songs.join(', ')} so no renewal comes due while #{NAME} uses the mana." if !@song_manager_stopped && !@stopped_songs.empty?
+    msg "Still singing #{after[:songs].join(', ')}: keeping #{@song_reserve} mana back for its renewal." if @song_reserve > 0
+  end
+
+  # what it takes to sing a song again and pay one renewal of it
+  def self.song_cost(num)
+    spell = Spell[num.to_i]
+    renew = (spell.renew_cost.to_i rescue 0)
+    spell.mana_cost.to_i + renew
+  rescue StandardError
+    10
+  end
+
+  # song-manager comes back by itself once there's mana to sing everything that was stopped
+  # again and still pay a renewal (11/12, 17 Bard ranks: Fortitude, Luck, Kai's, Valor and
+  # Peace are about 50 to sing and 24 to renew), or stands down if something else
+  # (Fizzlestiks-prep) has started it first, or a later fizzpure run has taken over.
+  def self.restart_songs_later
+    return unless @song_manager_stopped && !@songs_restart_queued
+
+    @songs_restart_queued = true
+    need = Array(@stopped_songs).sum { |num| song_cost(num) }
+    need = [need, maxmana.to_i].min if maxmana.to_i > 0
+    token = $fizzpure_songs_token.to_i
+    code = <<~CODE
+      wait_until { $fizzpure_songs_token.to_i != #{token} || Script.running?('song-manager') || checkmana >= #{need} }
+      if $fizzpure_songs_token.to_i == #{token} && !Script.running?('song-manager')
+        respond '[fizzpure] #{need} mana again: restarting song-manager.'
+        Script.start('song-manager')
+      end
+    CODE
+    if checkmana >= need
+      Script.start('song-manager')
+      msg 'Restarted song-manager.'
+    else
+      ExecScript.start(code, quiet: true, name: 'fizzpure_songs')
+      msg "song-manager comes back at #{need} mana (you have #{checkmana})."
+    end
   end
 
   # ---------------------------------------------------------------- the song
@@ -311,9 +403,10 @@ module FizzPure
     begin
       return [:no_prep, []] unless prepare
 
-      # re-read mana right before the SING: never cast short of the full cost
+      # re-read mana right before the SING: never cast short of the full cost, and never
+      # into the mana a song that wouldn't stop needs for its renewal
       cost = Spell[SPELL].mana_cost
-      return [:no_mana, []] if checkmana < cost
+      return [:no_mana, []] if checkmana < cost + @song_reserve.to_i
 
       waitrt?
       waitcastrt?
@@ -539,6 +632,7 @@ module FizzPure
       msg "Too hurt to sing safely (#{@stop_reason || 'wounds'}); leaving the gems."
       return
     end
+    quiet_songs if work.any? { |gem, _| gem.name !~ TINY_PEARL }
 
     work.each_with_index { |(gem, home), index|
       if gem.name =~ TINY_PEARL
@@ -558,6 +652,7 @@ module FizzPure
     }
     @current_home = nil
     summary
+    restart_songs_later
   end
 
   def self.summary
@@ -577,6 +672,7 @@ module FizzPure
       stash(@sung || @current_home)
     end
     fill_hands if @emptied_hands
+    restart_songs_later
   rescue StandardError => e
     respond "[fizzpure] cleanup: #{e.message}"
   end

@@ -54,6 +54,11 @@ fput "ready weapon"
 # this script after a successful recovery, so keep this a no-op when running.
 Script.start("Fizzlestiks-disarmguard") unless Script.running?("Fizzlestiks-disarmguard")
 
+# fizzpure kills song-manager while it purifies gems in the prerest and restarts it once
+# the mana is back (11/12). If the rest ended before that, bring it back now: he
+# shouldn't hunt without his songs.
+Script.start("song-manager") unless Script.running?("song-manager")
+
 # Puts away loot eloot has no room for and unpauses it, so a full cloak can't
 # leave you fighting with your hands full (see eloot_guard.lic).
 Script.start("eloot_guard") unless Script.running?("eloot_guard")
