@@ -5,7 +5,7 @@
         game: gemstone
         tags: bard, 1004, purify, purification song, gems, orb gem, pure gem
     requires: Lich > 5.14.2
-     version: 1.1.0
+     version: 1.2.0
         note: Written with assistance from Claude (Anthropic).
 
   Purifies your gems with Purification Song (1004), one gem at a time, and stops
@@ -15,6 +15,7 @@
     ;fizzpure --raw=cloak --orbs=linen.pouch
     ;fizzpure --raw=cloak,backpack,haversack --orbs=linen.pouch
     ;fizzpure --raw=cloak --orbs=pouch --dry-run     list what it would sing to, no singing
+    ;fizzpure --raw=cloak --orbs=pouch --min-value=0 sing to every gem, no gem shop trip
 
   Options:
     --raw=<containers>     where the gems are (comma list; adjective.noun like the game)
@@ -22,7 +23,8 @@
     --sung=<container>     where purified gems go (default: back where each came from)
     --filter=<words>       only gems whose name has one of these (comma list)
     --max-rounds=<n>       most songs per gem (default 20)
-    --min-value=<silver>   skip gems that appraise under this (needs 25+ trading)
+    --min-value=<silver>   only sing to gems the gem dealer would pay this much for
+                           (default 2000; 0 = every gem, and no trip to the gem shop)
     --min-health=<hp>      don't sing below this many hit points (default 70)
     --mana-wait=<seconds>  how long to wait for mana before giving up (default 600)
     --dry-run              list the gems and stop
@@ -41,6 +43,15 @@
   Tiny pearls are always orbs (gswiki "Pure gem"; orb_check found one 2026-10-20), so they
   go straight to the orb container without a song. Mother-of-pearl is skipped (puritan:
   always misfires). Gems on eloot's sell_exclude list are left alone.
+
+  Gem shop first: with --min-value (2000 unless you say otherwise) it walks to the nearest
+  gem shop and has the dealer APPRAISE each gem, which needs no Trading ranks. Gems the
+  dealer would pay less for are left alone (11/12: 25-75 silver gems gained 10-15 silver
+  each and one explosion cost 892 silver of herbs). It sings to the rest right there, asks
+  again afterwards to report what the songs were worth, and walks back.
+    "I'll give you 2,345 silvers for it if you want to sell."   -> that's its value
+    "I'm not buying anything this valuable today."              -> worth more than he pays: sung
+    "That's not quite my field ... gems and jewelry."           -> not a gem: left alone
 
   Before the first song it kills song-manager and STOPs every other song, so no song renewal
   can come due while 1004 is spending the mana (11/12: Song of Peace renewed on an empty pool
@@ -64,13 +75,15 @@
     - Tiny pearls go to the orb container instead of being skipped.
     - Gems already finished this session are remembered by ID and not sung again.
     - Pauses song-manager and stops the other songs while singing (1.1.0).
+    - --min-value is priced by the gem dealer instead of APPRAISE (no Trading needed), and
+      defaults to 2000 (1.2.0).
     - --regain-mana, --herbs, --skip-armor and the hunting.rb team requests are gone.
 =end
 
 require 'yaml'
 
 module FizzPure
-  VERSION = '1.1.0'
+  VERSION = '1.2.0'
   SPELL   = 1004
   NAME    = 'Purification Song'
 
@@ -97,7 +110,16 @@ module FizzPure
   PREP_DONE = /^Your spell(?:song)? is ready\.|^You already have a spell readied|^You can't think clearly enough|^You are concentrating too intently|^You are too injured|^But you don't have any mana|^You can't make that dextrous|^You do not know that spell|cough up some blood/
   GET_DONE  = /^You (?:remove|get|grab|pull|take|pick up|carefully remove|retrieve)|^Get what\?|^I could not find|^What were you referring to|^You need a free hand|^You can't/
   PUT_DONE  = /^You (?:put|place|slip|tuck|add|drop|carefully place|gently place)|^I could not find|^What were you referring to|won't fit|^That is closed|too (?:full|heavy|large)/
-  APPRAISE  = /worth (?:approximately |about )?(?<value>[\d,]+) silvers?/
+  # The gem dealer's APPRAISE replies, verified in 200+ log lines (eloot's own gemshop appraisals):
+  # 'The gem dealer takes the X and inspects it carefully before saying, "I'll give you 2,345
+  # silvers for it if you want to sell."' / '"Sorry, Fizzlestiks, I'm not buying anything this
+  # valuable today.  Maybe tomorrow."' / '"That's not quite my field, Fizzlestiks.  I only deal in
+  # gems and jewelry."'
+  DEALER_OFFER  = /I'll give you (?<value>[\d,]+) silvers? for it/
+  TOO_VALUABLE  = /not buying anything this valuable today/
+  NOT_GEM       = /not quite my field|only deal in gems and jewelry/
+  APPRAISE_DONE = Regexp.union(DEALER_OFFER, TOO_VALUABLE, NOT_GEM, /^I could not find|^What were you referring to|^Appraise what|^There is no one here|^You can't/)
+  DEFAULT_MIN_VALUE = 2000
   # Verified 2026-11-12 (Fizzlestiks): "In the velvet cloak:" ... "Total items: 13" and
   # "There is nothing in the backpack."
   LOOK_DONE = /^Total items|^There is nothing in|^In the .+? you see|^Inside the .+? you see|^I could not find|^What were you referring to/
@@ -305,6 +327,7 @@ module FizzPure
   end
 
   def self.quiet_songs
+    @songs_quieted = true
     # a song-manager restart still waiting from an earlier run stands down
     $fizzpure_songs_token = $fizzpure_songs_token.to_i + 1
     if Script.running?('song-manager')
@@ -420,13 +443,38 @@ module FizzPure
     end
   end
 
+  # The gem dealer's price for the gem in hand: silver, :too_valuable, :not_gem, or nil
+  # (no answer). Only in a gem shop.
   def self.appraise(gem)
-    return nil unless @appraise && gem
+    return nil unless @at_dealer && gem
 
     waitrt?
-    lines = collect("appraise ##{gem.id}", APPRAISE, timeout: 4)
-    found = lines.join(' ')[APPRAISE, :value]
+    text = collect("appraise ##{gem.id}", APPRAISE_DONE, timeout: 4).join(' ')
+    return :too_valuable if text =~ TOO_VALUABLE
+    return :not_gem if text =~ NOT_GEM
+
+    found = text[DEALER_OFFER, :value]
     found && found.delete(',').to_i
+  end
+
+  # ---------------------------------------------------------------- the gem shop
+  def self.go_to_gemshop
+    @start_room = Room.current.id
+    Script.run('go2', 'gemshop --disable-confirm') unless in_gemshop?
+    return @at_dealer = true if in_gemshop?
+
+    msg "Couldn't get to a gem shop to have the gems priced; not singing to any of them."
+    false
+  end
+
+  def self.in_gemshop?
+    Room.current && Room.current.tags.to_a.include?('gemshop')
+  end
+
+  def self.go_back
+    return unless @start_room && Room.current && Room.current.id != @start_room
+
+    Script.run('go2', "#{@start_room} --disable-confirm")
   end
 
   # ---------------------------------------------------------------- one gem
@@ -466,11 +514,24 @@ module FizzPure
     name = gem.name
 
     start_value = appraise(gem)
-    if @min_value && start_value && start_value < @min_value
-      msg "#{name} appraises at #{start_value}, under --min-value; leaving it."
-      stash(home)
-      return true
+    if @min_value
+      verdict =
+        case start_value
+        when :too_valuable then nil
+        when :not_gem then "the dealer says it isn't a gem"
+        when nil then "the dealer didn't price it"
+        else start_value < @min_value ? "worth #{start_value}, under #{@min_value}" : nil
+        end
+      if verdict
+        msg "#{name}: #{verdict}; leaving it." unless opts[:silent]
+        @cheap += 1
+        $fizzpure_done[gem.id.to_s] = :cheap
+        stash(home)
+        return true
+      end
+      msg "#{name}: too valuable for the dealer to price; singing to it." if start_value == :too_valuable
     end
+    quiet_songs unless @songs_quieted
 
     rounds = 0
     hindered = 0
@@ -515,7 +576,7 @@ module FizzPure
         @shattered << name
         bold "#{name} exploded after #{rounds + 1} #{rounds.zero? ? 'song' : 'songs'}."
         lines.each { |line| respond "    #{line}" } if lines.none? { |l| l =~ SHATTER }
-        @earnings -= start_value if start_value
+        @earnings -= start_value if start_value.is_a?(Integer)
         return heal! ? true : (@stop_reason = 'still hurt after eherbs'; false)
       when :no_mana, :no_prep
         @stop_reason = outcome == :no_prep ? "couldn't prepare #{NAME}" : 'ran out of mana'
@@ -532,10 +593,14 @@ module FizzPure
 
   # the purified gem is still in hand here: appraise it before it's put away
   def self.track_earnings(start_value)
-    return unless start_value
+    return unless start_value.is_a?(Integer)
 
     final_value = appraise(gem_in_hand)
-    @earnings += final_value - start_value if final_value
+    return unless final_value.is_a?(Integer)
+
+    @earnings += final_value - start_value
+    @priced += 1
+    msg "#{gem_in_hand.name}: #{start_value} -> #{final_value} silver." unless opts[:silent]
   end
 
   # ---------------------------------------------------------------- the run
@@ -561,10 +626,10 @@ module FizzPure
     @max_rounds = int_opt(:max_rounds, 20)
     @min_health = int_opt(:min_health, 70)
     @mana_wait  = int_opt(:mana_wait, 600)
-    @appraise   = Skills.trading > 24
-    @min_value  = opts[:min_value] ? opts[:min_value].to_i : nil
-    msg '--min-value needs 25 ranks of Trading to APPRAISE; ignoring it.' if @min_value && !@appraise
-    @min_value = nil unless @appraise
+    @cheap      = 0
+    @priced     = 0
+    @min_value  = int_opt(:min_value, DEFAULT_MIN_VALUE)
+    @min_value  = nil if @min_value.zero?
 
     unless Spell[SPELL].known?
       msg "You don't know #{NAME} (#{SPELL})."
@@ -578,7 +643,7 @@ module FizzPure
           ;fizzpure --raw=cloak --orbs=linen.pouch
           ;fizzpure --raw=cloak,backpack,haversack --orbs=linen.pouch --dry-run
           --raw= (required) --orbs= (required) --sung= --filter= --max-rounds=20
-          --min-value= --min-health=70 --mana-wait=600 --dry-run --silent
+          --min-value=2000 (0 = every gem) --min-health=70 --mana-wait=600 --dry-run --silent
       HELP
       exit
     end
@@ -617,7 +682,8 @@ module FizzPure
     end
 
     if opts[:dry_run]
-      msg "Would sing to #{work.size} #{work.size == 1 ? 'gem' : 'gems'}:"
+      msg "Would take #{work.size} #{work.size == 1 ? 'gem' : 'gems'} to the gem shop and sing to the ones worth #{@min_value}+:" if @min_value
+      msg "Would sing to #{work.size} #{work.size == 1 ? 'gem' : 'gems'}:" unless @min_value
       work.each { |gem, home|
         note = gem.name =~ TINY_PEARL ? " (tiny pearl: straight to #{@orbs.name})" : ''
         respond "    #{gem.name} in #{home.name}#{note}"
@@ -632,7 +698,12 @@ module FizzPure
       msg "Too hurt to sing safely (#{@stop_reason || 'wounds'}); leaving the gems."
       return
     end
-    quiet_songs if work.any? { |gem, _| gem.name !~ TINY_PEARL }
+    to_sing = work.reject { |gem, _| gem.name =~ TINY_PEARL }
+    if @min_value && !to_sing.empty? && !go_to_gemshop
+      work -= to_sing
+    end
+    # no price check: everything gets sung, so quiet the songs up front
+    quiet_songs if !@min_value && !to_sing.empty?
 
     work.each_with_index { |(gem, home), index|
       if gem.name =~ TINY_PEARL
@@ -652,16 +723,18 @@ module FizzPure
     }
     @current_home = nil
     summary
+    go_back
     restart_songs_later
   end
 
   def self.summary
-    sung = @report.count { |_, result, _| ![:stopped, :not_held, :unknown].include?(result) }
+    sung = @report.count { |_, result, rounds| rounds.positive? && ![:stopped, :not_held, :unknown].include?(result) }
     text = "Done: #{sung} #{sung == 1 ? 'gem' : 'gems'} sung"
     text << ", #{@orbs_found.size} #{@orbs_found.size == 1 ? 'orb' : 'orbs'} -> #{@orbs.name} (#{@orbs_found.join(', ')})" unless @orbs_found.empty?
     text << ", #{@shattered.size} exploded (#{@shattered.join(', ')})" unless @shattered.empty?
     text << ", #{@orbs_stranded.size} ORB(S) LEFT WHERE ELOOT WILL SELL THEM (#{@orbs_stranded.join(', ')})" unless @orbs_stranded.empty?
-    text << ", worth #{@earnings >= 0 ? '+' : ''}#{@earnings} silver" if @appraise
+    text << ", #{@cheap} under #{@min_value} left alone" if @cheap.positive?
+    text << ", songs worth #{@earnings >= 0 ? '+' : ''}#{@earnings} silver by the dealer's prices" if @priced.positive? || @earnings.negative?
     bold "#{text}."
   end
 
