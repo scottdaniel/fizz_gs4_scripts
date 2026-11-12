@@ -92,6 +92,9 @@ module FizzPure
   GET_DONE  = /^You (?:remove|get|grab|pull|take|pick up|carefully remove|retrieve)|^Get what\?|^I could not find|^What were you referring to|^You need a free hand|^You can't/
   PUT_DONE  = /^You (?:put|place|slip|tuck|add|drop|carefully place|gently place)|^I could not find|^What were you referring to|won't fit|^That is closed|too (?:full|heavy|large)/
   APPRAISE  = /worth (?:approximately |about )?(?<value>[\d,]+) silvers?/
+  # Verified 2026-11-12 (Fizzlestiks): "In the velvet cloak:" ... "Total items: 13" and
+  # "There is nothing in the backpack."
+  LOOK_DONE = /^Total items|^There is nothing in|^In the .+? you see|^Inside the .+? you see|^I could not find|^What were you referring to/
 
   TINY_PEARL = /\btiny .*pearl\b/
   SKIP_NAMES = /mother-of-pearl/
@@ -138,8 +141,12 @@ module FizzPure
   end
 
   # a fresh LOOK IN so the IDs are live (cached contents go stale)
+  # Waits for the LOOK IN's own last line: on 2026-11-12 fput returned on an earlier
+  # prompt and each reply landed after the script had already read the contents.
   def self.look_in(container)
-    fput "look in ##{container.id}"
+    waitrt?
+    collect("look in ##{container.id}", LOOK_DONE, timeout: 4)
+    sleep 0.3
     container.contents.to_a
   end
 
