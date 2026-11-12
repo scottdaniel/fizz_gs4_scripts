@@ -5,7 +5,7 @@
         game: gemstone
         tags: bounty, adventurer's guild
     requires: Lich > 5.4.0
-     version: 1.6
+     version: 1.7
 
   undead_bounty.lic with the "must be undead" test replaced by an allowed list, and
   with heirloom and rescue-child tasks accepted by AREA.
@@ -45,6 +45,10 @@
   started in. See undead_bounty.lic for those details.
 
   changelog:
+    1.7
+      - a creature on bigshot's "always flee from" list never qualifies, even when it contains a
+        list entry: 11/12 Fizzlestiks's "ghoul master" would have taken an "elder ghoul master"
+        bounty that his profile runs from, and kept it forever as an acceptable in-progress task.
     1.6
       - the rescue child is delivered: once `bounty` reads "made contact with the child" and she is
         in the room, echild.lic walks her to the guard and the usual turn-in follows. Runs from the
@@ -862,8 +866,18 @@ module BountyChooser
   def self.creature_allowed?(creature_name, creatures)
     name = creature_name.to_s.downcase
     return false if name.empty?
+    return false if bigshot_flees_from?(name)
 
     creatures.any? { |entry| !entry.empty? && name.include?(entry.downcase) }
+  end
+
+  # Bigshot's "always flee from" list, matched the way bigshot does it (whole name). A bounty
+  # for one of those could never be finished, and an acceptable in-progress bounty is left
+  # alone, so it would sit there for good. 11/12: Fizzlestiks's "ghoul master" entry also
+  # matches "elder ghoul master" and "ancient ghoul master", which his profile flees from.
+  def self.bigshot_flees_from?(name)
+    raw = defined?(UserVars) && UserVars.op.is_a?(Hash) ? UserVars.op['always_flee_from'] : nil
+    raw.to_s.split(',').map { |entry| entry.strip.downcase }.include?(name.to_s.strip.downcase)
   end
 
   # The task's creature is on the list and, when kill_areas is set, it's in one of those
@@ -1122,6 +1136,8 @@ end
 respond "BountyChooser: unrecognised name#{'s' if unknown.length > 1} #{unknown.map { |c| "'#{c}'" }.join(', ')} (will still match by name)." unless unknown.empty?
 respond "BountyChooser: accepting kill / dangerous-creature bounties for: #{creatures.join(', ')}"
 respond "BountyChooser: ...but only in: #{kill_areas.join(', ')}" unless kill_areas.empty?
+flee_from = (defined?(UserVars) && UserVars.op.is_a?(Hash) ? UserVars.op['always_flee_from'] : nil).to_s.strip
+respond "BountyChooser: ...and never what bigshot flees from: #{flee_from}" unless flee_from.empty?
 if areas.empty?
   respond 'BountyChooser: heirloom / rescue-child tasks are kept when the attacker is on the creature list (no areas set).'
 else

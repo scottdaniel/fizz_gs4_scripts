@@ -35,9 +35,13 @@ Script.run("fizzpure", "--raw=cloak,backpack,haversack --orbs=linen.pouch")
 Script.start("eloot_guard") unless Script.running?("eloot_guard")  # unpauses eloot when its containers are full
 Script.run("diskwait")  # eloot only finds the disk's boxes if the disk is here when the sell starts (10/28)
 Script.run("eloot", "sell")
-# Darkwoodes, greater orcs and werebears all live in the Upper Trollfang rooms his
-# profile hunts (10/30: darkwoode alone came up 3 times in 281 offers). The latter two
-# also get bounties in Cairnfang and the foothills of Zeltoph, hence --kill-areas.
+# Ghoul masters and tomb wights, the targets of his ghoul_master profile (11/12). Their
+# bounties always read "...in the Graveyard near Wehnimer's Landing" (11/11-12 logs), and
+# the guild also hands out moaning spirit / night hound culls there, which he doesn't hunt.
+# Elder and ancient ghoul masters (on the profile's flee list) are turned down too.
+Script.run("bounty_chooser", "kill ghoul master, tomb wight --kill-areas=Graveyard")
+# Earlier plan, darkwood profile: darkwoodes, greater orcs and werebears in Upper Trollfang
+# (greater orcs and werebears also get bounties in Cairnfang and the foothills of Zeltoph).
 #Script.run("bounty_chooser", "kill darkwoode, greater orc, werebear --kill-areas=Upper Trollfang")
 Script.run("ewaggle")
 
