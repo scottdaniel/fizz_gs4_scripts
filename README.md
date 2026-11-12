@@ -192,7 +192,7 @@ Scripts here are not tied to one character's name, though some need a particular
 | `unburden.lic` | Run right after `;eloot sell`: if a locksmith-pool box is still in hand, sells again (a few attempts), and posts to the Discord webhook if it's still stuck. | - |
 | `incarceration.lic` | Answers the city official's questions (race, month, profession) while you sit in the stocks after choosing INCARCERATION, one ANSWER per part within the two minutes; exits when you're freed. | - |
 | `meditate.lic` | Stores the weapon and meditates. | - |
-| `playsongs.lic` | Keeps an instrument playing in the background (default tambourine, soft; style soft/fast/slow). See [playsongs](#playsongs) below. | opt-in |
+| `playsongs.lic` | Keeps an instrument playing in the background (default tambourine; cycles soft / fast / slow, or pin one). See [playsongs](#playsongs) below. | opt-in |
 | `afk.lic` | `;afk off` = you're at the keyboard (music plays, `deadexit` won't quit on death), `;afk on` = away, `;afk` = show the setting. Sets `UserVars.afk_now` so you don't have to remember its name on every character, and flips `voicemail`'s AFK auto-reply and Discord relay to match (those are in-memory flags that reset to off when `voicemail` restarts; left alone if `voicemail` isn't running). | - |
 | `exp_check.lic` | Posts to a Discord webhook when Lumnis / Fash'lo'nae's Tutelage starts, changes tier or ends, and when the session ends. `;exp_check setup` saves the webhook. | - |
 | `raffle_watch.lic` | Posts to the same Discord webhook when a raffle you'd want appears (RAFFLE LIST every half hour plus the Town Crier thoughts stream). | - |
@@ -200,14 +200,23 @@ Scripts here are not tied to one character's name, though some need a particular
 
 #### playsongs
 
-Background script that keeps an instrument going and tracks Play skill. Use `;playsongs [instrument] [soft|fast|slow]`.
+Background script that keeps an instrument going and tracks Play skill. Use `;playsongs [instrument] [soft|fast|slow|cycle]`.
 It picks the instrument in this order: the command line, then `;vars set instrument=<name>`, then tambourine.
 
+- **Styles.** Unless one is pinned (`;playsongs drum fast`), each completed song moves to the next style (soft, fast, slow,
+  soft, ...), as the wiki author did so each got about equal playtime. The position is saved per instrument in the stats
+  file, so it survives restarts. A song that was cut short repeats its style; one that timed out or hit a style the
+  instrument rejects ("That isn't a valid style for a ...") moves on, so the cycle can't get stuck.
+- **Tuning.** An out-of-tune instrument plays a random message instead of the one you asked for (wiki). Before the first
+  song of each day it sends `TUNE <instrument>` and prints the game's answer, counting it as tuned only if the reply
+  looks like a tuning (the percussion line is on <https://gswiki.play.net/Instrument_messaging_percussion>); otherwise
+  it retries in an hour. A "not skilled enough ... to tune it" reply (too few ranks in the class) backs off to once a day.
+  Verified live for the tambourine and the drum. `playsongs tune` forces one.
 - **Hands.** The instrument lives in the **left** hand so the right stays free for a weapon. It re-checks before every
   song (other scripts stow things), swaps it over if it landed in the right hand, and stows whatever else is blocking the
   left hand before fetching it. If the game says an instrument "requires two hands" (drum, lute, piccolo), it stows the
   right hand and retries. When the script dies for any reason, `before_dying` stows the instrument.
-- **Songs and stats.** Each song is timed from "you lift your ..." to any of the five known end messages, counting the
+- **Songs and stats.** Each song is timed from its start line to any of the known end messages (soft / fast / slow endings, plus the drum's and others), with a 7-minute timeout for ending lines nobody has seen yet, counting the
   "sense of accomplishment" rank-up line. A song that ends under 285 s (300 s target minus a 15 s grace) counts as
   aborted: it's skipped in the totals. Stats per instrument (songs, rank-ups, time played, last played) live in
   `data/GSIV/<Char>/playsongs_stats.yaml`. Every 5 songs it runs `PLAY SKILL` and saves the real tier per instrument
@@ -215,7 +224,7 @@ It picks the instrument in this order: the command line, then `;vars set instrum
   hours is expected. `playsongs stats` also prints a for-fun estimate of rank from tracked time alone, using the
   checkpoints on <https://gswiki.play.net/Instrument_learning>.
 - **Commands** (type them with no leading semicolon while it runs; `stats` and `help` also work as `;playsongs stats`):
-  `playsongs stats`, `pause` (stow the instrument after the current song and wait), `resume`, `help`. Abbreviations of
+  `playsongs stats`, `pause` (stow the instrument after the current song and wait), `resume`, `tune`, `help`. Abbreviations of
   three or more letters work.
 - **Auto-pause.** It pauses and stows the instrument for as long as `;eloot sell` runs. For casters that need a hand
   free while hunting, `;vars set playsongs_pause_for_bigshot=true` also pauses it while bigshot is hunting

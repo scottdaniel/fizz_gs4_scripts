@@ -44,9 +44,22 @@
   happens to be running, so it stays playing while Bigshot is just resting
   in town between hunts.
 
-  Usage:  ;playsongs                (defaults to tambourine, played soft)
+  Usage:  ;playsongs                (tambourine, cycling through the styles)
           ;playsongs lute           (play a different instrument instead)
-          ;playsongs tambourine fast   (style: soft (default), fast, or slow)
+          ;playsongs tambourine fast   (pin one style: soft, fast or slow; no cycling)
+
+  Styles: unless one is pinned on the command line, each completed song moves
+  on to the next style (soft, fast, slow, soft, ...), the way the wiki's author
+  "cycled through the different styles so that I ultimately played each one
+  about the same amount of time" (https://gswiki.play.net/Instrument_learning).
+  The position is saved per instrument, so it carries across restarts. Type
+  PLAY on its own in the game to see what an instrument offers.
+
+  Tuning: an out-of-tune instrument plays a random message instead of the one
+  asked for, and may slow learning (same wiki page), and it can't tune itself.
+  So before the first song of each day (TUNE_INTERVAL_SECONDS) it sends
+  TUNE <instrument> and prints whatever the game answers. "playsongs tune"
+  forces one before the next song. Needs 4 ranks in the instrument's class.
 
   Set a persistent default instrument (used whenever no instrument is
   given on the command line) with:
@@ -64,6 +77,7 @@
           playsongs pause           - stop starting new songs after the
                                        current one finishes
           playsongs resume          - resume after a pause
+          playsongs tune            - tune the instrument before the next song
           playsongs help            - show this help
 
   Stop:   ;kill playsongs
@@ -71,10 +85,11 @@
 
 require 'yaml'
 require 'fileutils'
+require 'time'
 
 module Playsongs
 
-  COMMANDS = %w[stats help pause resume].freeze
+  COMMANDS = %w[stats help pause resume tune].freeze
 
   # @param word [String, nil]
   # @return [String, nil] the COMMANDS entry word is an unambiguous
@@ -103,15 +118,55 @@ module Playsongs
 
   INSTRUMENT = (EARLY_COMMAND ? DEFAULT_INSTRUMENT : (RAW_FIRST_ARG || DEFAULT_INSTRUMENT)).downcase
 
-  STYLES = %w[soft fast slow]
-  requested_style = (Script.current.vars[2] || "soft").downcase
-  unless STYLES.include?(requested_style)
-    echo "Unknown style '#{requested_style}', defaulting to soft. Valid styles: #{STYLES.join(', ')}."
-    requested_style = "soft"
-  end
-  STYLE = requested_style
+  # The styles to cycle through, in order (see the header).
+  STYLES = %w[soft fast slow].freeze
 
-  START_REGEX = /You lift your .+? and begin to tap out a beat\./
+  # A style given on the command line pins it for the whole run (no cycling);
+  # nothing, "cycle" or "all" cycles through STYLES.
+  requested_style = Script.current.vars[2].to_s.downcase
+  PINNED_STYLE =
+    if requested_style.empty? || %w[cycle all].include?(requested_style)
+      nil
+    elsif STYLES.include?(requested_style)
+      requested_style
+    else
+      echo "Unknown style '#{requested_style}', cycling instead. Valid styles: #{STYLES.join(', ')}, or cycle."
+      nil
+    end
+
+  # Song-start lines. The first is the one seen live for the tambourine; the next
+  # three are the soft / fast / slow starts from
+  # https://gswiki.play.net/Instrument_messaging_percussion; the last is the drum's.
+  # Only used to time the song from when it really began.
+  START_REGEX = Regexp.union(
+    /You lift your .+? and begin to tap out a beat\./,
+    /You softly shake your .+?, starting a gentle and lulling rhythm\./,
+    /You test your .+? with a gentle thump, then raise your head with a smile and begin a rapid beat\./,
+    /You slowly raise your .+? and begin to tap out a slow, soothing beat\./,
+    /You begin to \w+ tap on your .+?\./
+  )
+
+  # The game's answer to a style an instrument doesn't have.
+  INVALID_STYLE_REGEX = /That isn't a valid style for a/
+
+  # What TUNE answers when it worked, both seen live on Fizzlestiks 11/11:
+  #   tambourine: "You carefully check your tambourine, making sure the tiny
+  #                cymbals are firmly in place and in good condition."
+  #               (also the percussion line on the wiki's messaging page)
+  #   drum:       "You carefully tune your drum, tapping the head to make sure it
+  #                has the right tension."
+  # The last alternative is a loose catch for other instruments' wording ("...is
+  # now in tune"), worded so a failure like "Tune what?" doesn't count.
+  TUNED_REGEX = Regexp.union(
+    /You carefully check your .+?, making sure/,
+    /You carefully tune your .+?, tapping/,
+    /\byou (?:carefully )?tune\b|\btuned\b|\bin tune\b/i
+  )
+
+  # Seen live 11/11 for a flute with too few ranks: "You are not skilled enough
+  # with that instrument to tune it." Retrying every hour would be pointless, so
+  # this backs off to the normal daily interval.
+  TUNE_UNSKILLED_REGEX = /not skilled enough with that instrument to tune it/
 
   # Per https://gswiki.play.net/Instrument_learning, this message fires once
   # per rank (not per skill tick), and there are only 20 ranks total, with
@@ -157,6 +212,13 @@ module Playsongs
   # long, stop waiting instead of sitting in hand doing nothing until something
   # else kills the script (that is how the drum stalled for 11 minutes).
   SONG_TIMEOUT_SECONDS = 420
+
+  # How long a tuning is trusted before the next one. The wiki only says "from time
+  # to time"; a day is the schedule asked for.
+  TUNE_INTERVAL_SECONDS = 86_400
+
+  # A TUNE whose answer wasn't recognised is retried after this, not every song.
+  TUNE_RETRY_SECONDS = 3600
 
   RESTART_PAUSE_SECONDS = 3
   PAUSE_POLL_SECONDS = 1
@@ -258,6 +320,7 @@ module Playsongs
   @song_count = 0
   @blocking_script = nil
   @was_paused = false
+  @tune_requested = false
 
   def self.pause!
     @pause_mutex.synchronize { @paused = true }
@@ -269,6 +332,16 @@ module Playsongs
 
   def self.paused?
     @pause_mutex.synchronize { @paused }
+  end
+
+  # Set from the UpstreamHook thread ("playsongs tune"); the main loop does the
+  # actual TUNE, since fput needs the script's own thread.
+  def self.request_tune!
+    @pause_mutex.synchronize { @tune_requested = true }
+  end
+
+  def self.tune_requested?
+    @pause_mutex.synchronize { @tune_requested }
   end
 
   # @return [String, nil] "name arg1 arg2..." for the first running script
@@ -302,12 +375,18 @@ module Playsongs
     File.write(STATS_FILE, stats.to_yaml)
   end
 
-  def self.record_song(duration_seconds, rank_ups)
+  def self.record_song(duration_seconds, rank_ups, style = nil)
     stats = load_stats
     entry = stats[INSTRUMENT] ||= { 'songs_played' => 0, 'rank_ups' => 0, 'total_seconds' => 0 }
     entry['songs_played'] += 1
     entry['rank_ups'] += rank_ups
     entry['total_seconds'] += duration_seconds.round
+    if style
+      by_style = (entry['style_seconds'] ||= {})
+      by_style[style] = by_style[style].to_i + duration_seconds.round
+    end
+    # next song uses the next style in the cycle (a pinned style never moves on)
+    entry['style_index'] = entry['style_index'].to_i + 1 unless PINNED_STYLE
     entry['last_played'] = Time.now.to_s
     save_stats(stats)
     entry
@@ -316,14 +395,90 @@ module Playsongs
   # Rank-ups are a real skill event even if the song itself gets aborted
   # early, so they're still worth keeping -- just without touching
   # songs_played/total_seconds for a song that didn't really happen.
-  def self.record_rank_ups_only(rank_ups)
-    return if rank_ups.zero?
+  # advance_style: also move the cycle on a style. For a song that didn't count
+  # but shouldn't be repeated (a timeout, or a style the instrument rejects) --
+  # otherwise the cycle would sit on that style forever. An aborted song leaves it
+  # alone, so the same style is tried again.
+  def self.record_rank_ups_only(rank_ups, advance_style: false)
+    advance = advance_style && !PINNED_STYLE
+    return if rank_ups.zero? && !advance
 
     stats = load_stats
     entry = stats[INSTRUMENT] ||= { 'songs_played' => 0, 'rank_ups' => 0, 'total_seconds' => 0 }
     entry['rank_ups'] += rank_ups
+    entry['style_index'] = entry['style_index'].to_i + 1 if advance
     save_stats(stats)
     entry
+  end
+
+  # The style for the next song: the pinned one, or the next in the cycle (the
+  # position is saved per instrument, so it carries across restarts).
+  def self.pick_style
+    return PINNED_STYLE if PINNED_STYLE
+
+    STYLES[load_stats.dig(INSTRUMENT, 'style_index').to_i % STYLES.length]
+  end
+
+  def self.parse_time(value)
+    value && Time.parse(value.to_s)
+  rescue ArgumentError
+    nil
+  end
+
+  # Due when asked for, or when it has never been tuned / was last tuned more than
+  # TUNE_INTERVAL_SECONDS ago -- but not again within TUNE_RETRY_SECONDS of an
+  # attempt whose answer wasn't recognised, or within a day of "not skilled enough".
+  def self.tune_due?
+    return true if tune_requested?
+
+    entry = load_stats[INSTRUMENT] || {}
+    attempt = parse_time(entry['last_tune_attempt'])
+    wait = entry['tune_unskilled'] ? TUNE_INTERVAL_SECONDS : TUNE_RETRY_SECONDS
+    return false if attempt && Time.now - attempt < wait
+
+    tuned = parse_time(entry['last_tuned'])
+    tuned.nil? || Time.now - tuned >= TUNE_INTERVAL_SECONDS
+  end
+
+  # Sends TUNE and returns the game's answer, minus blank and XML-tag lines.
+  def self.send_tune
+    waitrt?
+    lines = Array(Lich::Util.issue_command("tune my #{INSTRUMENT}", /\S/, /<prompt/, include_end: false, timeout: 8))
+    lines.map { |l| l.to_s.strip }.reject { |l| l.empty? || l.start_with?('<') }
+  end
+
+  def self.tune_instrument
+    lines = send_tune
+    if lines.any? { |l| l =~ TWO_HANDED_REGEX || l =~ /two hands/i }
+      fput "store right"
+      fput "stow right" if checkright
+      lines = send_tune
+    end
+
+    tuned = lines.any? { |l| l =~ TUNED_REGEX }
+    stats = load_stats
+    entry = stats[INSTRUMENT] ||= { 'songs_played' => 0, 'rank_ups' => 0, 'total_seconds' => 0 }
+    unskilled = lines.any? { |l| l =~ TUNE_UNSKILLED_REGEX }
+    entry['last_tune_attempt'] = Time.now.to_s
+    entry['last_tuned'] = Time.now.to_s if tuned
+    entry['tune_unskilled'] = unskilled
+    save_stats(stats)
+    @pause_mutex.synchronize { @tune_requested = false }
+
+    shown = lines.first(4).join(' | ')
+    if tuned
+      Lich::Messaging.msg("bold", "[Playsongs] Tuned #{INSTRUMENT}. Game said: #{shown}")
+    elsif unskilled
+      Lich::Messaging.msg("bold", "[Playsongs] Can't tune #{INSTRUMENT} yet -- not enough ranks in its class. Playing it untuned (the game may pick a random message); will try again tomorrow. Game said: #{shown}")
+    else
+      Lich::Messaging.msg("bold", "[Playsongs] Sent TUNE for #{INSTRUMENT}, but the answer isn't one I recognise, so I'll try again in #{TUNE_RETRY_SECONDS / 60} min. " \
+                                  "Game said: #{shown.empty? ? '(nothing)' : shown}")
+    end
+    waitrt?
+  end
+
+  def self.maybe_tune
+    tune_instrument if tune_due?
   end
 
   # @param total_seconds [Integer]
@@ -354,6 +509,12 @@ module Playsongs
         seconds = entry['total_seconds'].to_i
         avg = songs > 0 ? (seconds / songs.to_f).round(1) : 0
         respond "#{instrument}: #{songs} songs, #{entry['rank_ups'].to_i} rank-ups, #{format_duration(seconds)} played (avg #{avg}s/song), last played #{entry['last_played'] || 'never'}"
+
+        by_style = entry['style_seconds']
+        if by_style.is_a?(Hash) && !by_style.empty?
+          respond "  By style (since style cycling began): " + STYLES.map { |st| "#{st} #{format_duration(by_style[st].to_i)}" }.join(', ')
+        end
+        respond "  Last tuned: #{entry['last_tuned']}" if entry['last_tuned']
 
         levels = entry['skill_levels']
         if levels && !levels.empty?
@@ -391,7 +552,7 @@ module Playsongs
   def self.show_help
     respond ''
     respond '--- Playsongs Help ---'
-    respond "Keeps playing an instrument (#{STYLE} style) in a loop, timing each song and counting rank-ups."
+    respond "Keeps playing an instrument (#{PINNED_STYLE ? "#{PINNED_STYLE} style, pinned" : 'cycling soft / fast / slow'}) in a loop, timing each song and counting rank-ups."
     respond "Also runs PLAY SKILL every #{SKILL_CHECK_INTERVAL} completed songs and saves the real skill level as a second confirmation of the rank-up count."
     respond "Auto-pauses while eloot sell is running (not eloot alone), no command needed."
     respond "Bigshot auto-pause: #{PAUSE_FOR_BIGSHOT ? 'ON' : 'off'} (toggle with ;vars set playsongs_pause_for_bigshot=true/false) -- when on, only pauses while Bigshot is actually hunting, not while it's resting in town."
@@ -401,6 +562,7 @@ module Playsongs
     respond '  playsongs stats    - print stats for every instrument tracked so far'
     respond '  playsongs pause    - stop starting new songs after the current one finishes'
     respond '  playsongs resume   - resume after a pause'
+    respond '  playsongs tune     - tune the instrument before the next song (it also tunes by itself once a day)'
     respond '  playsongs help     - show this help'
     respond ''
     respond "Default instrument: set with ;vars set instrument=<name> (currently: #{DEFAULT_INSTRUMENT}). A command-line instrument always overrides it."
@@ -487,7 +649,8 @@ module Playsongs
     started_at = Time.now
     rank_ups = 0
 
-    fput "play my #{INSTRUMENT} #{STYLE}"
+    style = pick_style
+    fput "play my #{INSTRUMENT} #{style}"
 
     give_up_at = Time.now + SONG_TIMEOUT_SECONDS
     recent = []
@@ -498,7 +661,7 @@ module Playsongs
         if Time.now > give_up_at
           Lich::Messaging.msg("bold", "[Playsongs] No song-ending message for #{SONG_TIMEOUT_SECONDS}s -- assuming it ended and playing again. " \
                                       "If this keeps happening, the ending text is new: add it to STOP_REGEX. Last lines seen: #{recent.join(' | ')}")
-          record_rank_ups_only(rank_ups)
+          record_rank_ups_only(rank_ups, advance_style: true)
           return
         end
         sleep 0.1
@@ -511,6 +674,15 @@ module Playsongs
         recent.shift while recent.length > 5
       end
 
+      if line =~ INVALID_STYLE_REGEX
+        if PINNED_STYLE
+          echo "#{INSTRUMENT} has no '#{style}' style (#{line.strip}) -- stopping. Run it without a style to cycle the ones it does have."
+          exit
+        end
+        Lich::Messaging.msg("bold", "[Playsongs] #{INSTRUMENT} rejected the '#{style}' style (#{line.strip}) -- skipping to the next one.")
+        record_rank_ups_only(rank_ups, advance_style: true)
+        return
+      end
       if line =~ TWO_HANDED_REGEX
         echo "#{INSTRUMENT} needs both hands -- putting the right hand away and retrying."
         # STORE (not STOW): routes a readied weapon to its sheath per the
@@ -521,7 +693,7 @@ module Playsongs
         fput "stow right" if checkright
         started_at = Time.now
         give_up_at = started_at + SONG_TIMEOUT_SECONDS
-        fput "play my #{INSTRUMENT} #{STYLE}"
+        fput "play my #{INSTRUMENT} #{style}"
         next
       end
       if line =~ START_REGEX
@@ -544,8 +716,8 @@ module Playsongs
       record_rank_ups_only(rank_ups)
       echo "Song aborted after #{duration}s (under #{MIN_SONG_SECONDS}s) -- not counted toward song stats."
     else
-      entry = record_song(duration, rank_ups)
-      summary = "[Playsongs] Song complete in #{duration}s (rank-ups: #{rank_ups}). #{INSTRUMENT} totals: #{entry['songs_played']} songs, #{entry['rank_ups']} rank-ups, #{format_duration(entry['total_seconds'])} played."
+      entry = record_song(duration, rank_ups, style)
+      summary = "[Playsongs] Song complete in #{duration}s (#{style}, rank-ups: #{rank_ups}). #{INSTRUMENT} totals: #{entry['songs_played']} songs, #{entry['rank_ups']} rank-ups, #{format_duration(entry['total_seconds'])} played."
       # echo/respond force <output class="mono"/> and HTML-escape <, > --
       # which mangles pushBold/popBold into inert text. Lich::Messaging.msg
       # goes through _respond instead (no mono-wrap/escaping), so the color
@@ -564,13 +736,13 @@ module Playsongs
       show_stats
     when 'help'
       show_help
-    when 'pause', 'resume'
+    when 'pause', 'resume', 'tune'
       echo "Not running yet -- start with ;playsongs [instrument] first, then use 'playsongs #{EARLY_COMMAND}' (no semicolon) once it's going."
     end
     exit
   end
 
-  echo "Playsongs started -- instrument: #{INSTRUMENT}, style: #{STYLE}"
+  echo "Playsongs started -- instrument: #{INSTRUMENT}, style: #{PINNED_STYLE || 'cycling soft/fast/slow'}"
 
   # Lets typing "playsongs <command>" (no leading semicolon) control the
   # running script without being sent upstream as a game command.
@@ -601,6 +773,10 @@ module Playsongs
         # PAUSE_POLL_SECONDS, prints its own "playing again in Ns" countdown,
         # and does the hand check/fix and play from there instead.
         Playsongs.resume!
+      when 'tune'
+        # Same reason as resume: only flips a flag; the main loop does the TUNE.
+        Playsongs.request_tune!
+        respond '[Playsongs] Will tune before the next song.'
       else
         respond "[Playsongs] Unknown command '#{word}'. Try: playsongs help"
       end
@@ -656,6 +832,7 @@ module Playsongs
     # correctly in the left hand before trying to play again instead of
     # assuming the last song ended because it actually finished.
     ensure_in_left_hand
+    maybe_tune
     play_and_track
     @song_count += 1
     maybe_check_skill(@song_count)
