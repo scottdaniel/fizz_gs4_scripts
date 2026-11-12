@@ -6491,6 +6491,7 @@ module BlackArts
       # Check for full name first
       options.each { |letter| profile_letter = letter if BlackArts.data.settings["names_#{letter}".to_sym] =~ /#{skin}/i }
       Util.msg("debug", "Hunting.switch_profile: profile_letter - #{profile_letter}")
+      profile_letter ||= Hunting.make_profile(skin)
       if profile_letter
         dir = BlackArts.data.dir
         profile = "#{dir}/#{BlackArts.data.settings["profile_#{profile_letter}".to_sym] + ".yaml"}"
@@ -6501,6 +6502,82 @@ module BlackArts
         Util.msg "info", " No Bigshot profile found for #{skin} from a(n) #{BlackArts.data.creature}. Please check the Profiles tab. Exiting..."
         exit
       end
+    end
+
+    # Hunting commands for a profile make_profile builds. Scott's alchemy-kill profiles use a short
+    # spell routine, not Fizzleworth-attack-ultima; this default is his (11/11): Web (118), re-cast
+    # until a roll of 101+ (bigshot's force ... until N reads the result line), then Mana Disruption (702).
+    # ;vars set fizzarts_hunt_commands=<bigshot hunting commands> to change it; read at run time.
+    def self.hunt_commands
+      v = UserVars.fizzarts_hunt_commands.to_s.strip
+      v.empty? ? "force incant 118 until 101, 702 target (xx)" : v
+    end
+
+    # 11/11 (Scott): a recipe needed tree viper fangs and no Profiles slot named them, so fizzarts
+    # exited. By hand he ran ;huntplan tree viper, saved the result as bigshot profile tree_viper
+    # with his own hunting commands, and put "tree viper fang" -> tree_viper (kill on) in the
+    # Profiles tab. This does the same in the first free slot and returns its letter, or nil.
+    # huntplan always writes its default profile (huntplan.yaml :default_profile, "default"), so
+    # that file is copied to <creature>.yaml and then put back the way it was. An existing
+    # <creature>.yaml is used as it is.
+    def self.make_profile(skin)
+      creature = BlackArts.data.creature.to_s.strip
+      return nil if creature.empty?
+
+      letter = %w[a b c d e f g h i j].find { |l| BlackArts.data.settings["names_#{l}".to_sym].to_s.strip.empty? }
+      unless letter
+        Util.msg("yellow", " No bigshot profile for #{skin}, and all 10 Profiles slots are in use.")
+        return nil
+      end
+
+      dir = BlackArts.data.dir
+      name = creature.downcase.gsub(/[^a-z0-9' -]/, '').strip.tr(' ', '_')
+      path = File.join(dir, "#{name}.yaml")
+      if File.exist?(path)
+        Util.msg("info", " No Profiles slot for #{skin}; using your bigshot profile '#{name}'.")
+      else
+        unless Script.exists?('huntplan')
+          Util.msg("yellow", " No bigshot profile for #{skin}, and huntplan isn't installed to make one.")
+          return nil
+        end
+        hp_file = File.join(DATA_DIR, XMLData.game, Char.name, 'huntplan.yaml')
+        base = ((YAML.load_file(hp_file, permitted_classes: [Symbol]) rescue nil) || {})[:default_profile].to_s
+        base = 'default' if base.strip.empty?
+        base_path = File.join(dir, "#{base}.yaml")
+        backup = File.exist?(base_path) ? File.read(base_path) : nil
+
+        Util.msg("info", " No bigshot profile for #{skin}; building one for #{creature} with ;huntplan #{creature}.")
+        UserVars.hp['success'] = 0 if UserVars.hp.is_a?(Hash)
+        Script.run('huntplan', creature)
+        ok = UserVars.hp.is_a?(Hash) && UserVars.hp['success'] == 1 && File.exist?(base_path)
+        begin
+          if ok
+            profile = YAML.load_file(base_path)
+            profile['profile_current'] = name
+            profile['hunting_commands'] = Hunting.hunt_commands
+            File.write(path, profile.to_yaml)
+          end
+        ensure
+          if backup
+            File.write(base_path, backup)
+          elsif File.exist?(base_path)
+            File.delete(base_path)
+          end
+        end
+        unless ok && File.exist?(path)
+          Util.msg("yellow", " ;huntplan couldn't build a profile for #{creature} (its reason is above).")
+          return nil
+        end
+        Util.msg("info", " Saved bigshot profile '#{name}' (hunting commands: #{Hunting.hunt_commands}).")
+      end
+
+      BlackArts.data.settings["names_#{letter}".to_sym] = skin
+      BlackArts.data.settings["profile_#{letter}".to_sym] = name
+      BlackArts.data.settings["profile_name_#{letter}".to_sym] = name
+      BlackArts.data.settings["kill_#{letter}".to_sym] = true
+      BlackArts.save_profile
+      Util.msg("info", " Profiles slot #{letter.upcase}: #{skin} -> #{name} (kill only the needed creature).")
+      letter
     end
   end
 
