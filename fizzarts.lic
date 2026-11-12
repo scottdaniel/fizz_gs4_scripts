@@ -8723,6 +8723,37 @@ module BlackArts
       4
     end
 
+    # 11/11 (Scott): instead of running from critters while foraging, hold them on the ground with
+    # Grasp of the Grave (709) and keep foraging -- re-cast whenever one is up again (at most every
+    # 6 s). "Run from creatures" is only the fallback for when 709 can't do it: not known, not
+    # enough mana with one standing, no magic here, or a critter still up after two casts in a
+    # row (one the arms can't drag down).
+    def self.standing_critters
+      GameObj.targets.to_a.select { |t| t && t.status.to_s !~ /dead|gone|lying|prone|sitting|kneeling/i }
+    end
+
+    def self.grasp_ok?
+      BlackArts.data.settings[:forage_options].include?("use_709") && Spell[709].known? &&
+        !BlackArts.data.settings[:no_magic].include?(709) && @grasp_misses.to_i < 2
+    end
+
+    # true while 709 is keeping this room's critters down (so don't run)
+    def self.hold_with_709?
+      Actions.grasp_ok? && (Spell[709].affordable? || Actions.standing_critters.empty?)
+    end
+
+    def self.ground_critters
+      return if Actions.standing_critters.empty? || !Actions.grasp_ok?
+      return if Time.now.to_f - @grasp_at.to_f < 6
+
+      Util.cast_spell(709)
+      @grasp_at = Time.now.to_f
+      Util.wait_rt
+      waitcastrt?
+      sleep 0.5 # let the "drag ... to the ground" statuses land
+      @grasp_misses = Actions.standing_critters.empty? ? 0 : @grasp_misses.to_i + 1
+    end
+
     def self.forage(forage_list)
       short = {}
       for herb, num in forage_list.dup
@@ -8766,9 +8797,10 @@ module BlackArts
 
           location_list.each { |room|
             tried << room
+            @grasp_misses = 0
               Util.travel(room)
               Util.wait_rt
-              unless (GameObj.targets.count.positive? && BlackArts.data.settings[:forage_options].include?("run"))
+              unless GameObj.targets.count.positive? && BlackArts.data.settings[:forage_options].include?("run") && !Actions.hold_with_709?
                 loop {
                   unless Util.in_town?
                     if Char.prof =~ /Cleric|Empath/i && BlackArts.data.settings[:forage_options].include?("use_213")
@@ -8780,9 +8812,7 @@ module BlackArts
 
                     Util.get_lines("spell active", /<dialogData id='Active Spells'/)
 
-                    if BlackArts.data.settings[:forage_options].include?("use_709") && !GameObj.npcs.any? { |c| c.name =~ /^(?:arm|appendage|claw|limb|pincer|tentacle)s?$|^(?:palpus|palpi)$/i } && GameObj.targets.count.positive?
-                      Util.cast_spell(709)
-                    end
+                    Actions.ground_critters if GameObj.targets.count.positive?
 
                     # Cast any helper spells before kneeling
                     Util.cast_spell(919) if !Effects::Buffs.to_h.has_key?(919) && !Effects::Cooldowns.to_h.has_key?(919) && BlackArts.data.settings[:forage_options].include?("use_919")
@@ -8829,7 +8859,7 @@ module BlackArts
                     Util.go2(return_room)
                   end
 
-                  break if GameObj.targets.count.positive? && BlackArts.data.settings[:forage_options].include?("run")
+                  break if GameObj.targets.count.positive? && BlackArts.data.settings[:forage_options].include?("run") && !Actions.hold_with_709?
                 }
 
                 fput 'stand' until standing?
