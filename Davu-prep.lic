@@ -1,0 +1,35 @@
+#Davu-prep.lic
+#Ranger version of Brayis-prep.lic (Davu) -- kept as basic as possible: no
+#rubs, no scroll spell-up (ewaggle runs in Davu-prerest instead). Replaces the
+#profiles' plain "ready weapon" hunting prep.
+#
+#The ipantor long bow lives slung over his shoulder: STORE WEAPON slings it,
+#READY WEAPON slings it off into the left hand (both verified in his 11/02 log).
+
+module DavuPrep
+
+# clear hands -- "store weapon" slings the bow first, so "stow all" only mops
+# up whatever else is in a hand (a bow can't fire with the right hand full).
+fput "store weapon"
+fput "stow all"
+
+fput "ready weapon"
+
+# Still nothing in either hand: the bow is really gone (disarmed and never
+# recovered, or the STORE weapon setting points at something that isn't
+# there). Don't let bigshot walk back out unarmed -- stop it here, in town,
+# the same way Brayis-prep.lic does. This runs before any travel (bigshot's
+# hunting_prep_commands happen at the start of pre_hunt).
+pause 0.5
+if checkright.nil? && checkleft.nil?
+  echo "Davu-prep: nothing in hand after READY WEAPON -- stopping bigshot. " \
+       "Check the STORE weapon setting (STORE LIST)."
+  Script.kill("bigshot") if Script.running?("bigshot")
+  exit
+end
+
+# Puts away loot eloot has no room for and unpauses it, so a full container
+# can't leave you fighting with your hands full (see eloot_guard.lic).
+Script.start("eloot_guard") unless Script.running?("eloot_guard")
+
+end #End of module
