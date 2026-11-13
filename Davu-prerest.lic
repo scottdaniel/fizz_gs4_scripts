@@ -1,7 +1,7 @@
 #Davu-prerest.lic
 #Ranger version of Brayis-prerest.lic (Davu) -- the darkorc_n_wraith profile's
 #resting scripts (eherbs, eloot sell, ewaggle, timequit) plus the shared chores
-#the other characters run. ewaggle because he casts his own 100s/600s buffs
+#the other characters run and a bounty_chooser for that profile's creatures. ewaggle because he casts his own 100s/600s buffs
 #(cast list in data/GSIV/Davu/ewaggle.yaml).
 #
 #Left out on purpose: buyitems (no rub items, no items_to_buy list). diskwait
@@ -20,6 +20,10 @@ Script.start("eloot_guard") unless Script.running?("eloot_guard")  # unpauses el
 Script.run("diskwait")  # eloot only finds the disk's boxes if the disk is here when the sell starts (10/28)
 Script.run("eloot", "sell")
 Script.run("unburden")  # a box eloot left in hand -> sell again
+# Dark orcs and wraiths, the targets of his darkorc_n_wraith profile (11/12). The guild's
+# wraith culls come both "in the smuggling tunnels" and "in the Graveyard near Wehnimer's
+# Landing", so only the tunnels count. Gem orders are kept too (any town).
+Script.run("bounty_chooser", "kill dark orc, wraith --kill-areas=smuggling tunnels")
 Script.run("ewaggle")
 # Quits only if a time was set with ;timequit in 3h (or at 8am); otherwise sits, rests and meditates.
 Script.run("timequit")
