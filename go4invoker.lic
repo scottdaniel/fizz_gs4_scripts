@@ -78,7 +78,7 @@ module Go4Invoker
   def never_wait_for; %w[playsongs rested timequit go4invoker]; end
 
   # Without bigshot: scripts that move you or are mid-errand, so the trip waits for them.
-  def solo_chores; %w[go2 eherbs ecure eloot unburden buyitems diskwait bounty_chooser undead_bounty ebounty]; end
+  def solo_chores; %w[go2 eherbs ecure eloot unburden buyitems diskwait bounty_chooser undead_bounty ebounty fizzbounty]; end
 
   def say(msg)
     echo "[go4invoker] #{msg}"

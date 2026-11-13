@@ -92,7 +92,7 @@ module FizzleworthChild
   end
 
   def busy_elsewhere?
-    %w[echild ebounty bounty_chooser].any? { |s| Script.running?(s) }
+    %w[echild ebounty fizzbounty bounty_chooser].any? { |s| Script.running?(s) }
   end
 
   def freeze
