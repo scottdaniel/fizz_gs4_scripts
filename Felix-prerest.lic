@@ -22,4 +22,11 @@ Script.run("undead_bounty", "kill zombie")
 Script.run("buyitems")
 Script.run("ewaggle")
 
+# Rest with the lance put away. eloot sell does STORE WEAPON when it starts but
+# READY WEAPON again when it's done (11/13 log), so the lance sat in his hand
+# for the whole rest. Felix-prep readies it again before the next hunt. The
+# type check keeps STORE WEAPON from shoving anything else into the harness.
+fput "swap" if checkright.nil? && GameObj.left_hand.type.to_s =~ /weapon/
+fput "store weapon" if GameObj.right_hand.type.to_s =~ /weapon/
+
 end #End of module
