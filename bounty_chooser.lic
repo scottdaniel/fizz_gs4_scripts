@@ -5,7 +5,7 @@
         game: gemstone
         tags: bounty, adventurer's guild
     requires: Lich > 5.4.0
-     version: 1.7
+     version: 1.8
 
   undead_bounty.lic with the "must be undead" test replaced by an allowed list, and
   with heirloom and rescue-child tasks accepted by AREA.
@@ -45,6 +45,10 @@
   started in. See undead_bounty.lic for those details.
 
   changelog:
+    1.8
+      - does nothing while fizzbounty or ebounty is running: they choose, work and turn in the
+        bounty themselves. 11/13 Davu's prerest bounty_chooser removed the skin task fizzbounty was
+        about to hunt (it only keeps dark orc / wraith kills in the smuggling tunnels).
     1.7
       - a creature on bigshot's "always flee from" list never qualifies, even when it contains a
         list entry: 11/12 Fizzlestiks's "ghoul master" would have taken an "elder ghoul master"
@@ -1068,6 +1072,14 @@ end
 ## space-split tokens start at script.vars[1].
 if script.vars[1].to_s.strip =~ /^help$/i
   BountyChooser.show_help
+  exit
+end
+
+# While fizzbounty or ebounty is running, that script picks, works and turns in the bounties
+# (rescue children included), so the prerest's bounty_chooser must stay out of it. 11/13 Davu's
+# Davu-prerest bounty_chooser removed the skin task fizzbounty was about to hunt.
+if (bounty_script = %w[fizzbounty ebounty].find { |name| Script.running?(name) })
+  respond "BountyChooser: #{bounty_script} is running and handles the bounty, so doing nothing."
   exit
 end
 
