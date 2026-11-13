@@ -1,0 +1,40 @@
+# quiet
+# notest.lic  -- start scripts everywhere except the GS4 TEST instance (game code GST).
+#
+#   ;notest dreavening dreavening_weapon
+#
+# Each word is a script name, started with no arguments, unless it is already running.
+# On TEST it starts nothing and says so.
+#
+# Why: the global autostart list starts the same scripts on every character in every
+# instance, and Lich has no per-instance exclusion. Dreaven is a live (Prime) bot, and his
+# [Dreavening]-GSIV announcements come over LNet, which TEST shares, so ;dreavening on TEST
+# could act on the live Dreavening. Since 11/12 the global list runs
+# `notest dreavening dreavening_weapon` instead of the two scripts directly.
+#
+# Keep it ONE autostart entry with several names: autostart skips an entry whose script
+# is already running, so a second `notest` entry would be skipped while the first is
+# still starting its scripts.
+
+TEST_GAMES = %w[GST].freeze unless defined?(TEST_GAMES)
+
+names = script.vars[1..-1].to_a.map(&:strip).reject(&:empty?)
+if names.empty?
+  echo "usage: ;notest <script> [<script> ...]   (starts them unless this is the TEST instance)"
+  exit
+end
+
+if TEST_GAMES.include?(XMLData.game.to_s)
+  echo "TEST instance (#{XMLData.game}) -- not starting #{names.join(', ')}."
+  exit
+end
+
+names.each do |name|
+  next if Script.running?(name)
+  unless Script.exists?(name)
+    echo "#{name} not found, skipping."
+    next
+  end
+  start_script(name)
+  sleep 0.02
+end
