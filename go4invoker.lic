@@ -8,7 +8,12 @@
   ask?". A spell-up costs 10,000 silver and lasts about 4 hours, so this goes at every other
   visit: when the last spell-up is at least 3.5 hours old by the time she arrives.
 
-  What a visit looks like (all automatic, only when one is due and bigshot is running):
+  Without bigshot running (resting by hand), a minute before she arrives it goes from wherever
+  you are and comes back to that room, unless go2 or a rest chore (eherbs, eloot...) is moving
+  you or there's a creature in the room. 11/13 Davu sat in the inn through the 16:00 visit
+  because this used to do nothing at all without bigshot.
+
+  What a visit looks like with bigshot (all automatic, only when one is due):
     * From 12 minutes before she arrives until 3 minutes after, a hunting bigshot is told to
       rest ($bigshot_should_rest). It finishes the fight, walks home and does its normal
       pre-rest chores. A bigshot that is already resting is simply caught there.
@@ -71,6 +76,9 @@ module Go4Invoker
 
   # Scripts that may be running in the resting room but never need waiting for.
   def never_wait_for; %w[playsongs rested timequit go4invoker]; end
+
+  # Without bigshot: scripts that move you or are mid-errand, so the trip waits for them.
+  def solo_chores; %w[go2 eherbs ecure eloot unburden buyitems diskwait bounty_chooser undead_bounty ebounty]; end
 
   def say(msg)
     echo "[go4invoker] #{msg}"
@@ -223,6 +231,13 @@ module Go4Invoker
   # trinket teleport). No path search here: one that never finds 3677 walks the whole map.
   def fwi_trinket
     UserVars['mapdb_fwi_trinket'].to_s.strip
+  end
+
+  # A live creature on the game's own target list (town folk and the invoker aren't on it).
+  def creatures_here?
+    Array(GameObj.targets).any?
+  rescue StandardError
+    false
   end
 
   def invoker_here?
@@ -436,15 +451,44 @@ module Go4Invoker
     unpause_bigshot
   end
 
+  # No bigshot running (resting by hand): go from wherever you are, a minute before she
+  # arrives, once nothing is moving you and there's nothing to fight.
+  def solo_tick(visit, r)
+    return :solo_waiting if r < leave_at
+
+    busy = solo_chores.select { |n| Script.running?(n) }
+    why = if busy.any? then "#{busy.join(', ')} running"
+          elsif creatures_here? then "a creature in the room"
+          end
+    if why
+      say "waiting to leave for the invoker: #{why}." unless @solo_blocked == visit
+      @solo_blocked = visit
+      @solo_why = why
+      return :solo_blocked
+    end
+
+    @handled_visit = visit
+    say "bigshot isn't running -- going to the invoker from room #{room_id.inspect}."
+    result = trip
+    report(result, visit)
+    :solo_visited
+  end
+
   # One poll of the watcher. Returns a symbol saying what it did (for tests).
   def tick(now = Time.now)
     save_paid
     visit = visit_epoch(now)
     r = rel_minutes(now)
+    if r > last_leave && @solo_blocked == visit && @handled_visit != visit && due_for?(visit)
+      @handled_visit = visit
+      say "!! never got to leave for the #{clock(visit)} visit (#{@solo_why})."
+      notice("invoker trip skipped: #{@solo_why} until #{last_leave} past (#{clock(visit)} visit).")
+      return :solo_skipped
+    end
     return :outside if r < window_open || r > last_leave
     return :not_due unless due_for?(visit)
     return :handled if @handled_visit == visit
-    return :no_bigshot unless bigshot?
+    return solo_tick(visit, r) unless bigshot?
     return :bigshot_paused if Script.paused?("bigshot") # someone else (deader, disarmguard) paused it
     return :no_resting_room if resting_room.nil?
 
@@ -510,6 +554,8 @@ module Go4Invoker
     @paused_bigshot = false
     @handled_visit = nil
     @forced_visit = nil
+    @solo_blocked = nil
+    @solo_why = nil
     $go4invoker_paid_at = nil
     case arg.to_s.strip.downcase
     when ""
