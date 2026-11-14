@@ -23,7 +23,7 @@ Script.start("Fizzleworth-anim-cleanup") unless Script.running?("Fizzleworth-ani
 Script.run("reanim", "die")
 
 # The silver the demon carried through the hunt (demonsilver_watch) comes back before eherbs and
-# the eloot sell spend and bank it. Waits up to a minute for a demon that's lagging behind.
+# the eloot sell spend and bank it. Waits up to two minutes for a demon that's lagging behind.
 Script.run("demonsilver", "get")
 
 Script.run("eherbs")
