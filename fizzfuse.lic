@@ -4,7 +4,7 @@
         game: gemstone
         tags: scroll infusion, infuse, unlock, runestone, scroll
     requires: Lich > 5.4.0
-     version: 2.1
+     version: 2.2
         note: Written with assistance from Claude (Anthropic).
 
 
@@ -47,6 +47,8 @@ Infuse!
 		  no backroom access it buys the alchemist's premade runestone instead, and
 		  ;vars set infuse_smooth_stone=false skips the extra general store stop.
 		- You can read all scrolls
+		- If you die (a scroll can kill you outright), the script stops itself at once
+		  instead of carrying on with a dead character
 		- You're not carrying a heavy load of silvers: if your encumbrance is 25% or more
 		  and you have silvers on hand, the script runs to the bank, deposits them all and
 		  comes back before doing anything else (change the 25 with
@@ -175,6 +177,8 @@ Infuse!
           10k premade runestone (about 6k). Falls back to the premade one when the stone
           or potion isn't for sale (no backroom access); infuse_smooth_stone=false skips
           the general store stop. Hands are also cleared before the bank run now.
+        - Stops itself if you die. A waved stone once exploded a scroll and killed the
+          character, and the script kept going (rummaging, waving, buying) while dead.
 
 =end
 
@@ -830,8 +834,24 @@ end
 # scrollsack/vibrantscrollsack/--cont are opened when a scroll is stowed in them.
 if args[0] != 'help'
 	before_dying {
-		$opened_containers.each { |c| fput "close my #{c}" }
+		# Nothing to close once you're dead (the game just refuses everything).
+		$opened_containers.each { |c| fput "close my #{c}" } unless dead?
 	}
+
+	# A scroll can kill you outright (waving a quiss'fyn stone over a scroll once made it
+	# explode: "Fire burns through neck and destroys carotid artery", then "It seems you
+	# have died, my friend"). The script used to carry on regardless - rummaging, waving
+	# and buying with a dead character - so stop it the moment the game says you're dead.
+	my_name = Script.current.name
+	Thread.new do
+		loop do
+			sleep 0.5
+			next unless dead?
+			echo "You have died - stopping #{my_name}."
+			Script.kill(my_name)
+			break
+		end
+	end
 	open_container(UserVars.infusesack)
 	deposit_if_encumbered unless args[0] == 'check'
 end
