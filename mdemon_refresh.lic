@@ -46,8 +46,8 @@
   outlast the room -- the bank teller blocked it, the 90 s ran on after the walk back to the
   inn, and the raven stood outside the gemcutter's for 80 s until Scott ordered it by hand).
   A real order is echoed once ("ordered it back"); the silent "already here" replies are not.
-  It sends none at all while you stand in one of quiet_rooms (the locker vaults and the
-  Wayside Inn dining room, where Dreavenings are held; edit the list in the method).
+  It sends none at all while you stand in one of quiet_rooms (the locker vaults, the pawnshops
+  and the Wayside Inn dining room, where Dreavenings are held; edit the list in the method).
 =end
 
 module MdemonRefresh
@@ -109,10 +109,12 @@ module MdemonRefresh
   # Rooms where the demon is never called back (Scott 11/13): standing at the locker or in a
   # Dreavening you don't want `tell mdemon return` going out every 15 s. Room ids as the map
   # prints them: 15948 the Landing locker vault and 35474 the Icemule one (where `go2 locker`
-  # ends up, per the logs), 3619 Wayside Inn, Dining Room (where ;dreavening sits you). A METHOD
-  # so an edit applies the next time the script starts.
+  # ends up, per the logs), 3619 Wayside Inn, Dining Room (where ;dreavening sits you). The
+  # pawnshops too (Scott 11/14): 408 Kilron's Pawnshop, Front Room in the Landing and 2464 Pawnshop,
+  # Interior in Icemule, where `go2 pawnshop` ends up. A METHOD so an edit applies the next time
+  # the script starts.
   def self.quiet_rooms
-    [15948, 35474, 3619]
+    [15948, 35474, 3619, 408, 2464]
   end
 
   def self.demon_here?
