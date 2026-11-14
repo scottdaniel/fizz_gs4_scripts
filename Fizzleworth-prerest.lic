@@ -22,6 +22,10 @@ Script.start("Fizzleworth-anim-cleanup") unless Script.running?("Fizzleworth-ani
 # No-op when no animate is up (base hunts, or already cleaned up).
 Script.run("reanim", "die")
 
+# The silver the demon carried through the hunt (demonsilver_watch) comes back before eherbs and
+# the eloot sell spend and bank it. Waits up to a minute for a demon that's lagging behind.
+Script.run("demonsilver", "get")
+
 Script.run("eherbs")
 Script.start("eloot_guard") unless Script.running?("eloot_guard")  # unpauses eloot when its containers are full
 Script.run("diskwait")  # eloot only finds the disk's boxes if the disk is here when the sell starts (10/28)

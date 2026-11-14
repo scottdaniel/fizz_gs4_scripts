@@ -96,7 +96,7 @@ Other Fizzleworth scripts:
 | `Fizzleworth-attack-arena.lic` | One attack pass for the Ebon Gate Arena of the Abyss, run by `fizzabyss` (not a bigshot command): Pain / Disintegrate / Mana Disruption by live mana, topping up mana from the demon, then Symbol of Mana, then sacrifice. | - |
 | `orb_check.lic` | Finds orb (pure) gems by casting Phase (704) at each gem, handles gem jars, moves orbs to another container. See [Gems](#gems). | - |
 
-The Sorcerer toolkit (`reanim`, `fizzsac`, `sac4mana`, `mdemon_refresh`, `demonmana`, `summond`) is
+The Sorcerer toolkit (`reanim`, `fizzsac`, `sac4mana`, `mdemon_refresh`, `demonmana`, `demonsilver`, `summond`) is
 class-specific rather than character-specific, so it is listed under [Hunting](#hunting) and [Magic](#magic).
 
 ### Fizzlestiks (Bard)
@@ -246,6 +246,8 @@ It picks the instrument in this order: the command line, then `;vars set instrum
 | `summond.lic` | Sorcerer: summons a Minor Summoning (725) demon of the valence or archetype you ask for, at the nearest summoning chamber, re-rolling wrong archetypes. | - |
 | `mdemon_refresh.lic` | Sorcerer: keeps the Minor Summoning demon refreshed by rubbing a vakra runestone when the duration drops below a buffer, only in town with nothing hostile around; pauses bigshot while it works. Doesn't call a wandering demon back while you stand in the locker vaults or the Wayside Inn dining room (the `quiet_rooms` list). | companion |
 | `demonmana.lic` | Sorcerer: `send` fills the demon's mana store (done while resting), `get` takes it back mid-hunt. | - |
+| `demonsilver.lic` | Sorcerer: fork of Dalazashel's `silverDemon`. `;demonsilver [amount]` gives the minor demon silver to carry (it takes what fits and says when it's full), `;demonsilver get [amount]` takes it back. `Fizzleworth-prerest` runs `get` before the bank, and `summond` runs it before sending a demon away. v0.1. | called from the rest chain |
+| `demonsilver_watch.lic` | Out hunting, gives the demon the silver from each corpse you loot (`;demonsilver give N` once eloot is done), only while bigshot runs; `;vars set demonsilver=off` stops it. Started by `Fizzleworth-prep`. Separate from `demonsilver` because Lich won't start a script that's already running, so a running watcher would block `;demonsilver get`. | companion |
 | `fizzport.lic` | Sorcerer: Planar Shift (740) to a pattern in your rune books by name (`;fizzport icemule`). Searches the books in your shiftsack by label, picks chalk by realm colour. v0.2. | - |
 | `sanctify_runestaff.lic` | Cleric (Salvi): temporary Sanctify (330) on the runestaff, cast during a rest. Does nothing if LOOK already shows the flickering aura, if 330 isn't known, or if mana is short of the real cost. Run from `Salvi-prerest`. | - |
 | `reservecheck.lic` | Wizard (Picko): reads the scrolls in the combat reserve slots and records which spells are still on them in `$reserve_spells`, so `Picko-attack-fire` only invokes spells that are still there. Run from `Picko-prerest`. | - |
@@ -325,6 +327,7 @@ they act, or set bigshot's rest flag.
 | `Fizzleworth-webward` | Pauses bigshot/go2 to clear a web hazard. |
 | `Fizzleworth-witchguard` | Sets bigshot's `$bigshot_flee` while a Rift hazard is in the room, so it flees through its normal path. |
 | `eloot_guard` | Pauses bigshot while it puts a stuck item away out hunting, and unpauses eloot. |
+| `demonsilver_watch` | Doesn't pause bigshot: after eloot loots a corpse it gives the coins to the minor demon (one GIVE, no roundtime). |
 | `wander_safe` | Not a companion, but what `fizzsac` and `sac4mana` call: kills a hung `ewander` after 60 s so bigshot isn't left waiting behind it. |
 | `sac4mana`, `mdemon_refresh` | Pause bigshot while they refill mana or refresh the demon. |
 | `playsongs` | Optional (`playsongs_pause_for_bigshot`): pauses only while bigshot is hunting (reads bigshot's `$bigshot_status`). |
@@ -351,6 +354,7 @@ A profile's `resting_commands` runs a `-prerest` script (the Fizzlestiks profile
 |---|---|
 | `unlost` | First line: if Lich can't tell which room you're in, walk exits until it does; stops bigshot if it can't. |
 | `bounty_chooser deliver` | Salvi only: hand in a rescued child before the shopping walk. |
+| `demonsilver get` | Fizzleworth only: take back the silver the demon carried through the hunt, before it's spent or banked. |
 | `eherbs` / `ecure` | Heal (outside script; Felixopedes uses `ecure`). |
 | `eloot_guard` | Started (stays running): unsticks eloot when its containers are full. |
 | `diskwait` | Wait for the floating disk before the sell. |
@@ -382,6 +386,7 @@ tracks `using_bigshot` only so the two don't fight over targets).
 | `lifeguard_climb_cap` | `Fizzleworth-lifeguard`: damaging landslide-climb falls in 10 minutes before it pauses go2 (default 4, 0 = off). |
 | `prep_max_encumbrance` | `Fizzleworth-prep`: encumbrance % at which the hunt is held after prep (default 45, 0 = off). |
 | `child_rescue` | `;vars set child_rescue=off` disables `Fizzleworth-child` (default on). |
+| `demonsilver` | `;vars set demonsilver=off` stops `demonsilver_watch` giving looted silver to the demon (default on); `;demonsilver get` still works. |
 | `wander_safe_limit` | `wander_safe`: seconds before a running `ewander` is killed (default 60). |
 | `data/GSIV/<Char>/bounty_chooser.yaml` | `bounty_chooser`: allowed creatures, areas, gem towns when run without arguments. |
 
@@ -393,6 +398,7 @@ tracks `using_bigshot` only so the two don't fight over targets).
 | `$reserve_spells` | Set by `reservecheck`; read by `Picko-attack-fire`. `nil` means unknown, so it tries everything. |
 | `$bigshot_flee`, `$bigshot_should_rest` | Bigshot's own flags. `Fizzleworth-witchguard` sets the first; the Wizard and Cleric attack scripts, `Fizzleworth-lifeguard` and `Fizzleworth-child` set the second. |
 | `$reanim_animate_live`, `$ult_reanim_done`, `$demonmana_taken` | Shared by `reanim`, `Fizzleworth-attack-ultima`, `Fizzleworth-prep` and `sac4mana`. |
+| `$demonsilver_held`, `$demonsilver_pending`, `$demonsilver_last` | `demonsilver` and `demonsilver_watch`: what this session knows the demon holds (by demon id, and whether it's full), loot not yet given, and the result of the last give. |
 
 **Scripts from outside this repo** that these depend on: `bigshot`, `eloot`, `eherbs`, `ewaggle`, `go2`, `qverb`,
 `foreach`, `ewander`, `echild` (for `bounty_chooser`), `animate_refresher` (for `fizzanim`), `dreavening` (for
@@ -407,7 +413,7 @@ A script is published to the Lich public repo when it is symlinked one directory
 |---|---|
 | `undead_bounty.lic` | v1.11 |
 | `fizzfuse.lic` | v1.5 (`name: infuse`) |
-| `summond.lic` | v0.4 |
+| `summond.lic` | v0.7 |
 
 Candidates to share next, based on whether the script has a full metadata header (author, name, game, tags,
 requires, version) and how tied it is to Fizzleworth's own setup. This is a read-through of the code, not a test

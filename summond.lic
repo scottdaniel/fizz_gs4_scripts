@@ -4,7 +4,7 @@
         game: gemstone
         tags: sorcerer, demon, minor summoning, 725, runestone
     requires: Lich > 5.14.2
-     version: 0.6
+     version: 0.7
         note: Written with assistance from Claude (Anthropic).
 
   Summons a Minor Summoning (725) demon of the valence or archetype you ask for.
@@ -222,6 +222,9 @@ module Summond
   # walks back first: 11/05, TELL MDEMON LEAVE at 14:31:00 got no reply, the lost grantris "hurries
   # into the room and circles it quickly" at 14:31:15 and was pulled through the rift at 14:31:18.
   def self.dismiss_demon(seconds = 10)
+    # A demon takes whatever it holds through the rift, so first take back any silver it carries
+    # for you (;demonsilver, when you have it).
+    Script.run("demonsilver", "get") if Script.exists?("demonsilver") && !Script.running?("demonsilver")
     fput "tell mdemon leave"
     (seconds * 2).times {
       return true unless Spell[725].active?

@@ -260,6 +260,11 @@ Script.start("Fizzleworth-child") unless Script.running?("Fizzleworth-child")
 # leave you fighting with your hands full (see eloot_guard.lic).
 Script.start("eloot_guard") unless Script.running?("eloot_guard")
 
+# The silver looted from each corpse goes to the minor demon, so it doesn't weigh you down;
+# Fizzleworth-prerest takes it back before the bank (see demonsilver.lic;
+# ;vars set demonsilver=off to keep it on you).
+Script.start("demonsilver_watch") unless Script.running?("demonsilver_watch")
+
 # Fizzleworth-attack-ultima reanims / grinds once per hunt -- re-arm both.
 # Also clear reanim's "buddy exists" flag: any animate from last hunt is long
 # gone by now (730 duration, plus the whole rest/travel/shop cycle in between).

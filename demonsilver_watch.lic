@@ -1,0 +1,97 @@
+# demonsilver_watch.lic
+=begin
+  Out hunting, hands the silver you loot to your minor demon (;demonsilver give N) so it doesn't
+  weigh you down. Fizzleworth-prerest takes it all back with ;demonsilver get before the eloot sell
+  banks it. Not character-specific; Fizzleworth-prep starts it and it stays up for the session.
+
+    ;demonsilver_watch           start watching
+    ;vars set demonsilver=off    stop giving (silver stays with you); =on (or unset) gives again
+
+  What counts: "You gather the remaining 362 coins." (eloot looting a corpse, 11/13 log), only
+  while bigshot runs. Coins from a box ("...coins from inside your maple chest.") are left alone,
+  since boxes are opened at rest, where the silver is meant for the bank.
+  When it gives: once eloot has finished with the corpse. If the demon isn't in the room (it lags a
+  few seconds behind on the walk), the coins add up and it tries again after 20 seconds (retry_after).
+  When the demon says it "cannot hold any more", nothing more is given until a ;demonsilver get.
+
+  This is a separate script from demonsilver because Lich won't start a script that's already
+  running: a long-running `;demonsilver watch` would turn away every ;demonsilver get you typed.
+=end
+
+module DemonsilverWatch
+  def self.hook_name
+    "demonsilver_watch"
+  end
+
+  def self.coin_line
+    /You gather the remaining ([\d,]+) coins\.\s*\z/
+  end
+
+  def self.retry_after
+    20    # the demon wasn't in the room: look again after this many seconds
+  end
+
+  def self.enabled?
+    UserVars.demonsilver.to_s.strip !~ /\A(?:off|0|false|no)\z/i
+  end
+
+  def self.hunting?
+    Script.running?("bigshot")
+  end
+
+  def self.install_hook
+    DownstreamHook.remove(hook_name) rescue nil
+    DownstreamHook.add(hook_name, proc { |line|
+      begin
+        # The hook sees the raw XML ("You gather the remaining 59 <a exist=... noun="coins">coins</a>.").
+        # Only counts here; whether bigshot is running is checked in `pass`, off the game thread.
+        if line.to_s.gsub(/<[^>]*>/, '') =~ coin_line
+          $demonsilver_pending = $demonsilver_pending.to_i + $1.delete(',').to_i
+        end
+      rescue StandardError
+        nil
+      end
+      line
+    })
+  end
+
+  def self.pass
+    pending = $demonsilver_pending.to_i
+    return if pending <= 0
+
+    # Turned off, or the hunt is over: these coins stay with you.
+    return $demonsilver_pending = 0 unless enabled? && hunting?
+    return if dead? || Script.running?("eloot") || Script.running?("demonsilver")
+    return if Time.now.to_f < @next_try
+
+    held = $demonsilver_held
+    return $demonsilver_pending = 0 if held.is_a?(Hash) && held[:full]
+
+    $demonsilver_last = nil
+    Script.run("demonsilver", "give #{pending} --quiet", quiet: true)
+    case $demonsilver_last
+    when Integer
+      $demonsilver_pending = [$demonsilver_pending.to_i - pending, 0].max  # keep coins looted meanwhile
+    when :away
+      @next_try = Time.now.to_f + retry_after
+    when :full, :none
+      $demonsilver_pending = 0
+    else
+      @next_try = Time.now.to_f + 60  # something unexpected (demonsilver echoed it): back off
+    end
+  end
+
+  def self.main
+    instance_variables.each { |v| remove_instance_variable(v) }  # module ivars outlive a run
+    @next_try = 0.0
+    $demonsilver_pending = 0
+    install_hook
+    before_dying { DownstreamHook.remove(DemonsilverWatch.hook_name) rescue nil }
+    loop do
+      sleep 1
+      pass
+    end
+  end
+end
+
+DemonsilverWatch.main

@@ -1,0 +1,336 @@
+# demonsilver.lic
+=begin
+      author: Fizzleworth (fork of silverDemon.lic 0.0.2 by Dalazashel)
+        name: demonsilver
+        game: gemstone
+        tags: sorcerer, demon, minor summoning, silver, encumbrance
+    requires: Lich > 5.14.2
+     version: 0.1
+        note: Written with assistance from Claude (Anthropic).
+
+  Your minor demon (Minor Summoning, 725) can carry silver for you. Out hunting, the coins you
+  loot go to the demon so they don't weigh you down, and at the end of the hunt you take them back
+  so the rest's ;eloot sell banks them. It's the reverse of ;demonmana, which fills the demon while
+  you rest and empties it mid-hunt.
+
+    ;demonsilver              give it all the silver you're carrying
+    ;demonsilver 500          give it 500 (;demonsilver give 500 is the same)
+    ;demonsilver get          take back everything it holds
+    ;demonsilver get 500      take back 500
+    ;demonsilver help
+
+  The hunt part is ;demonsilver_watch (Fizzleworth-prep starts it). Each "You gather the remaining
+  N coins." from a corpse while bigshot runs becomes a ;demonsilver give N. Fizzleworth-prerest runs
+  ;demonsilver get before eherbs and the eloot sell. summond also runs it before it sends a demon
+  back, because a demon takes whatever it holds through the rift with it.
+    ;vars set demonsilver=off   the watcher stops giving (get still works)
+    ;vars set demonsilver=on    back on (unset counts as on)
+
+  Changed from silverDemon.lic:
+  - It finds the demon with a silent TELL MDEMON RETURN, the same way demonmana does, which also
+    calls it back if it wandered off. silverDemon's `tell md to follow` regex missed the "already
+    following" and "begins to travel" replies.
+  - GIVE goes to #id, never to a bare word, because a word can also match a player's name
+    ("give glah 20000" handed Glahnvis 20,000 coins on 06/19).
+  - It understands what the demon answers, including when it's full, and remembers how much this
+    session gave it.
+
+  Game text, all from Fizzleworth's logs (06/2026 to 11/09):
+    give raven 2000       A large glossy raven grabs 2000 coins from you.
+                          A humming vultite verlok'cina grabs 1878 coins from you, but cannot hold any more.
+                          But you don't have that many coins.
+    give mdem 200         What is it you're trying to give?   (GIVE takes no mdemon keyword)
+    tell mdem give 1000   Your copper verlok'asha hands you 1000 silvers.
+                          Your vultite verlok'cina does not have that much so it hands you 2800 silvers.
+                          Your copper verlok'asha doesn't have any coins.
+                          How do you expect your vaalorn verlok'cina to give you anything if it isn't in the same room as you?
+    give #<id> <n>        eloot pays the locksmith worker this way (Picko, 06/10), so GIVE takes an #id
+                          with coins. It hasn't been seen with the demon yet; if the game says "What is it
+                          you're trying to give?", the demon's noun is tried, but only when nothing and
+                          nobody else in the room answers to that word.
+  Neither command has a roundtime (07/11 mid-fight, 07/28 between go2 steps). A vultite verlok'cina
+  held 2,800 at most (07/11 and 07/15). What sets the limit isn't known; the "cannot hold any more"
+  reply says when it's full, and the rest of the silver stays with you.
+=end
+
+module Demonsilver
+  # Methods rather than constants: Lich keeps a script's constants between runs, so an edited
+  # constant would only take effect after a relog.
+  def self.arrive_wait
+    60    # get: seconds to wait for a demon that's on its way back
+  end
+
+  def self.recall_every
+    15    # ...repeating TELL MDEMON RETURN this often (an imp needed it, 11/01)
+  end
+
+  def self.get_ask
+    10_000  # get with no amount asks for this much and is handed what the demon has
+  end
+
+  def self.return_reply
+    /already here!|acknowledges your order|interfering with your|You have no minor demon at this time/i
+  end
+
+  # TELL MDEMON RETURN replies carry the demon's link: id, noun (an illusion's noun when it's
+  # disguised) and the name it goes by now.
+  def self.demon_link
+    %r{(?:[Bb]ut your|Your|your) <pushBold/><a exist="(\d+)" noun="([\w,'-]+)">([\w\-' ]+)</a><popBold/>}
+  end
+
+  def self.grabbed
+    /grabs ([\d,]+) coins from you(, but cannot hold any more)?/
+  end
+
+  def self.too_few
+    /you don't have that many coins/i
+  end
+
+  def self.not_found
+    /What is it you're trying to give|could not find what you were referring/i
+  end
+
+  # Anchored on "Your": a bank teller or a pawnbroker also "hands you" silvers.
+  def self.handed
+    /^Your .+ hands you ([\d,]+) silvers/
+  end
+
+  def self.short
+    /does not have that much/
+  end
+
+  def self.empty
+    /^Your .+ doesn't have any coins/
+  end
+
+  def self.away
+    /^How do you expect your .+ isn't in the same room as you/
+  end
+
+  # What this Lich session knows the demon holds of yours: { id:, coins:, full: }. A different
+  # demon (new id, or a relog: ids change at login) starts out unknown.
+  def self.held_for(id)
+    h = $demonsilver_held
+    h.is_a?(Hash) && h[:id].to_s == id.to_s ? h : nil
+  end
+
+  def self.record(id, coins, full)
+    $demonsilver_held = { id: id.to_s, coins: [coins.to_i, 0].max, full: full ? true : false }
+  end
+
+  # => { id:, noun:, name:, here:, coming: }, :none (no demon at all) or nil (no answer).
+  def self.lookup
+    text = Lich::Util.quiet_command_xml("tell mdemon return", return_reply).to_a.join("\n")
+    return :none if text =~ /no minor demon/i
+    return nil unless text =~ demon_link
+
+    { id: $1, noun: $2, name: $3,
+      here: text.include?("already here!"), coming: text.include?("begins to travel") }
+  end
+
+  def self.room_objects
+    Array(GameObj.npcs) + Array(GameObj.loot) + Array(GameObj.room_desc)
+  end
+
+  def self.in_room?(id)
+    room_objects.any? { |o| o.id.to_s == id.to_s }
+  end
+
+  def self.no_demon(d, quiet)
+    $demonsilver_last = (d == :none ? :none : :away)
+    return if quiet
+
+    echo(d == :none ? "you have no minor demon." : "no answer to TELL MDEMON RETURN.")
+  end
+
+  # Waits up to `secs` for a demon that was told to come back, calling it again every so often.
+  def self.wait_for(d, secs)
+    echo "your #{d[:name]} isn't here -- waiting up to #{secs}s for it."
+    secs.times do |i|
+      return true if in_room?(d[:id])
+      if i > 0 && (i % recall_every).zero?
+        again = Lich::Util.quiet_command_xml("tell mdemon return", return_reply).to_a.join("\n")
+        return true if again.include?("already here!")
+      end
+      sleep 1
+    end
+    in_room?(d[:id])
+  end
+
+  # The noun is a fallback only when nothing else here answers to it: a bare word in GIVE also
+  # matches a player whose name starts with it.
+  def self.noun_safe?(d)
+    w = d[:noun].to_s.downcase
+    return false if w.empty?
+    return false if room_objects.any? { |o| o.id.to_s != d[:id].to_s && o.noun.to_s.downcase == w }
+
+    Array(GameObj.pcs).none? { |pc| pc.noun.to_s.downcase.start_with?(w) || pc.name.to_s.downcase.start_with?(w) }
+  end
+
+  def self.give_to(d, amount)
+    refs = ["##{d[:id]}"]
+    refs << d[:noun] if noun_safe?(d)
+    r = ''
+    refs.each do |ref|
+      r = dothistimeout("give #{ref} #{amount}", 4, Regexp.union(grabbed, too_few, not_found, /^You give /)).to_s
+      break unless r =~ not_found
+    end
+    r
+  end
+
+  # Sets $demonsilver_last to the coins the demon took (an Integer, 0 when there was nothing to
+  # give), or :away / :none / :full / nil (failed) -- demonsilver_watch reads it.
+  def self.give(amount, quiet: false)
+    $demonsilver_last = nil
+    return echo("you're dead.") if dead?
+
+    d = lookup
+    return no_demon(d, quiet) unless d.is_a?(Hash)
+
+    unless d[:here]
+      $demonsilver_last = :away
+      return if quiet
+
+      return echo("your #{d[:name]} isn't here#{d[:coming] ? ' (told it to come back)' : ''} -- try again when it is.")
+    end
+
+    h = held_for(d[:id])
+    if h && h[:full]
+      $demonsilver_last = :full
+      return quiet ? nil : echo("your #{d[:name]} can't hold any more (#{h[:coins]} of yours). ;demonsilver get empties it.")
+    end
+
+    amount ||= Lich::Util.silver_count
+    if amount.to_i <= 0
+      $demonsilver_last = 0
+      return quiet ? nil : echo("you have no silver on you.")
+    end
+
+    2.times do
+      waitrt?
+      r = give_to(d, amount)
+      if r =~ grabbed
+        n = $1.delete(',').to_i
+        full = !$2.nil?
+        record(d[:id], (h ? h[:coins] : 0) + n, full)
+        $demonsilver_last = n
+        if full
+          echo "your #{d[:name]} took #{n} silver and can't hold any more -- the rest stays with you."
+        elsif !quiet
+          echo "your #{d[:name]} took #{n} silver#{h ? " (#{h[:coins] + n} of yours now)" : ''}."
+        end
+        return
+      elsif r =~ too_few
+        have = Lich::Util.silver_count
+        if have > 0 && have < amount
+          amount = have
+          next
+        end
+        $demonsilver_last = 0
+        return quiet ? nil : echo("you don't have #{amount} silver on you.")
+      elsif r =~ /^You give /
+        $demonsilver_last = nil
+        return echo("*** that GIVE went to someone else: #{r.strip}")
+      else
+        $demonsilver_last = nil
+        return echo("give said: #{r.strip.empty? ? 'nothing' : r.strip[0, 140]}")
+      end
+    end
+  end
+
+  def self.get(amount)
+    return echo("you're dead.") if dead?
+
+    # The end of the hunt: loot the watcher hasn't handed over yet stays with you for the bank.
+    $demonsilver_pending = 0 if amount.nil?
+    d = lookup
+    return no_demon(d, false) unless d.is_a?(Hash)
+
+    h = held_for(d[:id])
+    unless d[:here]
+      # Nothing of ours on it: don't hold up the rest waiting for it.
+      return echo("your #{d[:name]} isn't here, and it holds none of your silver.") if h && h[:coins].zero?
+      unless d[:coming] && wait_for(d, arrive_wait)
+        return echo("your #{d[:name]} isn't here, so it keeps your silver for now. ;demonsilver get later.")
+      end
+    end
+
+    total = 0
+    emptied = false
+    4.times do
+      ask = amount ? amount - total : get_ask
+      break if ask <= 0
+
+      waitrt?
+      r = dothistimeout("tell mdem give #{ask}", 4, Regexp.union(handed, empty, away)).to_s
+      if r =~ handed
+        n = $1.delete(',').to_i
+        total += n
+        emptied = true if r =~ short || (amount.nil? && n < ask)
+        break if emptied || amount
+      elsif r =~ empty
+        emptied = true
+        break
+      elsif r =~ away
+        echo "your #{d[:name]} wandered off before it could hand anything over."
+        break
+      else
+        echo "tell mdem give said: #{r.strip.empty? ? 'nothing' : r.strip[0, 140]}"
+        break
+      end
+    end
+
+    left = emptied ? 0 : [(h ? h[:coins] : 0) - total, 0].max
+    record(d[:id], left, false) if emptied || total > 0 || h
+    if total > 0
+      echo "got #{total} silver back from your #{d[:name]}."
+    elsif emptied
+      echo "your #{d[:name]} had no silver."
+    end
+  end
+
+  def self.help
+    n = "#{$lich_char}#{Script.current.name}"
+    respond ""
+    respond "  #{n}              give your minor demon all the silver you're carrying"
+    respond "  #{n} 500          give it 500 (#{n} give 500 is the same)"
+    respond "  #{n} get          take back everything it holds"
+    respond "  #{n} get 500      take back 500"
+    respond ""
+    respond "  Out hunting, ;demonsilver_watch gives it the silver from each corpse you loot (Fizzleworth-prep"
+    respond "  starts it), and Fizzleworth-prerest takes it all back. ;vars set demonsilver=off stops the watcher."
+    respond ""
+  end
+
+  def self.amount_arg(word)
+    return nil if word.nil? || word.empty?
+    return nil unless word =~ /\A\d[\d,]*\z/
+
+    n = word.delete(',').to_i
+    n > 0 ? n : nil
+  end
+
+  def self.main
+    words = Script.current.vars[1..].to_a.map(&:to_s)
+    quiet = !words.delete('--quiet').nil?
+    cmd = words[0].to_s.downcase
+    case cmd
+    when '', 'give'
+      if words[1] && !amount_arg(words[1])
+        return echo("not an amount: #{words[1]}")
+      end
+      give(amount_arg(words[1]), quiet: quiet)
+    when /\A\d[\d,]*\z/
+      give(amount_arg(cmd), quiet: quiet)
+    when 'get'
+      if words[1] && !amount_arg(words[1])
+        return echo("not an amount: #{words[1]}")
+      end
+      get(amount_arg(words[1]))
+    else
+      help
+    end
+  end
+end
+
+Demonsilver.main
