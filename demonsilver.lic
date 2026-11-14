@@ -5,7 +5,7 @@
         game: gemstone
         tags: sorcerer, demon, minor summoning, silver, encumbrance
     requires: Lich > 5.14.2
-     version: 0.1
+     version: 0.2
         note: Written with assistance from Claude (Anthropic).
 
   Your minor demon (Minor Summoning, 725) can carry silver for you. Out hunting, the coins you
@@ -44,20 +44,26 @@
                           Your vultite verlok'cina does not have that much so it hands you 2800 silvers.
                           Your copper verlok'asha doesn't have any coins.
                           How do you expect your vaalorn verlok'cina to give you anything if it isn't in the same room as you?
-    give #<id> <n>        eloot pays the locksmith worker this way (Picko, 06/10), so GIVE takes an #id
-                          with coins. It hasn't been seen with the demon yet; if the game says "What is it
-                          you're trying to give?", the demon's noun is tried, but only when nothing and
-                          nobody else in the room answers to that word.
-  Neither command has a roundtime (07/11 mid-fight, 07/28 between go2 steps). A vultite verlok'cina
-  held 2,800 at most (07/11 and 07/15). What sets the limit isn't known; the "cannot hold any more"
-  reply says when it's full, and the rest of the silver stays with you.
+    give #<id> <n>        A large glossy raven grabs 420 coins from you.   (15 times on 11/13)
+                          What is it you're trying to give?   (the demon had just been left a room behind)
+    tell mdem give 10000  Your glossy raven does not have that much so it hands you 3300 silvers.  (11/13)
+  Neither command has a roundtime (07/11 mid-fight, 07/28 between go2 steps). How much a demon holds
+  varies: a vultite verlok'cina 2,800 (07/11, 07/15), Fizzleworth's raven-disguised verlok'asha 3,300
+  (11/13). The "cannot hold any more" reply says when it's full, and the rest stays with you.
+
+  v0.2 (11/13, after the first live hunts): the end-of-hunt get waits 120s (not 60) for a demon left
+  behind on the walk home; GIVE and TELL ... GIVE no longer go through dothistimeout (it re-sent a give
+  that had already worked when another script's command got "Wait 1 sec."); a give that finds the
+  demon gone counts as "not here, try again" instead of an error; the noun fallback is gone.
 =end
 
 module Demonsilver
   # Methods rather than constants: Lich keeps a script's constants between runs, so an edited
   # constant would only take effect after a relog.
+  # 11/13 21:48: go2 took the climbs and jumps home from the Labyrinth, which the raven can't follow;
+  # it reached the Trophy Room 72s after the prerest's get started waiting, and a 60s wait missed it.
   def self.arrive_wait
-    60    # get: seconds to wait for a demon that's on its way back
+    120   # get: seconds to wait for a demon that's on its way back
   end
 
   def self.recall_every
@@ -86,8 +92,14 @@ module Demonsilver
     /you don't have that many coins/i
   end
 
+  # The demon isn't in the room after all: bigshot stepped on just as the give went out
+  # (11/13 21:08:52 and 21:48:07, both a second after eloot finished).
   def self.not_found
     /What is it you're trying to give|could not find what you were referring/i
+  end
+
+  def self.wait_line
+    /(?:\.\.\. ?wait|\AWait) (\d+) sec|\ASorry, you may only type ahead/
   end
 
   # Anchored on "Your": a bank teller or a pawnbroker also "hands you" silvers.
@@ -157,25 +169,40 @@ module Demonsilver
     in_room?(d[:id])
   end
 
-  # The noun is a fallback only when nothing else here answers to it: a bare word in GIVE also
-  # matches a player whose name starts with it.
-  def self.noun_safe?(d)
-    w = d[:noun].to_s.downcase
-    return false if w.empty?
-    return false if room_objects.any? { |o| o.id.to_s != d[:id].to_s && o.noun.to_s.downcase == w }
-
-    Array(GameObj.pcs).none? { |pc| pc.noun.to_s.downcase.start_with?(w) || pc.name.to_s.downcase.start_with?(w) }
+  # Sends `cmd` and returns the first line matching `ours` (or nil). Not dothistimeout: that re-sends
+  # on ANY "Wait N sec." it reads, even one meant for another script's command. 11/13 21:43:51 the
+  # attack script's `prep 710` got "Wait 1 sec.", dothistimeout took it for the give's, and the give
+  # (which had already worked) went out twice. Here a Wait line only leads to one re-send, and only
+  # if no reply of ours turns up by the time it says.
+  def self.ask(cmd, ours, secs = 4)
+    Script.current.clear
+    put cmd
+    deadline = Time.now.to_f + secs
+    resend_at = nil
+    resent = false
+    while Time.now.to_f < deadline
+      line = get?
+      if line.nil?
+        if resend_at && !resent && Time.now.to_f >= resend_at
+          resent = true
+          put cmd
+          deadline = Time.now.to_f + secs
+        end
+        sleep 0.1
+        next
+      end
+      return line if line =~ ours
+      if !resent && !resend_at && line =~ wait_line
+        resend_at = Time.now.to_f + [$1.to_i, 1].max + 0.5
+        deadline = [deadline, resend_at + secs].max
+      end
+    end
+    nil
   end
 
+  # By #id only (worked 15 times on 11/13), never a bare word, which can match a player's name.
   def self.give_to(d, amount)
-    refs = ["##{d[:id]}"]
-    refs << d[:noun] if noun_safe?(d)
-    r = ''
-    refs.each do |ref|
-      r = dothistimeout("give #{ref} #{amount}", 4, Regexp.union(grabbed, too_few, not_found, /^You give /)).to_s
-      break unless r =~ not_found
-    end
-    r
+    ask("give ##{d[:id]} #{amount}", Regexp.union(grabbed, too_few, not_found, /^You give /)).to_s
   end
 
   # Sets $demonsilver_last to the coins the demon took (an Integer, 0 when there was nothing to
@@ -228,6 +255,9 @@ module Demonsilver
         end
         $demonsilver_last = 0
         return quiet ? nil : echo("you don't have #{amount} silver on you.")
+      elsif r =~ not_found
+        $demonsilver_last = :away
+        return quiet ? nil : echo("your #{d[:name]} isn't in the room after all -- try again when it is.")
       elsif r =~ /^You give /
         $demonsilver_last = nil
         return echo("*** that GIVE went to someone else: #{r.strip}")
@@ -258,15 +288,15 @@ module Demonsilver
     total = 0
     emptied = false
     4.times do
-      ask = amount ? amount - total : get_ask
-      break if ask <= 0
+      want = amount ? amount - total : get_ask
+      break if want <= 0
 
       waitrt?
-      r = dothistimeout("tell mdem give #{ask}", 4, Regexp.union(handed, empty, away)).to_s
+      r = ask("tell mdem give #{want}", Regexp.union(handed, empty, away)).to_s
       if r =~ handed
         n = $1.delete(',').to_i
         total += n
-        emptied = true if r =~ short || (amount.nil? && n < ask)
+        emptied = true if r =~ short || (amount.nil? && n < want)
         break if emptied || amount
       elsif r =~ empty
         emptied = true

@@ -10,8 +10,9 @@
   What counts: "You gather the remaining 362 coins." (eloot looting a corpse, 11/13 log), only
   while bigshot runs. Coins from a box ("...coins from inside your maple chest.") are left alone,
   since boxes are opened at rest, where the silver is meant for the bank.
-  When it gives: once eloot has finished with the corpse. If the demon isn't in the room (it lags a
-  few seconds behind on the walk), the coins add up and it tries again after 20 seconds (retry_after).
+  When it gives: 2 seconds after eloot has finished with the corpse, once bigshot's next step and the
+  demon's follow are done. If the demon isn't in the room (it lags behind on the walk), the coins add
+  up and it tries again after 20 seconds (retry_after).
   When the demon says it "cannot hold any more", nothing more is given until a ;demonsilver get.
 
   This is a separate script from demonsilver because Lich won't start a script that's already
@@ -31,6 +32,13 @@ module DemonsilverWatch
     20    # the demon wasn't in the room: look again after this many seconds
   end
 
+  # bigshot steps on the moment eloot finishes, and the demon follows a beat later; a give sent in
+  # between finds it gone (11/13 21:08:52 and 21:48:07). So wait this long after the last coins
+  # and after eloot was last seen running.
+  def self.settle
+    2
+  end
+
   def self.enabled?
     UserVars.demonsilver.to_s.strip !~ /\A(?:off|0|false|no)\z/i
   end
@@ -47,6 +55,7 @@ module DemonsilverWatch
         # Only counts here; whether bigshot is running is checked in `pass`, off the game thread.
         if line.to_s.gsub(/<[^>]*>/, '') =~ coin_line
           $demonsilver_pending = $demonsilver_pending.to_i + $1.delete(',').to_i
+          @busy_at = Time.now.to_f
         end
       rescue StandardError
         nil
@@ -61,8 +70,9 @@ module DemonsilverWatch
 
     # Turned off, or the hunt is over: these coins stay with you.
     return $demonsilver_pending = 0 unless enabled? && hunting?
-    return if dead? || Script.running?("eloot") || Script.running?("demonsilver")
-    return if Time.now.to_f < @next_try
+    return @busy_at = Time.now.to_f if Script.running?("eloot")
+    return if dead? || Script.running?("demonsilver")
+    return if Time.now.to_f < @next_try || Time.now.to_f - @busy_at.to_f < settle
 
     held = $demonsilver_held
     return $demonsilver_pending = 0 if held.is_a?(Hash) && held[:full]
