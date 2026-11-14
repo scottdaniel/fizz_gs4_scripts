@@ -421,6 +421,22 @@ def gate_room
   { "1259" => 420 }[rest]
 end
 
+# Is bigshot about to fog home (Symbol of Return, Spirit Guide...)? Same test as bigshot's own
+# fog_return: a fog_return method is set and, with "Fog ONLY if wounded or encumbered" on, the rest
+# reason is one of those. If so the walk to the gate is pointless and dangerous: the fog skips the
+# whole walk anyway and the animate can't come along. 11/14 08:50 minotaurs.yaml (fog_return 2,
+# fog_optional): rested "encumbered", the animate walk took the encumbered Fizzleworth 48 rooms
+# through the Labyrinth to 420, and then bigshot used Symbol of Return there anyway. In that case
+# the animate goes in the field, as before, and bigshot fogs from there.
+def bigshot_will_fog?
+  op = UserVars.op
+  return false unless op.is_a?(Hash)
+  return false if op["fog_return"].to_i.zero?
+  optional = op["fog_optional"]
+  return true unless optional == true || optional.to_s =~ /\A\s*(?:1|true|on|yes)\s*\z/i
+  !!($rest_reason.to_s =~ /wounded|encumbered/)
+end
+
 # teardown has everything that could walk us off frozen, so walk to the gate ourselves with the
 # animate on follow (it's on attack mid-hunt), then do the usual hand-off there: spare weapon back
 # to the demon, tell anim die, loot the corpse.
@@ -442,7 +458,7 @@ def teardown
 
   harvest_room if essence < HARVEST_BELOW
   if animate_up?
-    gate = gate_room
+    gate = bigshot_will_fog? ? nil : gate_room
     if gate
       dismiss_at_gate(gate)
     elsif hostile_here? && explode_animate
