@@ -46,6 +46,8 @@
   outlast the room -- the bank teller blocked it, the 90 s ran on after the walk back to the
   inn, and the raven stood outside the gemcutter's for 80 s until Scott ordered it by hand).
   A real order is echoed once ("ordered it back"); the silent "already here" replies are not.
+  It sends none at all while you stand in one of quiet_rooms (the locker vaults and the
+  Wayside Inn dining room, where Dreavenings are held; edit the list in the method).
 =end
 
 module MdemonRefresh
@@ -104,6 +106,15 @@ module MdemonRefresh
     end
   end
 
+  # Rooms where the demon is never called back (Scott 11/13): standing at the locker or in a
+  # Dreavening you don't want `tell mdemon return` going out every 15 s. Room ids as the map
+  # prints them: 15948 the Landing locker vault and 35474 the Icemule one (where `go2 locker`
+  # ends up, per the logs), 3619 Wayside Inn, Dining Room (where ;dreavening sits you). A METHOD
+  # so an edit applies the next time the script starts.
+  def self.quiet_rooms
+    [15948, 35474, 3619]
+  end
+
   def self.demon_here?
     return false unless @demon_id
     Array(GameObj.npcs).any? { |n| n && n.id.to_s == @demon_id.to_s }
@@ -114,6 +125,7 @@ module MdemonRefresh
   def self.call_demon_back
     return unless Effects::Spells.active?(MINOR_SUMMONING_SPELL)
     return if checkdead || checkstunned
+    return if quiet_rooms.include?(Room.current&.id.to_i)
     now = Time.now.to_f
     # The "interfering" slow-down belongs to the room that said it; walk out and ask again at once.
     @call_blocked = false unless @blocked_room == XMLData.room_id
