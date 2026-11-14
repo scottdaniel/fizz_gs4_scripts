@@ -3,8 +3,11 @@
 
   Makes sure the minor demon (any type, under any illusion) is carrying a spare
   weapon for ;reanim to hand the animate. If it isn't, buys one at the weapon shop
-  (Wineberry's in Icemule, Tykel's Arms in the Landing), steps OUT of the shop to hand it
-  over (minor demons can't enter shops, Scott 11/07), then returns to where it started.
+  (Wineberry's in Icemule, Tykel's Arms in the Landing), banks the change, walks to the
+  resting room with the weapon in hand and hands it to the demon THERE, waiting for the demon
+  as long as it takes (rest_wait). Waiting outside the shop never worked: minor demons can't
+  enter shops (Scott 11/07) and the raven often didn't turn up there at all (11/09 and 11/14:
+  three give-ups at 91 s, the claidhmore ended up in the cloak).
 
   Run from Fizzleworth-prep.lic. No-op (a silent TELL MDEMON RETURN and one `look`)
   when the demon already has the weapon.
@@ -69,6 +72,20 @@ module FizzBuyWeapon
 
   def recall_every
     15
+  end
+
+  # How long the hand-over in the resting room waits for the demon (Scott 11/14: WAIT for it, don't
+  # carry the claidhmore in the cloak). 10 minutes is mdemon_refresh's "it may be stuck" mark; only a
+  # demon that is lost for good gets past it, and then the claidhmore goes in the cloak as before.
+  def rest_wait
+    600
+  end
+
+  # Where bigshot rests (UserVars.op["resting_room_id"]) -- prep runs there and the raven catches up
+  # there; falls back to the room this script started in.
+  def home_room(start)
+    id = (UserVars.op.is_a?(Hash) ? UserVars.op["resting_room_id"].to_s.strip : "")
+    id =~ /\A\d+\z/ ? id.to_i : start
   end
 
   def demon_here?(id)
@@ -192,8 +209,8 @@ module FizzBuyWeapon
   # so stow it (the cloak) instead of carrying it into the hunt (10.04: the demon
   # had timed out, we logged "gave it to verlok" anyway and five hunts ran with an
   # unarmed animate).
-  def give_to_demon
-    noun = demon_noun
+  def give_to_demon(wait = demon_wait)
+    noun = demon_noun(wait)
     if noun
       dothistimeout("give #{NOUN} to #{noun}", 4,
         /grudgingly accepts|hand(?:s)? .* to (?:a|an|the)|refuses|isn't interested|maximum capacity|To whom|could not find/i)
@@ -202,22 +219,6 @@ module FizzBuyWeapon
     fput "stow #{NOUN}"
     echo "[buyweapon] the demon didn't take the #{NOUN} -- it's in the cloak; reanim will drop it itself. (A demon that can't hold one, like an igaesha, lands here every hunt.)"
     false
-  end
-
-  # A minor demon can't enter a shop (Scott 11/07: 17:08 log, Tykel's Arms -- the raven was left
-  # in the street, the hand-over waited 45 s for it and the claidhmore went into the cloak), so
-  # the hand-over happens outside. Both weapon shops have the one exit, "out". Waits for the
-  # room to change; returns whether it did. If it didn't, the hand-over is tried where we are.
-  def leave_shop
-    before = XMLData.room_id
-    fput "out"
-    20.times do
-      break if XMLData.room_id != before
-      sleep 0.25
-    end
-    moved = XMLData.room_id != before
-    echo "[buyweapon] couldn't step out of the shop -- trying the hand-over from here." unless moved
-    moved
   end
 
   def run
@@ -271,18 +272,21 @@ module FizzBuyWeapon
       r = dothistimeout("buy", 8, /Sold for|hands you (?:a|an|the)|don't have enough|can't afford/i).to_s
     end
 
-    if r =~ /Sold for|hands you (?:a|an|the)/i
+    bought = r =~ /Sold for|hands you (?:a|an|the)/i
+    if bought
       bless_weapon
-      leave_shop
-      ok = give_to_demon
-      echo "[buyweapon] bought a #{NOUN}#{ok ? ' and gave it to the demon' : ' (kept -- no demon)'}."
     else
       echo "[buyweapon] !! couldn't buy a #{NOUN} (order ##{number}): #{r.strip[0, 120]}"
     end
 
     Script.run("go2", "bank")
     fput "deposit all"
-    Script.run("go2", "#{start} --disable-confirm") if start
+    home = home_room(start)
+    Script.run("go2", "#{home} --disable-confirm") if home
+    if bought
+      ok = give_to_demon(rest_wait)
+      echo "[buyweapon] bought a #{NOUN}#{ok ? ' and gave it to the demon' : ' (kept -- no demon)'}."
+    end
   end
 end
 
