@@ -211,7 +211,7 @@ It picks the instrument in this order: the command line, then `;vars set instrum
   song of each day it sends `TUNE <instrument>` and prints the game's answer, counting it as tuned only if the reply
   looks like a tuning (the percussion line is on <https://gswiki.play.net/Instrument_messaging_percussion>); otherwise
   it retries in an hour. A "not skilled enough ... to tune it" reply (too few ranks in the class) backs off to once a day.
-  Verified live for the tambourine and the drum. `playsongs tune` forces one.
+  Verified live for the tambourine and the drum. `playsongs tune` forces one. **Bards only**: other professions skip tuning entirely ("Only bards can tune instruments.").
 - **Hands.** The instrument lives in the **left** hand so the right stays free for a weapon. It re-checks before every
   song (other scripts stow things), swaps it over if it landed in the right hand, and stows whatever else is blocking the
   left hand before fetching it. If the game says an instrument "requires two hands" (drum, lute, piccolo), it stows the
@@ -244,7 +244,7 @@ It picks the instrument in this order: the command line, then `;vars set instrum
 | `total_recall.lic` | RECALLs every worn and held item and tables the spells and enhancives found. | - |
 | `charge_me_up_scotty.lic` | Wizard (Picko): recharges spent wands and magic items with Charge Item (517); takes wands from bigshot's dead-wand container and returns them to the fresh-wand container. | config |
 | `summond.lic` | Sorcerer: summons a Minor Summoning (725) demon of the valence or archetype you ask for, at the nearest summoning chamber, re-rolling wrong archetypes. | - |
-| `mdemon_refresh.lic` | Sorcerer: keeps the Minor Summoning demon refreshed by rubbing a vakra runestone when the duration drops below a buffer, only in town with nothing hostile around; pauses bigshot while it works. | companion |
+| `mdemon_refresh.lic` | Sorcerer: keeps the Minor Summoning demon refreshed by rubbing a vakra runestone when the duration drops below a buffer, only in town with nothing hostile around; pauses bigshot while it works. Doesn't call a wandering demon back while you stand in the locker vaults or the Wayside Inn dining room (the `quiet_rooms` list). | companion |
 | `demonmana.lic` | Sorcerer: `send` fills the demon's mana store (done while resting), `get` takes it back mid-hunt. | - |
 | `fizzport.lic` | Sorcerer: Planar Shift (740) to a pattern in your rune books by name (`;fizzport icemule`). Searches the books in your shiftsack by label, picks chalk by realm colour. v0.2. | - |
 | `sanctify_runestaff.lic` | Cleric (Salvi): temporary Sanctify (330) on the runestaff, cast during a rest. Does nothing if LOOK already shows the flickering aura, if 330 isn't known, or if mana is short of the real cost. Run from `Salvi-prerest`. | - |

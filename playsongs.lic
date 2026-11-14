@@ -60,6 +60,8 @@
   So before the first song of each day (TUNE_INTERVAL_SECONDS) it sends
   TUNE <instrument> and prints whatever the game answers. "playsongs tune"
   forces one before the next song. Needs 4 ranks in the instrument's class.
+  Bards only ("Only bards can tune instruments."): any other profession skips
+  tuning entirely and just plays the instrument as is.
 
   Set a persistent default instrument (used whenever no instrument is
   given on the command line) with:
@@ -168,7 +170,11 @@ module Playsongs
   # Seen live 11/11 for a flute with too few ranks: "You are not skilled enough
   # with that instrument to tune it." Retrying every hour would be pointless, so
   # this backs off to the normal daily interval.
-  TUNE_UNSKILLED_REGEX = /not skilled enough with that instrument to tune it/
+  #
+  # Also "Only bards can tune instruments." (seen live 11/13 on Fizzleworth, a
+  # Sorcerer). can_tune? below skips TUNE for non-bards up front; this is the
+  # backstop if that class check is ever wrong.
+  TUNE_UNSKILLED_REGEX = /not skilled enough with that instrument to tune it|Only bards can tune instruments/
 
   # Per https://gswiki.play.net/Instrument_learning, this message fires once
   # per rank (not per skill tick), and there are only 20 ranks total, with
@@ -486,7 +492,7 @@ module Playsongs
     if tuned
       Lich::Messaging.msg("bold", "[Playsongs] Tuned #{INSTRUMENT}. Game said: #{shown}")
     elsif unskilled
-      Lich::Messaging.msg("bold", "[Playsongs] Can't tune #{INSTRUMENT} yet -- not enough ranks in its class. Playing it untuned (the game may pick a random message); will try again tomorrow. Game said: #{shown}")
+      Lich::Messaging.msg("bold", "[Playsongs] Can't tune #{INSTRUMENT} (game said: #{shown}) -- playing it untuned (the game may pick a random message); will try again tomorrow.")
     else
       Lich::Messaging.msg("bold", "[Playsongs] Sent TUNE for #{INSTRUMENT}, but the answer isn't one I recognise, so I'll try again in #{TUNE_RETRY_SECONDS / 60} min. " \
                                   "Game said: #{shown.empty? ? '(nothing)' : shown}")
@@ -494,7 +500,22 @@ module Playsongs
     waitrt?
   end
 
+  # TUNE is a bard ability ("Only bards can tune instruments.") -- everyone else
+  # just plays the instrument as is. Checked live rather than cached in a constant,
+  # so it's right whatever character this runs on.
+  def self.can_tune?
+    Stats.prof.to_s =~ /bard/i ? true : false
+  end
+
   def self.maybe_tune
+    unless can_tune?
+      if tune_requested?
+        @pause_mutex.synchronize { @tune_requested = false }
+        echo "Only bards can tune instruments -- ignoring the tune request."
+      end
+      return
+    end
+
     tune_instrument if tune_due?
   end
 
@@ -579,7 +600,7 @@ module Playsongs
     respond '  playsongs stats    - print stats for every instrument tracked so far'
     respond '  playsongs pause    - stop starting new songs after the current one finishes'
     respond '  playsongs resume   - resume after a pause'
-    respond '  playsongs tune     - tune the instrument before the next song (it also tunes by itself once a day)'
+    respond '  playsongs tune     - tune the instrument before the next song (bards only; a bard also tunes by itself once a day)'
     respond '  playsongs help     - show this help'
     respond ''
     respond "Default instrument: set with ;vars set instrument=<name> (currently: #{DEFAULT_INSTRUMENT}). A command-line instrument always overrides it."
@@ -798,8 +819,12 @@ module Playsongs
         Playsongs.resume!
       when 'tune'
         # Same reason as resume: only flips a flag; the main loop does the TUNE.
-        Playsongs.request_tune!
-        respond '[Playsongs] Will tune before the next song.'
+        if Playsongs.can_tune?
+          Playsongs.request_tune!
+          respond '[Playsongs] Will tune before the next song.'
+        else
+          respond '[Playsongs] Only bards can tune instruments.'
+        end
       else
         respond "[Playsongs] Unknown command '#{word}'. Try: playsongs help"
       end
