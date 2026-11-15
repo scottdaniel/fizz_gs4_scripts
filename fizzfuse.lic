@@ -4,7 +4,7 @@
         game: gemstone
         tags: scroll infusion, infuse, unlock, runestone, scroll
     requires: Lich > 5.4.0
-     version: 2.4
+     version: 2.5
         note: Written with assistance from Claude (Anthropic).
 
 
@@ -187,6 +187,11 @@ Infuse!
           before the scroll was back in hand and went off at nothing ("You wave your
           smooth stone around"), wasting the new runestone. find_rune now waits until
           the scroll is actually in the right hand before returning.
+        - Fixed hanging at the alchemist when the shop doesn't sell what's being
+          ordered (Four Winds' Marble House sells no premade runestones, and the
+          general store there has no smooth stone): the catalog is now read in full
+          and, if a runestone can't be bought or made, the script says so, deposits
+          the withdrawn money and stops.
 
 =end
 
@@ -271,12 +276,19 @@ def make_rune (rune_name)
 		fput "stow ##{held.id}" if held
 	end
 
+	# Called when the shop can't supply something (assigned below, once the hands
+	# have been noted): put the money back and go home instead of hanging.
+	bail = nil
+
 	order = lambda do |item_name|
 		echo "#{item_name}"
-		orderlist = dothis "order", /#{item_name}/
-		orderlist = orderlist.split('   ')
-		orderlist = orderlist.each.find{|item| item.include? "#{item_name}"}
-		ordernum = orderlist.scan(/\d+/).first
+		# Read the whole catalog and stop at its footer. Waiting for a line
+		# matching the item hung forever in shops that don't sell it (Four Winds'
+		# Marble House has no premade runestones).
+		catalog = collect_lines("order", /You can APPRAISE, INSPECT or DESCRIBE/, 8).join("   ").split('   ')
+		orderlist = catalog.find { |item| item.include? "#{item_name}" }
+		ordernum = orderlist.to_s.scan(/\d+/).first
+		bail.call("This shop doesn't sell #{item_name}.") unless ordernum
 		fput "order #{ordernum}"
 		buy_result = dothistimeout "buy", 5, /Sold for|need a free hand/
 		3.times do
@@ -296,6 +308,19 @@ def make_rune (rune_name)
 	if !original_hands.empty?
 		fput "stow all"
 		sleep 1
+	end
+
+	bail = lambda do |msg|
+		echo msg
+		echo "Giving up on making the #{rune_name} rune - depositing the withdrawn money. The scroll is in your #{UserVars.infusesack}."
+		start_script('go2',['bank'])
+		wait_while {running?('go2')}
+		fput "stow all"
+		fput "deposit all"
+		start_script('go2',[return_room])
+		wait_while {running?('go2')}
+		original_hands.each { |id| fput "get ##{id}" }
+		exit
 	end
 
 	# The first item in either hand (matching /match/ by noun if given), once the
@@ -380,6 +405,11 @@ def make_rune (rune_name)
 			echo "No aish'vrak potion for sale here - buying the premade runestone instead."
 			stone_id = nil
 		end
+	end
+
+	# Nothing made from a smooth stone, so the alchemist has to sell premade runestones.
+	if !stone_id && !shop_sells.call(/runestone/)
+		bail.call("No runestones for sale here, and no smooth stone + aish'vrak potion to make one (Four Winds' general store has no stone). You'll need to make or buy the #{rune_name} runestone elsewhere.")
 	end
 
 	fput "get my brush in my #{UserVars.infusesack}"
