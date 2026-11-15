@@ -4,7 +4,7 @@
         game: gemstone
         tags: scroll infusion, infuse, unlock, runestone, scroll
     requires: Lich > 5.4.0
-     version: 2.3
+     version: 2.4
         note: Written with assistance from Claude (Anthropic).
 
 
@@ -183,6 +183,10 @@ Infuse!
           "You retrieve ..." (like a cloak) weren't recognised as a successful "get cup",
           so the script thought there was no cup. It now checks what's actually in your
           hand, for the cup and the ink bottle both.
+        - Fixed waiting for the scroll after making a rune: the odeir'cos wave fired
+          before the scroll was back in hand and went off at nothing ("You wave your
+          smooth stone around"), wasting the new runestone. find_rune now waits until
+          the scroll is actually in the right hand before returning.
 
 =end
 
@@ -454,6 +458,12 @@ def find_rune(rune_name)
 		fput "stow all"
 		make_rune(rune_name)
 		fput "get ##{$scroll_id}"
+		# GameObj lags the game: without this the caller's "wave left at my <right hand>"
+		# can fire before the scroll is back in hand (and interpolate a stale object).
+		end_time = Time.now.to_f + 5
+		until GameObj.right_hand.id.to_s == $scroll_id.to_s || Time.now.to_f > end_time
+			sleep 0.1
+		end
 		return true
 	elsif find_rune.include? "drawn on it"
 		return true
