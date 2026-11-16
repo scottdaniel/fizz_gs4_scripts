@@ -219,7 +219,9 @@ module Playsongs
     #   "You let the slow beats on your rosewood drum gradually come to rest."
     #   "You bring your rapid drumming to an abrupt halt on your rosewood drum."
     /You let the .+? beats on your .+? (?:trail away into silence|gradually come to rest)\./,
-    /You bring your rapid \w+ to an abrupt halt on your .+?\./
+    /You bring your rapid \w+ to an abrupt halt on your .+?\./,
+    # Woodwind (piccolo, seen live on Picko 11/16); ".+?" so any flute-like instrument matches.
+    /As your last note fades away like a sigh on the wind, you lower your .+?\./
   )
 
   # Backstop for the next ending message nobody has seen yet: a song is 5-5.5

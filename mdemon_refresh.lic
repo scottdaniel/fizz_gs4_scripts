@@ -46,8 +46,9 @@
   outlast the room -- the bank teller blocked it, the 90 s ran on after the walk back to the
   inn, and the raven stood outside the gemcutter's for 80 s until Scott ordered it by hand).
   A real order is echoed once ("ordered it back"); the silent "already here" replies are not.
-  It sends none at all while you stand in one of quiet_rooms (the locker vaults, the pawnshops
-  and the Wayside Inn dining room, where Dreavenings are held; edit the list in the method).
+  It sends none at all while you stand in one of quiet_rooms (the locker vaults, the pawnshops,
+  the Mist Harbor Firefly Villa merchant lounge and the Wayside Inn dining room, where
+  Dreavenings are held; edit the list in the method).
 =end
 
 module MdemonRefresh
@@ -111,10 +112,10 @@ module MdemonRefresh
   # prints them: 15948 the Landing locker vault and 35474 the Icemule one (where `go2 locker`
   # ends up, per the logs), 3619 Wayside Inn, Dining Room (where ;dreavening sits you). The
   # pawnshops too (Scott 11/14): 408 Kilron's Pawnshop, Front Room in the Landing and 2464 Pawnshop,
-  # Interior in Icemule, where `go2 pawnshop` ends up. A METHOD so an edit applies the next time
-  # the script starts.
+  # Interior in Icemule, where `go2 pawnshop` ends up. And 16338 Firefly Villa, Merchant Lounge in
+  # Mist Harbor (Scott 11/15). A METHOD so an edit applies the next time the script starts.
   def self.quiet_rooms
-    [15948, 35474, 3619, 408, 2464]
+    [15948, 35474, 3619, 408, 2464, 16338]
   end
 
   def self.demon_here?
