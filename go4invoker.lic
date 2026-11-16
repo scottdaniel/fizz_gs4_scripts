@@ -73,6 +73,7 @@ module Go4Invoker
   def last_leave;    10; end   # too late to start the trip after this
   def give_up_at;    14; end   # stop waiting for her / asking
   def poll_seconds;   5; end
+  def go_limit;     180; end   # one go2 run (bank, invoker, home) is stopped after this many seconds
 
   # Scripts that may be running in the resting room but never need waiting for.
   def never_wait_for; %w[playsongs rested timequit go4invoker]; end
@@ -246,8 +247,37 @@ module Go4Invoker
     false
   end
 
+  # go2 with a time limit. go2 restarts itself forever when a step fails (11/15: its FWI
+  # `turn` hit the wrong amulet, "You can't turn that.", and it retried every 5 s until the
+  # connection dropped nine hours later, with bigshot paused the whole night). A normal run to
+  # 3677 or back takes about 20 s, a bank trip a little more; past go_limit it is stopped, and
+  # the caller treats the room it is standing in as the result.
   def go(target)
-    Script.run("go2", "#{target} --disable-confirm", { quiet: true })
+    Script.run_child("go2", "#{target} --disable-confirm", { quiet: true }, timeout: go_limit)
+  rescue StandardError => e
+    say "!! go2 to #{target} didn't finish in #{go_limit}s (#{e.class}) -- stopped it."
+  end
+
+  # The FWI trinket name has to pick out ONE item in the inventory. go2 and eloot look it up
+  # with GameObj[name]: a single word matches the first item with that noun, a longer name
+  # matches the end of the item's name. Picko's setting was "amulet" while he wears a ruby
+  # amulet and a memorial candle amulet, so go2 turned the wrong one. Returns nil when it is
+  # fine, otherwise a sentence saying what is wrong.
+  def trinket_problem
+    name = fwi_trinket
+    esc = Regexp.escape(name)
+    hits = Array(GameObj.inv).select do |o|
+      if name.split(' ').length == 1 then o.noun.to_s == name
+      else o.name.to_s == name || o.name.to_s =~ /\b#{esc}\z/i
+      end
+    end
+    return "no worn or carried item matches the FWI trinket #{name.inspect}." if hits.empty?
+    return nil if hits.length == 1
+
+    "the FWI trinket #{name.inspect} matches #{hits.length} items (#{hits.map(&:name).join('; ')}) so go2 may turn " \
+    "the wrong one. Use a longer name: ;go2 --fwi-trinket=<more of the item's name>"
+  rescue StandardError
+    nil
   end
 
   # ---- bigshot --------------------------------------------------------------------
@@ -374,6 +404,11 @@ module Go4Invoker
   # Bank if needed, island, spells, home. Returns :paid, :poor, :no_silver, :absent,
   # :no_answer or :unreachable.
   def trip
+    if (problem = trinket_problem)
+      say "!! not going: #{problem}"
+      notice("go4invoker skipped the invoker trip: #{problem}")
+      return :no_trinket
+    end
     home = room_id
     music = stop_music
     result = nil
@@ -419,6 +454,8 @@ module Go4Invoker
     when :absent
       notice("the invoker never showed at Honeysuckle and Rose Avenue (#{clock(visit)} visit).")
       say "!! she never showed by #{give_up_at} past the hour."
+    when :no_trinket
+      nil # trip already said why and sent the notice
     when :unreachable
       notice("go4invoker couldn't get to room #{INVOKER_ROOM} (FWI trinket?) for the #{clock(visit)} visit.")
       say "!! couldn't get to room #{INVOKER_ROOM}. Is go2's FWI trinket set (;go2 --fwi-trinket=<name>)?"
