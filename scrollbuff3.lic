@@ -26,9 +26,16 @@ Configurable durations for stackable or refreshable spells
     author: Nihiladrem (todd.estabrooks@gmail.com)
       game: gs
       tags: invoke, scroll, scrolls, hunting
-      version: 0.2.1
+      version: 0.2.2
 
     CHANGELOG:
+    0.2.2 - scrollsack/vibrantscrollsack settings can use the game's adjective.noun
+            shorthand (e.g. buck.bag = "juniper buckskin bag"). GameObj[] treats a
+            dotted string as a single noun, so Picko's "buck.bag" failed with
+            "Couldn't find your scrollsack". find_sack matches dotted settings like
+            the game does (last word = noun, earlier words prefix the name) and
+            leaves plain settings on the old GameObj[] lookup. Also fixed the
+            vibrantscrollsack error message printing blank instead of the setting.
     0.2.1 - With no spell numbers on the command line, read them from the
             scroll_buff_spells UserVar (the same one scrollinv.lic and
             Fizzleworth-prep use) instead of printing help. ;scrollbuff3 help
@@ -121,6 +128,25 @@ def echofmt(*lines)
     echo "=" * maxlen
 end
 
+## Container settings may use the game's adjective.noun shorthand (buck.bag =
+## "juniper buckskin bag"), which GameObj[] can't resolve -- it treats a dotted
+## string as one noun. Plain settings keep using GameObj[] as before; dotted ones
+## match like the game does: last word = noun, earlier words prefix-match the name.
+def find_sack(setting)
+  setting = setting.to_s.strip.sub(/\Amy\s+/i, "")
+  return nil if setting.empty?
+  unless setting.include?(".")
+    found = GameObj[setting]
+    return found if found
+  end
+  words = setting.split(/[\s.]+/)
+  pools = Array(GameObj.inv) + [GameObj.right_hand, GameObj.left_hand].compact.select { |o| o.id }
+  pools.find do |o|
+    o.noun.to_s.casecmp?(words.last) &&
+      words[0..-2].all? { |w| o.name.to_s =~ /\b#{Regexp.escape(w)}/i }
+  end
+end
+
 ##Check for empty hand
 unless (checkright.nil?) ||  (checkleft.nil?)
     echofmt "Empty a hand and try again"
@@ -141,7 +167,7 @@ unless scrollsackVar
     
     exit
 end
-scrollsack = GameObj[scrollsackVar]
+scrollsack = find_sack(scrollsackVar)
 unless scrollsack
     echofmt "Couldn't find your scrollsack \"#{scrollsackVar}\"",
             "Fetch that and try again, would ya?"
@@ -318,13 +344,13 @@ unless (vibrantscrollsackVar || (CharSettings["scrollbuff-usevibranttoggle"] == 
     
     exit
 else
-	vibrantscrollsack = GameObj[vibrantscrollsackVar]
+	vibrantscrollsack = find_sack(vibrantscrollsackVar)
 	unless vibrantscrollsack
-		echofmt "Couldn't find your vibrantscrollsack \"#{vibrantscrollsack}\"",
+		echofmt "Couldn't find your vibrantscrollsack \"#{vibrantscrollsackVar}\"",
 				"Fetch that and try again, would ya?"
 		exit
 	end
-	if GameObj[vibrantscrollsackVar] == GameObj[scrollsackVar]
+	if vibrantscrollsack.id == scrollsack.id
 		echofmt "Your vibrantscrollsack must be a different container than your scrollsack",
 				"Change one of the other to a different container and try again. Example:",
 				"    ;vars set vibrantscrollsack=black backpack",
@@ -419,7 +445,7 @@ use_vibrant = (CharSettings["scrollbuff-usevibranttoggle"] == "True")
 fput "open ##{scrollsack.id}"
 fput "open ##{vibrantscrollsack.id}"
 [scrollsackVar, vibrantscrollsackVar].compact.uniq.each do |noun|
-  Lich::Util.issue_command("look in my #{noun}", /(?:In|Inside) the|There (?:is|are)|That is (?:closed|empty)|don't see|could not find/i, /<prompt/, silent: true, quiet: true, timeout: 5) rescue nil
+  Lich::Util.issue_command("look in my #{noun.to_s.sub(/\Amy\s+/i, '')}", /(?:In|Inside) the|There (?:is|are)|That is (?:closed|empty)|don't see|could not find/i, /<prompt/, silent: true, quiet: true, timeout: 5) rescue nil
 end
 if GameObj.reserve.nil?
   fput "reserve list"
