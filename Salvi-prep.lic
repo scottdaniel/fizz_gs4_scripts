@@ -22,6 +22,17 @@ end
 fput "store weapon"
 fput "stow all"
 
+# Scroll spell-up first, the rubs after (same order as Picko-prep). The list lives in
+# UserVars.scroll_buff_spells (shared with scrollinv.lic and eloot's keep-scrolls list);
+# set it with ;vars set scroll_buff_spells=<spell numbers>.
+# Spells the rubs below give are left out of this pass: a scroll would take the spell and the
+# rub would then be skipped as already active. scrollbuff3 also skips anything already running.
+# Empty list -> don't call scrollbuff3: with no args it would read the whole UserVar.
+rub_spells    = %w[1701 1712 1705 1711 509]
+scroll_wanted = UserVars.scroll_buff_spells.to_s.split(/[\s,]+/)
+scroll_first  = scroll_wanted - rub_spells
+Script.run("scrollbuff3", scroll_first.join(" ")) unless scroll_first.empty?
+
 # rub stuff, but only if the spell isn't already active -- and only pause
 # after ones that actually ran, instead of always eating 3s per item
 unless Spell[1701].active?
