@@ -32,7 +32,7 @@
   usage:
     ;bounty_chooser help
     ;bounty_chooser deliver         (only hand over a rescue child who is in the room with you)
-    ;bounty_chooser deliver stay    (same, but don't walk back to where you started; used by Fizzleworth-child)
+    ;bounty_chooser deliver stay    (same, but don't walk back to where you started; used by child_watch)
     ;bounty_chooser kill skeletal ice troll, cold guardian, frost giant --areas=Ice Plains, Icemule Trail
     ;bounty_chooser kill darkwoode, greater orc, werebear --kill-areas=Upper Trollfang
     ;bounty_chooser dangerous frost giant
@@ -673,7 +673,7 @@ module BountyChooser
   # `;bounty_chooser deliver`: only the child hand-over, nothing else (no rerolls, no new
   # task). For the START of a rest, before any shopping walk can leave the child behind.
   # `;bounty_chooser deliver stay` does not walk back to the room it started in (the
-  # Fizzleworth-child watcher runs it from the hunting ground, where going back is the last
+  # child_watch watcher runs it from the hunting ground, where going back is the last
   # thing wanted); the outcome is left in $bounty_chooser_child_delivered (true delivered, false not
   # delivered, :none no child task at all, nil the script died first).
   def self.deliver_only(stay: false)

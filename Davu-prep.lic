@@ -49,4 +49,9 @@ end
 # can't leave you fighting with your hands full (see eloot_guard.lic).
 Script.start("eloot_guard") unless Script.running?("eloot_guard")
 
+# Rescue-child bounty: when the child finds you mid-hunt, stop and run echild right there
+# instead of hunting on with her in tow (two children died that way 11/07; see child_watch.lic;
+# ;vars set child_rescue=off to disable).
+Script.start("child_watch") unless Script.running?("child_watch")
+
 end #End of module

@@ -1,5 +1,5 @@
-# Fizzleworth-child.lic
-# Rescue-child watcher for unattended hunting (11.08).
+# child_watch.lic
+# Rescue-child watcher for unattended hunting (11.08; made generic for every character 11.18).
 #
 # The problem: a "Rescue Child" bounty hands you a child who finds you mid-hunt ("Out of the
 # corner of your eye, you notice a young human child watching you fight ... This must be the
@@ -9,7 +9,8 @@
 # exists in `;bigshot bounty` mode, and plain `;bigshot` ignores it, so the hunt just carried on
 # with the child in tow until the next rest, where bounty_chooser found her gone.
 #
-# What this does (started from Fizzleworth-prep every hunt, like the lifeguard):
+# What this does (started every hunt from the character's prep script, or from bigshot's
+# hunting_scripts for Noebbly and Eepo, who have no prep script):
 #   1. watches for the bounty reading "You have made contact with the child you are to rescue"
 #      (or the contact line itself) while bigshot is hunting and the child is in the room;
 #   2. the moment both are true it stops the hunt where you stand: waits out a running eloot
@@ -24,25 +25,44 @@
 # Not interrupted: a child who arrives while bigshot is already resting or travelling
 # (bounty_chooser's deliver at the start of the rest still covers that).
 #
-#   ;vars set child_rescue=off       turn the watcher off (default on)
+#   ;vars set child_rescue=off       turn the watcher off (default on; per character)
 #
-# Needs echild.lic and move2.lic. Stop with ;kill Fizzleworth-child.
+# Which scripts it stops is not per character: every running script named <Prefix>-attack* or
+# <Prefix>-duskattack* (so Salvi-attack-oteska and the Salvi-attack / Salvi-attack-web it runs,
+# Picko-attack-fire, Felix-attack, Htrow-attack, Brayis-attack, Fizzleworth-attack-ultima ...), plus
+# reanim and go2. Characters with only inline bigshot commands have nothing to kill; pausing
+# bigshot stops those.
+# bigshot, sac4mana, wander, ewander and fizzsac are paused, not killed, and unpaused afterwards.
+# Nothing here needs a per-character yaml: `bounty_chooser deliver` reads none.
+#
+# Needs echild.lic and move2.lic. Stop with ;kill child_watch.
 
-module FizzleworthChild
+module ChildWatch
   module_function
 
   POLL       = 0.5
   ELOOT_WAIT = 15    # secs to let a running eloot finish before freezing everything
   RETRY_GAP  = 90    # secs between hand-over attempts for the same child
   MAX_TRIES  = 3
-  HOOK       = "fizzleworth-child-hook"
+  HOOK       = "child-watch-hook"
   CONTACT    = /made contact with the child you are to rescue/i
   CONTACT_LINE = /This must be the child you've been sent to rescue|You have made contact with the child/i
   CHILD      = /\bchild\b/i
 
   # Tunable lists are methods: guarded constants would freeze across a script reload.
-  def freeze_scripts;  %w[bigshot sac4mana wander fizzsac]; end
-  def kill_scripts;    %w[Fizzleworth-attack-ultima Fizzleworth-attack-cat Fizzleworth-attack-base reanim go2]; end
+  def freeze_scripts;  %w[bigshot sac4mana wander ewander fizzsac]; end
+  def kill_extra;      %w[reanim go2]; end
+
+  # The running attack routines, by name (<Prefix>-attack*, <Prefix>-duskattack*), plus the extras.
+  # The prefix is NOT the character's full name (Felix-attack on Felixopedes, Htrow-attack on
+  # Htrowelzzif) and each character runs in its own Lich, so any such script here is this one's.
+  # A character with only inline bigshot commands (Davu, Noebbly, Eepo) has none: pausing bigshot
+  # is what stops those.
+  def kill_scripts
+    mine = /\A[^-]+-(?:attack|duskattack)/i
+    names = Array(Script.running).map { |s| s.name.to_s }
+    names.select { |n| n =~ mine } + (kill_extra & names)
+  end
 
   def flag(name)
     v = UserVars.send(name)
@@ -59,7 +79,7 @@ module FizzleworthChild
     DownstreamHook.remove(HOOK) rescue nil
     DownstreamHook.add(HOOK, proc { |line|
       begin
-        $fizzleworth_child_contact_at = Time.now.to_f if line =~ CONTACT_LINE
+        $child_watch_contact_at = Time.now.to_f if line =~ CONTACT_LINE
       rescue StandardError
         nil
       end
@@ -74,7 +94,7 @@ module FizzleworthChild
   # The bounty reads "made contact", or the contact line went by in the last 3 hours.
   def contact?
     return true if checkbounty.to_s =~ CONTACT
-    at = $fizzleworth_child_contact_at
+    at = $child_watch_contact_at
     !at.nil? && Time.now.to_f - at < 10_800
   rescue StandardError
     false
@@ -176,14 +196,14 @@ module FizzleworthChild
     @next_try = now + RETRY_GAP
     outcome = rescue_now(@tries)
     if outcome == :delivered || outcome == :none
-      $fizzleworth_child_contact_at = nil   # done, or the contact line was stale: stop watching for her
+      $child_watch_contact_at = nil   # done, or the contact line was stale: stop watching for her
       @tries = 0
     end
     outcome
   end
 
   def run
-    $fizzleworth_child_contact_at = nil
+    $child_watch_contact_at = nil
     install_hook
     echo "[child] watching for the rescue child (stops the hunt and runs echild when she is with you; ;vars set child_rescue=off to disable)."
     @tries = 0
@@ -198,6 +218,6 @@ module FizzleworthChild
   end
 end
 
-before_dying { FizzleworthChild.remove_hook }
+before_dying { ChildWatch.remove_hook }
 
-FizzleworthChild.run
+ChildWatch.run

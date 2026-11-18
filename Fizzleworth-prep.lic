@@ -252,9 +252,10 @@ Script.start("Fizzleworth-manalog") unless Script.running?("Fizzleworth-manalog"
 Script.start("Fizzleworth-lifeguard") unless Script.running?("Fizzleworth-lifeguard")
 
 # Rescue-child bounty: when the child finds you mid-hunt, stop and run echild right there
-# instead of hunting on with her in tow (11/07 two children died to minotaurs that way; see
-# Fizzleworth-child.lic; ;vars set child_rescue=off to disable).
-Script.start("Fizzleworth-child") unless Script.running?("Fizzleworth-child")
+# instead of hunting on with her in tow (two children died that way 11/07; see child_watch.lic;
+# ;vars set child_rescue=off to disable).
+Script.start("child_watch") unless Script.running?("child_watch")
+
 
 # Puts away loot eloot has no room for and unpauses it, so a full cloak can't
 # leave you fighting with your hands full (see eloot_guard.lic).

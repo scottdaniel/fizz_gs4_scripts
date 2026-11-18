@@ -82,7 +82,7 @@ Always-on companions (started from `-prep` / `-prerest`):
 | Script | What it does | Bigshot |
 |---|---|---|
 | `Fizzleworth-lifeguard.lic` | Health safety net: Symbol of Restoration at low health, Symbol of Return when critical, Sacrifice Shift if stunned/webbed. Pauses bigshot/go2/attack scripts so Return isn't interrupted, then tells bigshot to rest. `;vars set lifeguard=off` disables it. Also counts damaging Krag Slopes landslide climb falls (`lifeguard_climb_cap`, default 4 in 10 min, 0 = off): pauses go2 and asks `deadexit` to alert Discord and quit. Also stops go2 BEFORE a landslide climb when encumbrance is at `lifeguard_climb_enc` (default 50) or over (same alert/quit; unpausing by hand is respected). | companion |
-| `Fizzleworth-child.lic` | Rescue-child watcher, started by `Fizzleworth-prep`. When the bounty reads "made contact with the child" and she is in your room while bigshot is hunting, it stops the hunt where you stand (waits out eloot, pauses bigshot, kills the attack scripts and go2), runs `bounty_chooser deliver stay` (echild to the guard + reward), then tells bigshot to rest. Retries 90 s apart, 3 times, and posts a Discord line through `deadexit`. Written because plain `;bigshot` has no stop-on-child rule (only `;bigshot bounty` does) and 11/07 two children died to minotaurs while he hunted on. `;vars set child_rescue=off` disables it. | companion |
+| `child_watch.lic` | Rescue-child watcher for every character, started by every character's prep script (Fizzleworth, Salvi, Picko, Fizzlestiks, Felix, Davu, Htrow, Brayis) and, for Noebbly and Eepo who have no prep script, by bigshot's `hunting_scripts` list (was `Fizzleworth-child.lic`). When the bounty reads "made contact with the child" and she is in your room while bigshot is hunting, it stops the hunt where you stand (waits out eloot, pauses bigshot, kills any `<Prefix>-attack*` / `<Prefix>-duskattack*` script and go2; inline-command characters just get bigshot paused), runs `bounty_chooser deliver stay` (echild to the guard + reward), then tells bigshot to rest. Retries 90 s apart, 3 times, and posts a Discord line through `deadexit`. Written because plain `;bigshot` has no stop-on-child rule (only `;bigshot bounty` does) and 11/07 two children died to minotaurs while he hunted on. `;vars set child_rescue=off` disables it. | companion |
 | `Fizzleworth-anim-cleanup.lic` | The moment bigshot decides to rest, dismisses the `reanim` animate in the field and recovers its weapon, and sacrifices weakened creatures for shadow essence, before the walk home. On the minotaur hunt (resting room 1259) the animate instead stays up for the walk and is dismissed at room 420, outside the Landing gates. | companion |
 | `Fizzleworth-webward.lic` | Clears stationary sticky-web hazards during travel; bigshot and go2 only wait webs out. | companion |
 | `Fizzleworth-witchguard.lic` | Rift hazards: while a witch, warlock, caedera, csetairi, worm or black void is around, sets bigshot's own global flee flag (`$bigshot_flee`) every poll so bigshot leaves through its normal flee path, whatever profile is loaded. Started by `Fizzleworth-prep` in `sever` mode, stopped by it in any other mode. | companion |
@@ -322,7 +322,7 @@ they act, or set bigshot's rest flag.
 |---|---|
 | `deadexit` | Quits the game if you die while bigshot is running. |
 | `Fizzleworth-lifeguard` | Pauses bigshot/go2/attack scripts for Symbol of Return, then tells bigshot to rest. |
-| `Fizzleworth-child` | Pauses bigshot and kills the attack scripts/go2 to escort a rescue child out with echild, then tells bigshot to rest. |
+| `child_watch` | Pauses bigshot and kills the attack scripts/go2 to escort a rescue child out with echild, then tells bigshot to rest. |
 | `Fizzleworth-anim-cleanup` | Fires the moment bigshot's status says "hunt over, heading to rest"; freezes bigshot/go2 while it dismisses the animate. |
 | `Fizzleworth-webward` | Pauses bigshot/go2 to clear a web hazard. |
 | `Fizzleworth-witchguard` | Sets bigshot's `$bigshot_flee` while a Rift hazard is in the room, so it flees through its normal path. |
@@ -385,7 +385,7 @@ tracks `using_bigshot` only so the two don't fight over targets).
 | `lifeguard_climb_enc` | `Fizzleworth-lifeguard`: encumbrance % at which go2 is stopped before a landslide climb (default 50, 0 = off). |
 | `lifeguard_climb_cap` | `Fizzleworth-lifeguard`: damaging landslide-climb falls in 10 minutes before it pauses go2 (default 4, 0 = off). |
 | `prep_max_encumbrance` | `Fizzleworth-prep`: encumbrance % at which the hunt is held after prep (default 45, 0 = off). |
-| `child_rescue` | `;vars set child_rescue=off` disables `Fizzleworth-child` (default on). |
+| `child_rescue` | `;vars set child_rescue=off` disables `child_watch` (default on). |
 | `demonsilver` | `;vars set demonsilver=off` stops `demonsilver_watch` giving looted silver to the demon (default on); `;demonsilver get` still works. |
 | `wander_safe_limit` | `wander_safe`: seconds before a running `ewander` is killed (default 60). |
 | `data/GSIV/<Char>/bounty_chooser.yaml` | `bounty_chooser`: allowed creatures, areas, gem towns when run without arguments. |
@@ -396,7 +396,7 @@ tracks `using_bigshot` only so the two don't fight over targets).
 |---|---|
 | `$condemn_charges`, `$condemn_progress`, `$condemn_max`, `$condemn_every` | Set by `condemn_charges`; read by `Salvi-attack` and `Salvi-attack-web`. |
 | `$reserve_spells` | Set by `reservecheck`; read by `Picko-attack-fire`. `nil` means unknown, so it tries everything. |
-| `$bigshot_flee`, `$bigshot_should_rest` | Bigshot's own flags. `Fizzleworth-witchguard` sets the first; the Wizard and Cleric attack scripts, `Fizzleworth-lifeguard` and `Fizzleworth-child` set the second. |
+| `$bigshot_flee`, `$bigshot_should_rest` | Bigshot's own flags. `Fizzleworth-witchguard` sets the first; the Wizard and Cleric attack scripts, `Fizzleworth-lifeguard` and `child_watch` set the second. |
 | `$reanim_animate_live`, `$ult_reanim_done`, `$demonmana_taken` | Shared by `reanim`, `Fizzleworth-attack-ultima`, `Fizzleworth-prep` and `sac4mana`. |
 | `$demonsilver_held`, `$demonsilver_pending`, `$demonsilver_last` | `demonsilver` and `demonsilver_watch`: what this session knows the demon holds (by demon id, and whether it's full), loot not yet given, and the result of the last give. |
 
