@@ -1,0 +1,131 @@
+#level20_exiter.lic
+#Logs you out once the game stops your exp for the level-20 SKILLS CONFIRM, so an
+#overnight hunt doesn't sit for hours absorbing nothing. It does NOT confirm for
+#you: use any stat reallocates first, then SKILLS CONFIRM yourself (twice).
+#
+#What it waits for (Davu 11/12, verbatim):
+#  Please enter SKILLS CONFIRM to acknowledge that your fast migration period will
+#  end at level 20.  You will not earn any additional experience until you have
+#  completed the confirmation.
+#Davu first got it at 04:39:55, resting in town, then about once a minute until he
+#was logged in at 11:12 -- six and a half hours of no exp. The confirm took two
+#tries 11/13: the first SKILLS CONFIRM explains the change ("Once you reach level
+#20, your fast migration period will come to an end..."), the second says "Thank
+#you for the confirmation. You will now absorb experience at the normal rate."
+#
+#When the prompt shows:
+# 1. bigshot is told to rest ($bigshot_should_rest, like the attack scripts do), so
+#    a hunt in progress walks home the usual way.
+# 2. Once you're in town (the town of bigshot's resting room) and none of the rest
+#    chores are running (prep/prerest, eloot, eherbs, go2, the bounty scripts...),
+#    it stops bigshot and quits. Through deadexit when that's running, so the
+#    exp_check webhook gets "Game quit due to the level 20 SKILLS CONFIRM prompt";
+#    otherwise it quits itself.
+# 3. Still not out 20 minutes after the prompt (never got home, a chore hung)? It
+#    quits wherever you are.
+#With afk_now off (you're at the keyboard) it only tells you, once, and keeps
+#watching in case you turn afk_now back on.
+#
+#   ;level20_exiter     start watching; leave it running (it's harmless after 20)
+
+module Level20Exiter
+
+PROMPT    = /Please enter SKILLS CONFIRM to acknowledge/ unless defined?(PROMPT)
+HOOK_NAME = "level20_exiter" unless defined?(HOOK_NAME)
+TOWN_WAIT = 20 * 60 unless defined?(TOWN_WAIT) # seconds from the prompt until it quits anyway
+REASON    = "the level 20 SKILLS CONFIRM prompt (no exp until you confirm)" unless defined?(REASON)
+
+# Rest chores the quit shouldn't cut off half-way.
+def self.chore_pattern
+  /\A(?:.+-prerest|.+-prep|eloot|eherbs|ecure|go2|bounty_chooser|undead_bounty|ewaggle|diskwait|unburden|stow_the_shiny|buyitems)\z/i
+end
+
+def self.say(msg)
+  # Lich::Messaging.msg goes through _respond (echo would HTML-escape the bold tags).
+  Lich::Messaging.msg("bold", "[level20_exiter] #{msg}")
+end
+
+# afk_now defaults ON (unset counts as on), same as deadexit.
+def self.afk_now?
+  value = UserVars.afk_now
+  return true if value.nil?
+  return value if value == true || value == false
+
+  value.to_s !~ /\A\s*(?:0|false|off|no)\s*\z/i
+end
+
+# Same test as tackle-bot.lic / bard-bot.lic: in the town bigshot rests in.
+def self.in_town?
+  resting_room_id = (defined?(UserVars) && UserVars.op.is_a?(Hash)) ? UserVars.op["resting_room_id"].to_s.strip : ""
+  return false if resting_room_id.empty?
+  resting_room = Room.list[resting_room_id.to_i]
+  return false unless resting_room
+  Room.current.location == resting_room.location
+rescue StandardError
+  false
+end
+
+def self.chore_running
+  Script.running.map { |s| s.name.to_s.split("/").last }.find { |n| n =~ chore_pattern }
+end
+
+# Never returns: the quit ends Lich, and it's retried until the connection drops.
+def self.quit_now(why)
+  Script.kill("bigshot") if Script.running?("bigshot")
+  if Script.running?("deadexit")
+    say "#{why} -- asking deadexit to quit (it posts to Discord)."
+    $deadexit_request = REASON
+    sleep 30
+    say "deadexit hasn't quit yet -- quitting myself."
+  else
+    say "#{why} -- quitting."
+  end
+  loop do
+    fput "quit"
+    sleep 30
+  end
+end
+
+$level20_prompt_at = nil
+DownstreamHook.remove(HOOK_NAME) rescue nil
+DownstreamHook.add(HOOK_NAME, proc { |line|
+  # Tags stripped first: the game can wrap a command like SKILLS CONFIRM in a link tag.
+  $level20_prompt_at ||= Time.now if line.to_s.gsub(/<[^>]+>/, "") =~ PROMPT
+  line
+})
+before_dying { DownstreamHook.remove(HOOK_NAME) rescue nil }
+
+say "watching for the level 20 SKILLS CONFIRM prompt; when it comes you'll be logged out at the next quiet moment in town."
+
+told_keyboard = false
+sent_home = false
+waiting_on = nil
+loop do
+  seen = $level20_prompt_at
+  if seen && !afk_now?
+    unless told_keyboard
+      say "SKILLS CONFIRM is waiting and you get no exp until you do it. Not quitting: afk_now is off."
+      told_keyboard = true
+    end
+  elsif seen
+    unless sent_home
+      $bigshot_should_rest = true
+      $rest_reason = "SKILLS CONFIRM"
+      say "the SKILLS CONFIRM prompt is up (no more exp until you confirm). Heading home to log out."
+      sent_home = true
+    end
+    if Time.now - seen > TOWN_WAIT
+      quit_now("still in the game #{TOWN_WAIT / 60} minutes after the prompt#{in_town? ? '' : ', and not back in town'}")
+    elsif !in_town?
+      # bigshot is bringing him home
+    elsif (chore = chore_running)
+      say "back in town; waiting for #{chore} to finish before quitting." unless waiting_on == chore
+      waiting_on = chore
+    else
+      quit_now("in town with nothing running")
+    end
+  end
+  sleep 2
+end
+
+end #End of module
