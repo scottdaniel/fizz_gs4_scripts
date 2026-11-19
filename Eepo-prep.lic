@@ -1,0 +1,34 @@
+#Eepo-prep.lic
+#Rogue version of Brayis-prep.lic (Eepo) -- as basic as possible: no spells, no rubs
+#(no rub items), and nothing that stores or swaps his two longswords, since his STORE
+#and READY settings were never captured and his profiles never needed a ready command
+#(he rests with the swords in hand). All this does is check he is armed, then start the
+#shared helpers.
+
+module EepoPrep
+
+# eloot's sell does STORE WEAPON then READY WEAPON, so after a rest the swords should be
+# back in hand. Right hand empty -> try READY WEAPON once.
+fput "ready weapon" if checkright.nil?
+
+# Still nothing in the right hand: the weapon is really gone (disarmed and never
+# recovered, or the READY weapon setting points at something that isn't there). Don't let
+# bigshot walk back out unarmed -- stop it here, in town, the same way Brayis-prep.lic does.
+pause 0.5
+if checkright.nil?
+  echo "Eepo-prep: nothing in the right hand -- stopping bigshot. " \
+       "Check the READY / STORE weapon settings (READY LIST, STORE LIST)."
+  Script.kill("bigshot") if Script.running?("bigshot")
+  exit
+end
+
+# Puts away loot eloot has no room for and unpauses it, so a full cloak can't
+# leave you fighting with your hands full (see eloot_guard.lic).
+Script.start("eloot_guard") unless Script.running?("eloot_guard")
+
+# Rescue-child bounty: when the child finds you mid-hunt, stop and run echild right there
+# instead of hunting on with her in tow (two children died that way 11/07; see child_watch.lic;
+# ;vars set child_rescue=off to disable).
+Script.start("child_watch") unless Script.running?("child_watch")
+
+end #End of module

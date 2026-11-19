@@ -14,7 +14,7 @@ exit if $unlost_failed
 Script.run("ecure")
 Script.start("eloot_guard") unless Script.running?("eloot_guard")  # unpauses eloot when its containers are full
 Script.run("diskwait")  # eloot only finds the disk's boxes if the disk is here when the sell starts (10/28)
-Script.run("eloot", "sell")
+Script.run("stow_the_shiny", "sell")  # eloot sell under the appraisal recorder; too-valuable refusals go to the locker when encumbered (stow_the_shiny.lic)
 Script.run("unburden")  # a box eloot left in hand -> sell again
 Script.run("undead_bounty", "kill zombie")
 # Restocks the rub items Felix-prep uses. A no-op until his list is set:

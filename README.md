@@ -44,16 +44,19 @@ pauses/steers bigshot, **config** = reads bigshot's profile settings, **-** = no
 | `Brayis-attack.lic` | Stamina-gated `cman tackle`, then a plain attack; falls back to plain attack when stamina is low or the creature can't be knocked down. One decision per call. Won't fight bare-fisted: with both hands empty (disarmed) it prints a DISARMED banner and sets bigshot's rest flag. | cmd |
 | `tackle-bot.lic` | Standalone group-hunt loop: tackles any living, un-prone NPC in the room while someone else's bigshot runs the hunt. Same stamina gate as `Brayis-attack`. Start/stop by hand. | reads resting room |
 | `Brayis-prep.lic` | Warrior version of `Fizzleworth-prep`: clear hands, rub items, ready the katana two-handed. If `ready weapon` leaves both hands empty it stops bigshot rather than let him walk out unarmed. | - |
-| `Brayis-prerest.lic` | Warrior version of `Salvi-prerest`: `unlost`, eherbs, `eloot_guard`, `diskwait`, eloot sell, `unburden`, buyitems (the `timequit` and `undead_bounty` lines are commented out). | - |
+| `Brayis-prerest.lic` | Warrior version of `Salvi-prerest`: `unlost`, eherbs, `eloot_guard`, `diskwait`, `stow_the_shiny sell`, `unburden`, buyitems (the `timequit` and `undead_bounty` lines are commented out). | - |
 
 ### Felixopedes (Empath)
 
 | Script | What it does | Bigshot |
 |---|---|---|
 | `Felixopedes-duskattack.lic` | Duskruin arena routine (trip/attack, prays when mana or stamina is low). | - |
+| `Eepo-attack.lic` | Rogue (two longswords): Surge of Strength when `CMan.buff_active?` says it is down and `CMan.available?` says it is usable, then one plain attack (the old `surge(!surge s30), attack (xx)`). Right hand empty -> READY WEAPON once, else rest as disarmed. One decision per call. Not run live yet. | - |
+| `Eepo-prep.lic` | Checks he is armed (READY WEAPON once if the right hand is empty, stops bigshot if it still is), starts `eloot_guard` and `child_watch`. No rubs, no spells. | - |
+| `Eepo-prerest.lic` | `unlost`, eherbs, `eloot_guard`, `diskwait`, `stow_the_shiny sell`, `unburden`. Swords stay in hand while he rests. | - |
 | `Felix-attack.lic` | Replaces the `zombies_landing` profile's `incant 118, trip, attack` with one hunting command: Web (118) once per target (retried until it lands, skipped if already webbed), Trip unless the target is already down or CMan isn't available, then an attack that paces bigshot's next call. Reads down/webbed from live creature status. | cmd |
 | `Felix-prep.lic` | Empath version of `Fizzleworth-prep`: clear hands (`store weapon` returns the lance to its harness), the rubs, ready weapon, start `eloot_guard`. No scrolls and none of the caster steps. | - |
-| `Felix-prerest.lic` | Empath version of `Salvi-prerest`: `unlost`, `ecure` (instead of eherbs), `eloot_guard`, `diskwait`, eloot sell, `unburden`, `undead_bounty kill zombie`, buyitems, ewaggle. No wands and no instrument. | - |
+| `Felix-prerest.lic` | Empath version of `Salvi-prerest`: `unlost`, `ecure` (instead of eherbs), `eloot_guard`, `diskwait`, `stow_the_shiny sell`, `unburden`, `undead_bounty kill zombie`, buyitems, ewaggle. No wands and no instrument. | - |
 | `fortune.lic` | Flavor: recites a random healing quote the moment `;ecure` heals someone. Quotes come from `data/GSIV/<Char>/quotes.yaml`. | - |
 | `quotes.yaml` | Source copy of the quote list `fortune.lic` reads. Copy it to the character's data folder. | - |
 
@@ -74,7 +77,7 @@ Between-hunt chain:
 | `Fizzleworth-prep.lic` | Pre-hunt: tidies the staffs, clears hands, casts the scroll spell-up first (`scrollbuff3`), then does the rubs last plus Crooked Intent (thumb-ring), and readies the weapon. Also starts the companions below and `eloot_guard`, re-arms the per-hunt flags, tells the demon to follow, buys a spare animate weapon, syncs `ewander`'s boundaries to the loaded bigshot profile, and logs starting mind. Encumbrance gate (11/08): logs the load after `buyweapon` and, at `prep_max_encumbrance` (default 45) or over, deposits silver and otherwise stops the walk to the hunting ground: with `afk_now` on it asks `deadexit` to send the Discord line and quit; at the keyboard it holds the hunt (bigshot waits on prep) with one Discord line. Modes: `here` / `arena` (no walking; `fizzabyss` runs it before each arena entry) and `sever` (see below). | starts companions |
 | `Fizzleworth-prep-sever.lic` | Prep for a spell-sever area (the Rift), where every spell outside the 100s, 400s, 700s and 1700s is stripped. Now a one-line wrapper for `;Fizzleworth-prep sever`: the full prep with the scroll spell-up limited to the 1700s and no white-crystal rub, and it starts `Fizzleworth-witchguard`. Put `script Fizzleworth-prep-sever` in the profile's hunting prep commands. | starts witchguard (via prep) |
 | `Fizzleworth-buyweapon.lic` | Makes sure the minor demon carries a spare weapon for `reanim`; buys one if not. Run from `-prep`. | - |
-| `Fizzleworth-prerest.lic` | Pre-rest: `unlost`, restarts companions, `reanim die` fallback, eherbs, `eloot_guard`, `diskwait`, eloot sell, `unburden`, `-rest`, `bounty_chooser` (minotaur list), buyitems, ewaggle, timequit, then `playsongs` if you're at the keyboard. | restarts companions |
+| `Fizzleworth-prerest.lic` | Pre-rest: `unlost`, restarts companions, `reanim die` fallback, eherbs, `eloot_guard`, `diskwait`, `stow_the_shiny sell`, `unburden`, `-rest`, `bounty_chooser` (minotaur list), buyitems, ewaggle, timequit, then `playsongs` if you're at the keyboard. | restarts companions |
 | `Fizzleworth-rest.lic` | Tidies the staffs (runestaff to the cloak, scepter to the sling, routed by name rather than `store` category), then readies the two-handed weapon (`ready 2weap`) for resting boosts. | - |
 
 Always-on companions (started from `-prep` / `-prerest`):
@@ -82,7 +85,7 @@ Always-on companions (started from `-prep` / `-prerest`):
 | Script | What it does | Bigshot |
 |---|---|---|
 | `Fizzleworth-lifeguard.lic` | Health safety net: Symbol of Restoration at low health, Symbol of Return when critical, Sacrifice Shift if stunned/webbed. Pauses bigshot/go2/attack scripts so Return isn't interrupted, then tells bigshot to rest. `;vars set lifeguard=off` disables it. Also counts damaging Krag Slopes landslide climb falls (`lifeguard_climb_cap`, default 4 in 10 min, 0 = off): pauses go2 and asks `deadexit` to alert Discord and quit. Also stops go2 BEFORE a landslide climb when encumbrance is at `lifeguard_climb_enc` (default 50) or over (same alert/quit; unpausing by hand is respected). | companion |
-| `child_watch.lic` | Rescue-child watcher for every character, started by every character's prep script (Fizzleworth, Salvi, Picko, Fizzlestiks, Felix, Davu, Htrow, Brayis) and, for Noebbly and Eepo who have no prep script, by bigshot's `hunting_scripts` list (was `Fizzleworth-child.lic`). When the bounty reads "made contact with the child" and she is in your room while bigshot is hunting, it stops the hunt where you stand (waits out eloot, pauses bigshot, kills any `<Prefix>-attack*` / `<Prefix>-duskattack*` script and go2; inline-command characters just get bigshot paused), runs `bounty_chooser deliver stay` (echild to the guard + reward), then tells bigshot to rest. Retries 90 s apart, 3 times, and posts a Discord line through `deadexit`. Written because plain `;bigshot` has no stop-on-child rule (only `;bigshot bounty` does) and 11/07 two children died to minotaurs while he hunted on. `;vars set child_rescue=off` disables it. | companion |
+| `child_watch.lic` | Rescue-child watcher for every character, started by every character's prep script (Fizzleworth, Salvi, Picko, Fizzlestiks, Felix, Davu, Htrow, Brayis, Noebbly, Eepo) (was `Fizzleworth-child.lic`). When the bounty reads "made contact with the child" and she is in your room while bigshot is hunting, it stops the hunt where you stand (waits out eloot, pauses bigshot, kills any `<Prefix>-attack*` / `<Prefix>-duskattack*` script and go2; inline-command characters just get bigshot paused), runs `bounty_chooser deliver stay` (echild to the guard + reward), then tells bigshot to rest. Retries 90 s apart, 3 times, and posts a Discord line through `deadexit`. Written because plain `;bigshot` has no stop-on-child rule (only `;bigshot bounty` does) and 11/07 two children died to minotaurs while he hunted on. `;vars set child_rescue=off` disables it. | companion |
 | `Fizzleworth-anim-cleanup.lic` | The moment bigshot decides to rest, dismisses the `reanim` animate in the field and recovers its weapon, and sacrifices weakened creatures for shadow essence, before the walk home. On the minotaur hunt (resting room 1259) the animate instead stays up for the walk and is dismissed at room 420, outside the Landing gates. | companion |
 | `Fizzleworth-webward.lic` | Clears stationary sticky-web hazards during travel; bigshot and go2 only wait webs out. | companion |
 | `Fizzleworth-witchguard.lic` | Rift hazards: while a witch, warlock, caedera, csetairi, worm or black void is around, sets bigshot's own global flee flag (`$bigshot_flee`) every poll so bigshot leaves through its normal flee path, whatever profile is loaded. Started by `Fizzleworth-prep` in `sever` mode, stopped by it in any other mode. | companion |
@@ -109,7 +112,7 @@ songs, and the mace stays in the right hand) and the two-handed **drum** in town
 |---|---|---|
 | `Fizzlestiks-attack.lic` | Replaces the old `feint (s9), attack (xx)` commands. Feints (CMAN) when Lich says it's usable (known, 9 stamina, off cooldown), otherwise a plain attack. Refuses to punch with an empty right hand (the left holds the tambourine) and defers to the disarm guard. One decision per call. | cmd |
 | `Fizzlestiks-prep.lic` | Pre-hunt: stops the town drum, clears hands, rubs gold coin / small statue / moonstone cube / white crystal / black crystal (skipping any whose spell is up), readies the mace, starts the disarm guard, then starts `playsongs tambourine` if you're at the keyboard and the weapon is actually in hand. | starts companion |
-| `Fizzlestiks-prerest.lic` | Pre-rest: `unlost`, stops the hunting tambourine, `store weapon`, eherbs, `eloot_guard`, `diskwait`, eloot sell, `bounty_chooser` (darkwoode / greater orc / werebear in Upper Trollfang), ewaggle, then `playsongs drum` if you're at the keyboard. | - |
+| `Fizzlestiks-prerest.lic` | Pre-rest: `unlost`, stops the hunting tambourine, `store weapon`, eherbs, `eloot_guard`, `diskwait`, `stow_the_shiny sell`, `bounty_chooser` (darkwoode / greater orc / werebear in Upper Trollfang), ewaggle, then `playsongs drum` if you're at the keyboard. | - |
 | `Fizzlestiks-disarmguard.lic` | Always-on. When the game prints `[Use the RECOVER ITEM command ...]` (every kind of disarm, including a death dirge's song) it pauses bigshot and the music, goes back to that room, kneels and searches up to 10 times like `ecleanse` does, then re-runs `-prep`. Retreats (rest flag) if health drops under 40% mid-search; stops bigshot if the weapon is never found. Leave `ecleanse`'s own `recover_disarmed` off so they don't both try. | companion |
 | `bard-bot.lic` | Standalone group-hunt loop: alternates Feint (CMAN) and Stunning Shout (1008), falling back to Holding Song (1001) when both stamina and mana are low. Keeps a mana reserve. Start/stop by hand. | reads resting room |
 | `playsongs.lic` | Keeps an instrument playing and tracks Play skill. Shared with the other characters; see [Utility](#utility). | opt-in pause |
@@ -126,12 +129,15 @@ prefix `Htrow-`.
 |---|---|---|
 | `Htrow-attack.lic` | Built on `Brayis-attack`: stance guarded, then Blood Burst (701) and Mana Disruption (702), each only if live mana covers it, then stance offensive and a longsword swing. A script because bigshot's `hunting_stance` re-sends `stance offensive` before every command, so a guard stance never lasted to the casts. Checks the free-account silver cap so a refused swing can't make bigshot re-run it in a tight loop. | cmd |
 | `Htrow-prep.lic` | `store all`, the five rubs that work without Magic Item Use, `gird` the longsword and shield. Stops bigshot if the sword isn't in the right hand afterwards. Starts `eloot_guard`. | - |
-| `Htrow-prerest.lic` | `unlost`, eherbs, `eloot_guard`, `diskwait`, eloot sell, `unburden`, buyitems (seeds her `items_to_buy` once), banks leftover silver to stay under the free-account cap, ewaggle, `timequit` (quit hour 8). | - |
+| `Htrow-prerest.lic` | `unlost`, eherbs, `eloot_guard`, `diskwait`, `stow_the_shiny sell`, `unburden`, buyitems (seeds her `items_to_buy` once), banks leftover silver to stay under the free-account cap, ewaggle, `timequit` (quit hour 8). | - |
 
 ### Picko (Wizard)
 
 | Script | What it does | Bigshot |
 |---|---|---|
+| `Noebbly-attack.lic` | Paladin (falchion and greatshield): Templar's Verdict (1603) gated on live mana, a shield bash gated on `Shield.available?`, then three plain attacks, tracked across calls in `$noebbly_attack_rhythm` (the old `1603 (m3), shield bash (s10), kill (x3)` line). Right hand empty -> READY WEAPON once, else rest as disarmed. One decision per call. Not run live yet. | - |
+| `Noebbly-prep.lic` | `store weapon`, `store shield`, `stow all`, then `ready weapon` and `ready shield`; stops bigshot if the weapon hand is still empty. Starts `eloot_guard` and `child_watch`. The profiles' spell prep (prep 1604 ...) stays after it in `hunting_prep_commands`. | - |
+| `Noebbly-prerest.lic` | `unlost`, eherbs, `eloot_guard`, `diskwait`, `stow_the_shiny sell`, `unburden`, ewaggle, then weapon and shield put away. The glaise profiles keep `eherbs on bench` in `resting_scripts`. | - |
 | `Picko-attack.lic` | Incant 903 in the stance dance while mana allows; low mana falls back to Symbol of Mana, then a wand. | cmd |
 | `Picko-attack-fire.lic` | Fire-focused variant: incant 908; the wand fallback is restricted to fire-damage wands. | cmd |
 | `Picko-prep.lic` | Wizard version of `Fizzleworth-prep`: stop `playsongs`, clear hands, scroll spell-up first (once), rubs last (a missed rub just leaves that spell off), ready weapon, log starting mind, start `eloot_guard`. | - |
@@ -300,9 +306,11 @@ re-invokes it every pass while the target is up. Death is read from `GameObj` st
 | `Brayis-attack` | Brayis (Warrior) |
 | `Fizzlestiks-attack` | Fizzlestiks (Bard) |
 | `Felix-attack` | Felixopedes (Empath) |
+| `Eepo-attack` | Eepo (Rogue) |
 | `Fizzleworth-attack-base`, `-cat`, `-ultima` | Fizzleworth (Sorcerer); pick one per profile |
 | `Htrow-attack` | Htrowelzzif (Sorcerer, sword and shield) |
 | `Picko-attack`, `Picko-attack-fire` | Picko (Wizard) |
+| `Noebbly-attack` | Noebbly (Paladin) |
 | `Salvi-attack`, `Salvi-attack-web` | Salvi (Cleric) |
 
 The Wizard and Cleric routines that run out of mana fall back to Symbol of Mana, then a wand, and if no wands are

@@ -1,0 +1,20 @@
+#Eepo-prerest.lic
+#Rogue version of Brayis-prerest.lic (Eepo) -- the resting chores his bigshot profiles
+#used to list as resting_scripts (eherbs, eloot sell) plus the shared ones the other
+#characters run. No ewaggle (no spell list), no buyitems/timequit (no items_to_buy, no
+#quit schedule), and the swords stay in hand while he rests, as before.
+
+module EepoPrerest
+
+# First, get off any unmapped room (go2 "current room not found"): see unlost.lic.
+# Stops here -- bigshot is stopped too -- if it can't walk out.
+Script.run("unlost")
+exit if $unlost_failed
+
+Script.run("eherbs")
+Script.start("eloot_guard") unless Script.running?("eloot_guard")  # unpauses eloot when its containers are full
+Script.run("diskwait")  # eloot only finds the disk's boxes if the disk is here when the sell starts (10/28)
+Script.run("stow_the_shiny", "sell")  # eloot sell under the appraisal recorder; too-valuable refusals go to the locker when encumbered (stow_the_shiny.lic)
+Script.run("unburden")  # a box eloot left in hand -> sell again
+
+end #End of module

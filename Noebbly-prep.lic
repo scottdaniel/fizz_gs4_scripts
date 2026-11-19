@@ -1,0 +1,43 @@
+#Noebbly-prep.lic
+#Paladin version of Brayis-prep.lic (Noebbly) -- sword and shield, no rubs (he has no
+#rub items), so gearing up for combat is clearing hands and readying the weapon and
+#the shield. STORE LIST (11/03): weapon = the falchion (put in sheath), shield = the
+#greatshield (worn if possible, stowed otherwise), so STORE/READY WEAPON and SHIELD
+#do the right thing.
+#
+#The spell prep the profiles used to list (prep 1604, evoke ..., gird) is NOT here:
+#leave it after "script Noebbly-prep" in hunting_prep_commands.
+
+module NoebblyPrep
+
+# clear hands -- "store weapon" routes the falchion to the sheath, "store shield"
+# wears the shield again; "stow all" mops up anything left in a hand.
+fput "store weapon"
+fput "store shield"
+fput "stow all"
+
+fput "ready weapon"
+fput "ready shield"
+
+# Nothing in the weapon hand: the weapon is really gone (disarmed and never
+# recovered, or the STORE weapon setting points at something that isn't there).
+# Don't let bigshot walk back out unarmed -- stop it here, in town, the same way
+# Brayis-prep.lic does.
+pause 0.5
+if checkright.nil?
+  echo "Noebbly-prep: nothing in the right hand after READY WEAPON -- stopping bigshot. " \
+       "Check the STORE weapon setting (STORE LIST)."
+  Script.kill("bigshot") if Script.running?("bigshot")
+  exit
+end
+
+# Puts away loot eloot has no room for and unpauses it, so a full cloak can't
+# leave you fighting with your hands full (see eloot_guard.lic).
+Script.start("eloot_guard") unless Script.running?("eloot_guard")
+
+# Rescue-child bounty: when the child finds you mid-hunt, stop and run echild right there
+# instead of hunting on with her in tow (two children died that way 11/07; see child_watch.lic;
+# ;vars set child_rescue=off to disable).
+Script.start("child_watch") unless Script.running?("child_watch")
+
+end #End of module

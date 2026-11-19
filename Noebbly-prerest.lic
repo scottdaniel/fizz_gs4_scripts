@@ -1,0 +1,32 @@
+#Noebbly-prerest.lic
+#Paladin version of Brayis-prerest.lic (Noebbly) -- the resting chores his bigshot
+#profiles used to list as resting_scripts (eherbs, eloot sell, ewaggle), plus the
+#shared ones the other characters run, and the weapon and shield put away for the
+#rest (the profiles' old "store weapon, store shield" resting_commands).
+#
+#Left out on purpose: buyitems and timequit (no items_to_buy list, no quit schedule).
+#The glaise profiles' "eherbs on bench" stays in their resting_scripts.
+
+module NoebblyPrerest
+
+# First, get off any unmapped room (go2 "current room not found"): see unlost.lic.
+# Stops here -- bigshot is stopped too -- if it can't walk out.
+Script.run("unlost")
+exit if $unlost_failed
+
+Script.run("eherbs")
+Script.start("eloot_guard") unless Script.running?("eloot_guard")  # unpauses eloot when its containers are full
+Script.run("diskwait")  # eloot only finds the disk's boxes if the disk is here when the sell starts (10/28)
+Script.run("stow_the_shiny", "sell")  # eloot sell under the appraisal recorder; too-valuable refusals go to the locker when encumbered (stow_the_shiny.lic)
+Script.run("unburden")  # a box eloot left in hand -> sell again
+Script.run("ewaggle")
+
+# Rest with the weapon and shield put away. eloot sell does STORE WEAPON when it starts
+# but READY WEAPON again when it's done, so the weapon can be back in hand here;
+# Noebbly-prep readies both again before the next hunt. The checks keep STORE from
+# running on an empty hand.
+holding = [GameObj.right_hand, GameObj.left_hand]
+fput "store weapon" if holding.any? { |o| o.type.to_s =~ /weapon/ }
+fput "store shield" if [checkright, checkleft].compact.any? { |n| n =~ /shield|buckler|targe|scutcheon|pavis|aegis/i }
+
+end #End of module
