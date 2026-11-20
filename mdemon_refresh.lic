@@ -4,7 +4,7 @@
         game: gemstone
         tags: sorcerer, demon, minor summoning
     requires: Lich > 5.14.2
-     version: 0.5
+     version: 0.6
         note: Written with assistance from Claude (Anthropic).
 
   Keeps a Sorcerer's Minor Summoning (725) demon refreshed.
@@ -45,7 +45,14 @@
   CALL_BLOCKED_GAP_SECONDS, but only while you stay in that room (11/07: the slow-down used to
   outlast the room -- the bank teller blocked it, the 90 s ran on after the walk back to the
   inn, and the raven stood outside the gemcutter's for 80 s until Scott ordered it by hand).
-  A real order is echoed once ("ordered it back"); the silent "already here" replies are not.
+  A real order is echoed with how the trip is going; the silent "already here" replies are not.
+  The game gives no ETA (gswiki lists no locate/status command either; "begins to travel" and
+  "arrives" are all it says), so the line is a clock: every order for the first minute, then one
+  a minute, says how many seconds and orders the trip has taken and what is normal
+  (normal_trip_seconds); past slow_trip_seconds it says the trip is slow. While the demon is away
+  the script looks for it every second and says "back after N s (M orders)" the moment it shows
+  up. (11/20 raven logs: median trip 13 s, but some stalled for minutes: 27 orders / 408 s twice,
+  40 orders / 608 s four times.)
   It sends none at all while you stand in one of quiet_rooms (the locker vaults, the pawnshops,
   the Mist Harbor Firefly Villa merchant lounge and the Wayside Inn dining room, where
   Dreavenings are held; edit the list in the method).
@@ -118,6 +125,54 @@ module MdemonRefresh
     [15948, 35474, 3619, 408, 2464, 16338]
   end
 
+  # What the progress lines compare a trip with (see the header). METHODS, not constants, so an
+  # edit applies the next time the script starts.
+  def self.normal_trip_seconds
+    15
+  end
+
+  def self.slow_trip_seconds
+    60
+  end
+
+  def self.demon_label
+    @demon_name ? "Your #{@demon_name}" : "Your demon"
+  end
+
+  # Every order for the first minute (orders 1-5, 15 s apart), then one a minute (9, 13, ...):
+  # how long the trip has taken so far.
+  def self.report_trip_progress(now)
+    n = @orders_this_trip.to_i
+    return unless n <= 5 || (n % 4) == 1
+    secs = (now - @away_since).round
+    if n == 1
+      echo "#{demon_label} wasn't here -- ordered it back (a normal trip takes about #{normal_trip_seconds} s)."
+    elsif secs >= slow_trip_seconds
+      echo "#{demon_label} is slow: #{secs} s and #{n} orders so far (normal is about #{normal_trip_seconds} s; the game gives no ETA)."
+    else
+      echo "#{demon_label} is still on its way: #{secs} s, order ##{n} (normal is about #{normal_trip_seconds} s)."
+    end
+  end
+
+  # The trip is over. When the demon arrived, say how long it took, once.
+  def self.trip_over(now, arrived)
+    if arrived && @away_since
+      n = @orders_this_trip.to_i
+      echo "#{demon_label} is back after #{(now - @away_since).round} s (#{n} order#{n == 1 ? '' : 's'})."
+    end
+    @away_since = nil
+    @orders_this_trip = 0
+  end
+
+  # Every second from the main loop: the moment a demon we sent for shows up, say so.
+  def self.note_arrival
+    return unless @away_since && demon_here?
+    trip_over(Time.now.to_f, true)
+    @town_on_tried = false
+  rescue StandardError => e
+    echo "note_arrival: #{e.class} #{e.message}"
+  end
+
   def self.demon_here?
     return false unless @demon_id
     Array(GameObj.npcs).any? { |n| n && n.id.to_s == @demon_id.to_s }
@@ -126,7 +181,11 @@ module MdemonRefresh
   # `tell mdemon return` when the demon isn't in the room (see the header). The first call
   # also learns the demon's id from the reply, whatever illusion it is wearing.
   def self.call_demon_back
-    return unless Effects::Spells.active?(MINOR_SUMMONING_SPELL)
+    unless Effects::Spells.active?(MINOR_SUMMONING_SPELL)
+      @away_since = nil   # no demon any more: a later one must not inherit this trip's clock
+      @orders_this_trip = 0
+      return
+    end
     return if checkdead || checkstunned
     return if quiet_rooms.include?(Room.current&.id.to_i)
     now = Time.now.to_f
@@ -134,22 +193,29 @@ module MdemonRefresh
     @call_blocked = false unless @blocked_room == XMLData.room_id
     return if now - @last_call.to_f < (@call_blocked ? CALL_BLOCKED_GAP_SECONDS : CALL_GAP_SECONDS)
     if demon_here?
-      @away_since = nil
+      trip_over(now, true)
       @town_on_tried = false
       return
     end
     @last_call = now
     text = Lich::Util.quiet_command_xml("tell mdemon return", RETURN_REPLY).to_a.join("\n")
-    @demon_id = Regexp.last_match(1) if text =~ DEMON_LINK
+    if text =~ DEMON_LINK
+      @demon_id = Regexp.last_match(1)
+      @demon_name = Regexp.last_match(3)
+    end
     @call_blocked = text =~ /interfering with your/i ? true : false
     @blocked_room = @call_blocked ? XMLData.room_id : nil
     if text =~ /acknowledges your order/i
-      echo "Demon wasn't here -- ordered it back."
       @away_since ||= now
+      @orders_this_trip = @orders_this_trip.to_i + 1
+      report_trip_progress(now)
       town_on_if_stuck(now, text)
       warn_if_stuck(now, text)
-    elsif text =~ /already here!|You have no minor demon/i
-      @away_since = nil
+    elsif text =~ /already here!/i
+      trip_over(now, true)
+      @town_on_tried = false
+    elsif text =~ /You have no minor demon/i
+      trip_over(now, false)
       @town_on_tried = false
     end
   rescue StandardError => e
@@ -268,6 +334,7 @@ module MdemonRefresh
   def self.run
     # module state survives between runs (Lich re-opens the module)
     @away_since = nil
+    @orders_this_trip = 0
     @stuck_warned = false
     @town_on_tried = false
     @call_blocked = false
@@ -303,7 +370,10 @@ module MdemonRefresh
 
       store_mana_while_resting
       call_demon_back
-      sleep CHECK_INTERVAL_SECONDS
+      CHECK_INTERVAL_SECONDS.times do
+        sleep 1
+        note_arrival
+      end
     end
   end
 end
