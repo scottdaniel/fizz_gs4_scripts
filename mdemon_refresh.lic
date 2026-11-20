@@ -4,7 +4,7 @@
         game: gemstone
         tags: sorcerer, demon, minor summoning
     requires: Lich > 5.14.2
-     version: 0.6
+     version: 0.7
         note: Written with assistance from Claude (Anthropic).
 
   Keeps a Sorcerer's Minor Summoning (725) demon refreshed.
@@ -53,10 +53,19 @@
   the script looks for it every second and says "back after N s (M orders)" the moment it shows
   up. (11/20 raven logs: median trip 13 s, but some stalled for minutes: 27 orders / 408 s twice,
   40 orders / 608 s four times.)
+  It also keeps a record of the rooms where the demon is slow (Scott 11/20): the wait is
+  counted in the room you are standing in (from the first order, or from when you walked in), and
+  past slow_trip_seconds that room is logged at once and announced, with how many trips to it have
+  been slow. "ok" = it came in time, "slow" = it ran past that, "never" = you left that room with
+  it still missing, "longest" = the longest wait there. File: data/<game>/<Char>/mdemon_rooms.yaml,
+  keyed by room id (with the room title and the date of the last event).
   It sends none at all while you stand in one of quiet_rooms (the locker vaults, the pawnshops,
   the Mist Harbor Firefly Villa merchant lounge and the Wayside Inn dining room, where
   Dreavenings are held; edit the list in the method).
 =end
+
+require "yaml"
+require "fileutils"
 
 module MdemonRefresh
   # === config (edit to taste) ===================================================
@@ -159,9 +168,12 @@ module MdemonRefresh
     if arrived && @away_since
       n = @orders_this_trip.to_i
       echo "#{demon_label} is back after #{(now - @away_since).round} s (#{n} order#{n == 1 ? '' : 's'})."
+      waited = now - [@away_since, @room_since.to_f].max
+      record_room(Room.current&.id.to_i, @slow_logged ? :late : :ok, waited)
     end
     @away_since = nil
     @orders_this_trip = 0
+    @slow_logged = false
   end
 
   # Every second from the main loop: the moment a demon we sent for shows up, say so.
@@ -171,6 +183,83 @@ module MdemonRefresh
     @town_on_tried = false
   rescue StandardError => e
     echo "note_arrival: #{e.class} #{e.message}"
+  end
+
+  # --- rooms where the demon is slow or never shows up (Scott 11/20) -------------------------
+  # The wait is counted per room: from the first order, or from the moment you walked in if that
+  # was later. Past slow_trip_seconds in one room it is logged at once (so a demon that never comes
+  # is still on record); the other outcomes are "ok" (came in time), "late" (came after being
+  # logged slow, only the longest wait is updated) and "never" (you left that room with it still
+  # missing). Kept in data/<game>/<Char>/mdemon_rooms.yaml, keyed by room id.
+  def self.rooms_file
+    File.join(DATA_DIR, XMLData.game, Char.name, "mdemon_rooms.yaml")
+  end
+
+  def self.load_room_stats
+    return {} unless File.exist?(rooms_file)
+    data = YAML.safe_load(File.read(rooms_file))
+    data.is_a?(Hash) ? data : {}
+  rescue StandardError
+    {}
+  end
+
+  def self.room_title(id)
+    t = Room[id]&.title
+    t = t.first if t.respond_to?(:first)
+    t.to_s.delete("[]").strip
+  rescue StandardError
+    ""
+  end
+
+  # event: :ok, :slow, :late or :never (see above). waited = seconds spent waiting in that room.
+  def self.record_room(id, event, waited)
+    return if id.to_i.zero?
+    data = load_room_stats
+    rec = (data[id.to_i] ||= {})
+    %w[ok slow never longest].each { |k| rec[k] = rec[k].to_i }
+    rec["title"] = room_title(id)
+    case event
+    when :ok    then rec["ok"] += 1
+    when :slow  then rec["slow"] += 1
+    when :never then rec["never"] += 1
+    end
+    rec["longest"] = [rec["longest"], waited.round].max
+    rec["last"] = Time.now.strftime("%Y-%m-%d %H:%M")
+    FileUtils.mkdir_p(File.dirname(rooms_file))
+    tmp = "#{rooms_file}.tmp"
+    File.write(tmp, data.to_yaml)
+    File.rename(tmp, rooms_file)
+    if event == :slow
+      echo "#{rec['title']} (room #{id}): the demon is past #{slow_trip_seconds} s here -- slow #{rec['slow']} of #{rec['ok'] + rec['slow']} trips to this room so far, longest #{rec['longest']} s (saved to mdemon_rooms.yaml)."
+    elsif event == :never
+      echo "You left #{rec['title']} (room #{id}) with the demon still missing after #{waited.round} s there (#{rec['never']} time#{rec['never'] == 1 ? '' : 's'} now)."
+    end
+  rescue StandardError => e
+    echo "record_room: #{e.class} #{e.message}"
+  end
+
+  # Every second: keep the current room, and when a trip passes slow_trip_seconds in the room you
+  # are standing in, put that room on record.
+  def self.track_room
+    now = Time.now.to_f
+    id = Room.current&.id.to_i
+    return if id.zero?
+    if id != @room_id
+      if @room_id && @away_since && @slow_logged
+        record_room(@room_id, :never, @room_seen_at.to_f - [@away_since, @room_since.to_f].max)
+      end
+      @slow_logged = false
+      @room_id = id
+      @room_since = now
+    end
+    @room_seen_at = now
+    return unless @away_since && !@slow_logged
+    waited = now - [@away_since, @room_since.to_f].max
+    return if waited < slow_trip_seconds
+    @slow_logged = true
+    record_room(id, :slow, waited)
+  rescue StandardError => e
+    echo "track_room: #{e.class} #{e.message}"
   end
 
   def self.demon_here?
@@ -184,6 +273,7 @@ module MdemonRefresh
     unless Effects::Spells.active?(MINOR_SUMMONING_SPELL)
       @away_since = nil   # no demon any more: a later one must not inherit this trip's clock
       @orders_this_trip = 0
+      @slow_logged = false
       return
     end
     return if checkdead || checkstunned
@@ -335,6 +425,10 @@ module MdemonRefresh
     # module state survives between runs (Lich re-opens the module)
     @away_since = nil
     @orders_this_trip = 0
+    @slow_logged = false
+    @room_id = nil
+    @room_since = nil
+    @room_seen_at = nil
     @stuck_warned = false
     @town_on_tried = false
     @call_blocked = false
@@ -372,6 +466,7 @@ module MdemonRefresh
       call_demon_back
       CHECK_INTERVAL_SECONDS.times do
         sleep 1
+        track_room
         note_arrival
       end
     end
