@@ -1,0 +1,378 @@
+=begin
+  fizzlocksmehr.lic -- Locksmehr Larceny quest (Wehnimer's Landing, weekly, level 20+)
+
+  Fork of Drafix's locksmehrquest.lic 1.0.4. Changes:
+    * Resumes from wherever the quest is (reads QUEST INFO), so a killed or
+      crashed run picks up on the trail or at the turn-in, not back at the dock.
+      Accepts the quest itself if it is Available.
+    * Fights with a stripped-down bigshot setup: for the run, the hunting prep
+      commands are blanked (bigshot quick runs them before every fight, which
+      meant Fizzleworth-prep after each search) and restored on exit, even when
+      killed. Uses your Quick Hunting Commands, or a plain fallback if blank.
+    * One SEARCH per attempt. The original re-sent SEARCH on every "...wait"
+      line, which flooded the game with dozens of searches per room.
+    * Walks the trail itself (no step2 needed) and compares room ids as numbers,
+      so it stops at the end of the trail instead of hanging there.
+    * Puts the crate in your stow container, or your disk if STOW fails, and
+      gets it back out at the Merchant's Guild before RAISE.
+
+  Usage:
+    ;fizzlocksmehr            run or resume the quest
+    ;fizzlocksmehr complete   also send QUEST COMPLETE at the end
+
+  Game text verified from Fizzleworth's 2026-07-10 run and the 2026-11-20
+  locksmehrquest run: dock and cabin QUEST CONTINUE text, trail search results,
+  the bandit ambush and the boss, "You've found the missing cargo!", and the
+  RAISE turn-in in the Merchant's Guild foyer.
+
+     author: Fizzleworth (fork of Drafix's locksmehrquest)
+       game: Gemstone
+       tags: quests
+    version: 0.1
+=end
+
+module FizzLocksmehr
+  # Lich keeps the module between runs; only define the constants once.
+  unless const_defined?(:QUEST, false)
+  QUEST       = 'Locksmehr Larceny'
+  DOCK        = 36718 # Boatyard Dock (u556001)
+  CABIN       = 9620  # A Rustic Cabin, Davlan (u13000003)
+  TRAIL_START = 1185  # Locksmehr River Trail, just before the first clue room (1183)
+  TRAIL_END   = 1157  # far end of the trail; crate was at 1167 on 07-10
+  TRAIL_ROOMS = (1157..1188).to_a
+  GUILD       = 8626  # Merchant's Guild, Foyer (u4034)
+
+  FALLBACK_QUICK = '710 target, 701 target, 702 target'
+
+  STAGE_TEXT = {
+    dock:   /Seek out the merchant's assistant at the Boatyard Dock/,
+    cabin:  /Seek out Davlan/,
+    turnin: /You've found the missing cargo/,
+    trail:  /search for any trace of the stolen cargo|tracked down the bandits|SEARCH for the stolen cargo|bandit boss/i
+  }
+
+  SEARCH_RESULTS = [
+    [:crate,   /You've found the missing cargo!|A sturdy mithril-banded crate is now in your/],
+    [:ambush,  /find a group of bandits lying in wait!/],
+    [:boss,    /^You search the area for a moment\.\.\.\s*$/],
+    [:already, /You have already searched this room\./],
+    [:nothing, /You don't find anything of interest|You do not find anything of interest/],
+    [:clue,    /deep rut (?:in|along) the trail|You quickly scour the area|You search the area|You find some deep footprints|You spend some time searching/]
+  ]
+  end
+
+  def self.msg(text)
+    respond "[fizzlocksmehr] #{text}"
+  end
+
+  def self.elapsed
+    m, s = (Time.now - @started).to_i.divmod(60)
+    format('%d:%02d', m, s)
+  end
+
+  # ---- bigshot: stripped-down setup for the run -------------------------
+
+  def self.swap_bigshot_settings
+    UserVars.op ||= {}
+    # A previous run that died without restoring leaves its saved copy behind.
+    if UserVars.fizzlocksmehr_saved.is_a?(Hash)
+      UserVars.fizzlocksmehr_saved.each { |k, v| UserVars.op[k] = v }
+      msg 'Restored bigshot settings left over from an earlier run.'
+    end
+    saved = {
+      'hunting_prep_commands' => UserVars.op['hunting_prep_commands'],
+      'quick_commands'        => UserVars.op['quick_commands'],
+      'quickhunt_targets'     => UserVars.op['quickhunt_targets']
+    }
+    UserVars.fizzlocksmehr_saved = saved
+    UserVars.op['hunting_prep_commands'] = ''
+    UserVars.op['quickhunt_targets'] = ''
+    UserVars.op['quick_commands'] = FALLBACK_QUICK if UserVars.op['quick_commands'].to_s.strip.empty?
+    msg "Bigshot for this run: no hunting prep, quick commands: #{UserVars.op['quick_commands']}"
+  end
+
+  def self.restore_bigshot_settings
+    saved = UserVars.fizzlocksmehr_saved
+    return unless saved.is_a?(Hash)
+
+    UserVars.op ||= {}
+    saved.each { |k, v| UserVars.op[k] = v }
+    UserVars.fizzlocksmehr_saved = nil
+  end
+
+  def self.foes?
+    GameObj.targets.to_a.any?
+  end
+
+  # Bigshot quick until nothing hostile is left. Bandits hide, so look again
+  # after a short pause before calling it clear.
+  def self.fight
+    runs = 0
+    loop do
+      unless foes?
+        sleep 2
+        break unless foes?
+      end
+      runs += 1
+      if runs > 8
+        msg 'Still hostiles after 8 bigshot runs; carrying on.'
+        break
+      end
+      waitrt?
+      Script.run('bigshot', 'quick')
+      sleep 0.5
+    end
+  end
+
+  # ---- quest state ------------------------------------------------------
+
+  def self.strip(lines)
+    Array(lines).map { |l| l.to_s.gsub(/<[^>]+>/, '').gsub('&gt;', '>').gsub('&lt;', '<') }
+  end
+
+  def self.quest_number_and_status
+    lines = strip(Lich::Util.quiet_command_xml('quest list', /Quest Name|You have no quests|no available quests/i, /QUEST ABANDON|<prompt/))
+    row = lines.find { |l| l =~ /#{QUEST}/ }
+    return [nil, nil] unless row && row =~ /(\d+)\)\s+#{QUEST}\s+(Available|In Progress|Complete|Cooldown)/i
+
+    [Regexp.last_match(1).to_i, Regexp.last_match(2)]
+  end
+
+  def self.quest_stage
+    num, status = quest_number_and_status
+    return :missing if num.nil?
+    return :complete if status =~ /Complete/i
+    return :accept if status =~ /Available/i
+
+    info = strip(Lich::Util.quiet_command_xml("quest info #{num}", /Name:/, /<prompt/)).join("\n")
+    return :complete if info =~ /You have completed this quest/
+    STAGE_TEXT.each { |stage, re| return stage if info =~ re }
+    msg "Unrecognised quest step; treating it as the trail search:\n#{info.lines.last(2).join}"
+    :trail
+  end
+
+  def self.quest_continue(times)
+    times.times do
+      waitrt?
+      fput 'quest continue'
+      sleep 0.5
+    end
+    waitrt?
+  end
+
+  # ---- trail ------------------------------------------------------------
+
+  def self.read_until(patterns, timeout)
+    deadline = Time.now + timeout
+    while Time.now < deadline
+      line = get?
+      unless line
+        sleep 0.05
+        next
+      end
+      patterns.each { |key, re| return [key, line] if line =~ re }
+    end
+    [:timeout, nil]
+  end
+
+  # One SEARCH; on "...wait N" it sleeps the N seconds and sends one more.
+  def self.search
+    3.times do
+      waitrt?
+      clear
+      put 'search'
+      key, line = read_until(SEARCH_RESULTS + [[:wait, /^\.\.\.wait (\d+) sec/]], 8)
+      if key == :wait
+        sleep(line[/\d+/].to_i + 0.3)
+        next
+      end
+      waitrt?
+      return key
+    end
+    :timeout
+  end
+
+  # Takes one step toward dest. Returns true if it moved.
+  def self.step_toward(dest)
+    here = Room.current
+    path = here&.path_to(dest)
+    return false if path.nil? || path.empty?
+
+    way = here.wayto[path.first.to_s]
+    before = XMLData.room_count
+    waitrt?
+    if way.is_a?(StringProc)
+      way.call
+    else
+      move way
+    end
+    deadline = Time.now + 5
+    sleep 0.1 until XMLData.room_count > before || Time.now > deadline
+    XMLData.room_count > before
+  end
+
+  def self.room_searchable?(lines)
+    lines.any? { |l| l =~ /The area looks well suited to a search\./ }
+  end
+
+  # The "well suited" line comes with the room text; HELP of a missing topic
+  # gives a fixed reply that marks the end of it.
+  def self.arrival_lines
+    put 'help lag-check'
+    lines = []
+    deadline = Time.now + 5
+    while Time.now < deadline
+      line = get?
+      unless line
+        sleep 0.05
+        next
+      end
+      lines << line
+      break if line =~ /No help files matching/
+    end
+    lines
+  end
+
+  def self.handle_crate
+    waitrt?
+    return unless [GameObj.right_hand, GameObj.left_hand].any? { |h| h.name.to_s =~ /crate/ }
+
+    fput 'stow crate'
+    sleep 0.5
+    return unless [GameObj.right_hand, GameObj.left_hand].any? { |h| h.name.to_s =~ /crate/ }
+
+    if GameObj.loot.to_a.any? { |o| o.noun == 'disk' && o.name =~ /#{Char.name}/i }
+      fput 'put crate in disk'
+    else
+      msg 'Could not stow the crate; carrying it in hand.'
+    end
+  end
+
+  def self.search_here
+    result = search
+    msg "#{Room.current.id}: search -> #{result} (#{elapsed})"
+    return :crate if result == :crate
+
+    sleep 1
+    if foes?
+      fight
+      result = search
+      msg "#{Room.current.id}: search after fight -> #{result}"
+      return :crate if result == :crate
+    end
+    result
+  end
+
+  def self.do_trail
+    Script.run('go2', TRAIL_START.to_s) unless TRAIL_ROOMS.include?(Room.current.id.to_i)
+    fight if foes?
+    clear
+    # Search the room we start in (a resumed run may stop mid-trail).
+    return true if search_here == :crate
+
+    until Room.current.id.to_i == TRAIL_END
+      clear
+      unless step_toward(TRAIL_END)
+        msg "Could not step toward #{TRAIL_END} from #{Room.current.id}."
+        return false
+      end
+      next unless room_searchable?(arrival_lines)
+
+      return true if search_here == :crate
+    end
+    msg "Reached the end of the trail (#{TRAIL_END}) without the crate."
+    false
+  end
+
+  # ---- turn-in ----------------------------------------------------------
+
+  def self.crate_in_hand?
+    [GameObj.right_hand, GameObj.left_hand].any? { |h| h.name.to_s =~ /crate/ }
+  end
+
+  def self.do_turnin
+    Script.run('go2', GUILD.to_s)
+    unless Room.current.id.to_i == GUILD
+      msg "Not in the Merchant's Guild foyer (#{GUILD}); stopping."
+      return false
+    end
+    unless crate_in_hand?
+      empty_hands
+      fput 'get my crate'
+      fput 'get crate from disk' unless crate_in_hand?
+    end
+    unless crate_in_hand?
+      msg 'Could not find the crate to RAISE.'
+      return false
+    end
+    waitrt?
+    result = dothistimeout('raise crate', 10, /Locksmehr Larceny is finished|You raise your/)
+    waitrt?
+    fill_hands
+    if result =~ /finished/
+      msg "Quest finished in #{elapsed}."
+      true
+    else
+      msg "RAISE did not finish the quest: #{result.inspect}"
+      false
+    end
+  end
+
+  # ---- main -------------------------------------------------------------
+
+  def self.run(vars)
+    @started = Time.now
+    swap_bigshot_settings
+    stage = quest_stage
+    msg "Quest step: #{stage}"
+    case stage
+    when :missing
+      msg "#{QUEST} is not in QUEST LIST (on cooldown, or under level 20)."
+      return
+    when :complete
+      msg 'Already complete: use QUEST COMPLETE to claim rewards.' unless vars.include?('complete')
+    end
+
+    if stage == :accept
+      num, = quest_number_and_status
+      fput "quest accept #{num}"
+      stage = :dock
+    end
+
+    if stage == :dock
+      Script.run('go2', DOCK.to_s)
+      quest_continue(2)
+      stage = :cabin
+    end
+
+    if stage == :cabin
+      Script.run('go2', CABIN.to_s)
+      quest_continue(2)
+      stage = :trail
+    end
+
+    if stage == :trail
+      return unless do_trail
+
+      handle_crate
+      stage = :turnin
+    end
+
+    if stage == :turnin
+      return unless do_turnin
+
+      stage = :complete
+    end
+
+    if stage == :complete && vars.include?('complete')
+      waitrt?
+      fput 'quest complete'
+    elsif stage == :complete
+      msg 'Use QUEST COMPLETE to claim the rewards.'
+    end
+  end
+end
+
+before_dying { FizzLocksmehr.restore_bigshot_settings }
+
+FizzLocksmehr.run(Script.current.vars[1..].to_a.map(&:downcase))
