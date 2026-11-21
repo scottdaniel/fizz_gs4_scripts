@@ -69,6 +69,7 @@ Attack routines (pick one per bigshot profile):
 | `Fizzleworth-attack-base.lic` | Baseline Web, Energy Maelstrom, Tenebrous Tether rotation. | cmd |
 | `Fizzleworth-attack-cat.lic` | Variant opening with Grasp of the Grave (709) only when enough targets are in the room; returns at the flee threshold so bigshot flees. | cmd |
 | `Fizzleworth-attack-ultima.lic` | `-base` plus a creature-specific disable step and a one-shot animate (`reanim`) per hunt, using `demonmana` and a shadow-essence grind. | cmd |
+| `Fizzleworth-attack-reim.lic` | Attack script for `;treim` in the Settlement of Reim (`;treim fizzleworth-attack-reim.lic`): runs `-ultima` pass after pass until the room is clear, because treim starts a custom attack script once per wave and a rare spawn takes 80+ s. | no |
 
 Between-hunt chain:
 
@@ -275,6 +276,7 @@ It picks the instrument in this order: the command line, then `;vars set instrum
 | `son-sell.lic` | Sells the Sonreeva puzzle-item leftovers (pumpkins, cubes, pentacles, vortexes ...) to the gem dealer, never the soulstone heart. `dry` previews, `max=` caps the price per piece. |
 | `ppl.lic` | Sonreeva's last mob: Pain x3, Phase (704) until it takes, Limb Disruption (708) to blow off an arm, then Mana Disruption until it's dead. `phase`, `limb` and `kill` skip the earlier steps. |
 | `brayquest.lic` | Does the opening quest of the Inquisition event. |
+| `fizzreim.lic` | Fizzleworth in the Settlement of Reim (Icemule dungeon crawl): gets in (a running quest is re-entered free; a new run uses the daily premium entry, else one orb charge from the boot), starts `treim` with `Fizzleworth-attack-reim`, and walks through each area's gate when `REIM INFO` says its rare is dead. Stops when the Treasury opens. `status` previews, `noorb` never spends a charge, `turnin` hands in the Base Camp task. |
 
 ### Events
 

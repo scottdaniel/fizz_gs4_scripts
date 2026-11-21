@@ -1,0 +1,461 @@
+# fizzreim.lic
+# Runs Fizzleworth through the Settlement of Reim (the Icemule Trace dungeon crawl): gets in,
+# lets ;treim + Fizzleworth-attack-reim fight, and moves on to the next area when the
+# area's rare spawn is dead.
+#
+#   ;fizzreim            go (see below)
+#   ;fizzreim noorb      same, but never spend an orb charge to get in
+#   ;fizzreim status     print REIM INFO in short, where you are, what it would do; change nothing
+#   ;fizzreim turnin     walk to the Base Camp tavern and TURN BOARD (hands in a finished task)
+#
+# WHAT IT DOES (everything below is from the 11/21 logs unless marked "unverified")
+#
+#  * Waves. The game spawns one creature at you about every 35 s wherever you stand -- the
+#    same in a shop, a tavern, the gate room -- so there is no hunting, you just stand and
+#    kill. treim reacts to each spawn line ("An ethereal denizen strides toward you!"), dodges
+#    the trap warnings (lean / jump / duck) and starts Fizzleworth-attack-reim, which runs
+#    Fizzleworth-attack-ultima until the room is clear.
+#  * Rare spawns open the gates. After a few waves in an area "A cold, ethereal mist rolls in,
+#    heralding the arrival of the Patrol Leader!" (Village), the Guard Captain (Road); kill it and
+#    REIM INFO moves its "flagged for entry for up to the ..." line on one area. This script
+#    asks REIM INFO whenever the room goes quiet, and when the flag is past the area you are in
+#    it walks to that area's gate room and goes through. (Before the rare is dead the gate says
+#    "it radiates with an intense grey flame, rebuking your advance"; the Courtyard's reads
+#    "blue flame".) The route comes from Lich's map and treim's room lists:
+#      Village  24953 go gate  -> Road 24977         Servant  25110 go door -> Visitor 25120
+#      Road     25062 go gate  -> Courtyard 25065    Visitor  25121 go door -> Royal 25130
+#      Courtyard 25076 go gate -> Servant 25109      Royal: the Throne Room is 25137
+#  * Getting in. A quest that is still running (REIM INFO shows "You have 1 hour and 10 minutes
+#    remaining.") is just walked back into -- leaving and re-entering is free for the two real-
+#    time hours. A new run: if REIM INFO says "You are ready to quest again!" the daily premium
+#    entry is used (no orb); otherwise one orb charge is spent (GET ORB FROM MY BOOT, RUB MY ORB
+#    twice, PUT it back, then CLIMB CHAIN confirms "This will use your paid entry"). The orb has
+#    25 charges. Rubbing it clears any quest progress, which is why it is only rubbed when no
+#    quest is running. At most ONE new run per ;fizzreim.
+#  * Before a (re-)entry it runs ;Fizzleworth-prep here, then every 20 minutes while idle ;ewaggle.
+#    ;stand and ;ecleanse run alongside (a chain trap drops you for 10 s; ;stand gets you up).
+#
+# WHAT IT DOES NOT DO. The Throne Room fight (Emperor and Empress, unverified: the wiki says they
+# have an in-game ten-minute timer) is left to treim; once REIM INFO says the Treasury is open it
+# stops and tells you, and the vault, the exit and TURN BOARD are yours (;fizzreim turnin does the
+# last). Pitfall traps: the pit creature is fought by treim, then this script CLIMB ROPEs out
+# (unverified text). Quest energy (REIM BOOST) is not spent.
+#
+# SAFETY. Only moves between areas when nothing alive is in the room and the attack script is
+# not running. A new run is only started when no quest is running; once per invocation.
+# `;kill fizzreim` stops treim, the attack script and the helpers it started.
+
+module FizzReim
+  def self.treim_attack;   "fizzleworth-attack-reim.lic"; end
+  def self.attack_name;    "fizzleworth-attack-reim"; end
+  def self.poll;           3;     end   # seconds between steps
+  def self.flag_every;     25;    end   # seconds between REIM INFO checks while idle at an area
+  def self.report_every;   600;   end   # progress line
+  def self.stuck_every;    900;   end   # nag when an area's rare hasn't shown
+  def self.waggle_every;   1200;  end
+  def self.approach_room;  24876; end
+  def self.tavern_room;    25173; end
+  def self.throne_room;    25137; end
+  def self.vault_entry;    25142; end
+
+  # Room ids per area, from treim's lists (Treim::Geography), index = area number.
+  def self.stage_rooms
+    @stage_rooms ||= {
+      0 => %w[24888 24900 24904 24909 24935 24936 24912 24919 24946 24945 24952 24964 24971 24972 24958 24959 24931 24932 24966 24953 25300 24901 24930 23484 24941 23650].map(&:to_i),
+      1 => %w[24977 24978 24989 24990 24991 24994 24995 24996 24998 25003 25004 25020 25019 25021 24997 25022 25029 25030 25035 25042 25047 25046 25043 25041 25048 25049 25050 25051 25052 25053 25054 25056 25057 25058 25059 25064 25055 25060 25061 25062 25063].map(&:to_i),
+      2 => %w[25104 25103 25101 25100 25105 25102 25106 25107 25108 25099 25098 25097 25069 25068 25070 25071 25072 25082 25084 25083 25081 25078 25085 25086 25087 25088 25096 25095 25094 25093 25092 25091 25090 25089 25080 25079 25077 25075 25073 25076 25074 25067 25066 25065].map(&:to_i),
+      3 => %w[25113 25114 25115 25119 25118 25117 25116 25112 25111 25110 25109].map(&:to_i),
+      4 => %w[25125 25124 25123 25129 25128 25127 25126 25122 25121 25120].map(&:to_i),
+      5 => %w[25141 25140 25132 25134 25136 25135 25137 25138 25139 25133 25131 25130].map(&:to_i),
+    }
+  end
+
+  def self.stage_names
+    %w[village road courtyard servant visitor royal throne treasury]
+  end
+
+  # area => [room to stand in, command through the gate, first room of the next area]
+  def self.gates
+    {
+      0 => [24953, "go gate", 24977],
+      1 => [25062, "go gate", 25065],
+      2 => [25076, "go gate", 25109],
+      3 => [25110, "go door", 25120],
+      4 => [25121, "go door", 25130],
+    }
+  end
+
+  # first room of each area, where a lost character is sent back to
+  def self.entry_rooms
+    { 0 => 24888, 1 => 24977, 2 => 25065, 3 => 25109, 4 => 25120, 5 => 25130 }
+  end
+
+  # --- state -----------------------------------------------------------------
+
+  def self.reset
+    instance_variables.each { |v| remove_instance_variable(v) }
+    @started       = Time.now.to_f
+    @entered       = false          # got into Reim during this run
+    @last_flag     = 0.0
+    @last_report   = 0.0
+    @last_stuck    = Time.now.to_f
+    @last_waggle   = Time.now.to_f
+    @stage_since   = Time.now.to_f
+    @stage         = nil
+    @was_busy      = false
+    @started_here  = []             # helper scripts this run started (killed again at the end)
+    @told          = {}
+  end
+
+  def self.said_once(key, msg)
+    return if @told[key]
+    @told[key] = true
+    echo msg
+  end
+
+  # --- reading the game ----------------------------------------------------------
+
+  def self.title;   XMLData.room_title.to_s; end
+  def self.in_reim?; title =~ /Reim (?:Settlement|Castle)|Pitfall Trap/i ? true : false; end
+  def self.in_pit?;  title =~ /Pitfall Trap/i ? true : false; end
+  def self.at_camp?; title =~ /Reim Base Camp/i ? true : false; end
+  def self.room_id;  (Room.current&.id).to_i; end
+
+  def self.stage_of(id)
+    stage_rooms.each { |n, rooms| return n if rooms.include?(id) }
+    nil
+  end
+
+  def self.flag_index(text)
+    case text.to_s
+    when /village|township/i       then 0
+    when /road|approach/i          then 1
+    when /courtyard/i              then 2
+    when /servant/i                then 3
+    when /visitor/i                then 4
+    when /royal/i                  then 5
+    when /throne/i                 then 6
+    when /treasur|vault/i          then 7
+    end
+  end
+
+  # {flag:, flag_text:, time_left:, premium_ready:, premium_wait:, kills:, scrip:} or nil
+  def self.reim_info
+    waitrt?
+    lines = Lich::Util.issue_command("reim info", /\S/, /You have slain a total of/,
+                                     usexml: false, silent: true, quiet: true, timeout: 8)
+    text = Array(lines).join("\n")
+    return nil if text.empty?
+    flag_text = text[/flagged for entry for up to the ([^.\n]*)/i, 1]
+    {
+      flag:          flag_index(flag_text),
+      flag_text:     flag_text,
+      time_left:     text[/You have (\d[^.\n]*?) remaining/i, 1],
+      premium_ready: !!(text =~ /Time until next premium entry:\s+You are ready to quest again/i),
+      premium_wait:  text[/Time until next premium entry:\s+([^\n]*?)\.?\s*$/i, 1],
+      kills:         text[/slain a total of (\d+)/i, 1].to_i,
+      scrip:         text[/Total Ethereal Scrip for this run:\s*(\d+)/i, 1].to_i,
+    }
+  rescue StandardError => e
+    echo "reim_info: #{e.class} #{e.message}"
+    nil
+  end
+
+  def self.hostiles
+    GameObj.targets.select { |t| t && t.status.to_s !~ /dead|gone/ && t.name.to_s !~ /animated|verlok|minor demon|raven/i }
+  rescue StandardError
+    []
+  end
+
+  def self.busy?
+    !hostiles.empty? || Script.running?(attack_name)
+  end
+
+  # --- moving --------------------------------------------------------------------
+
+  def self.go2(id)
+    Script.run("go2", "#{id} --disable-confirm", { quiet: true })
+    room_id == id.to_i
+  end
+
+  # Go through a gate/door from the room we are standing in. true if we arrived in `to`'s area.
+  def self.pass_gate(cmd, to)
+    r = dothistimeout(cmd, 8, /rebuking your advance|You step through|You (?:open|enter|walk|pass)/i).to_s
+    if r =~ /rebuking your advance/i
+      echo "the gate is still shut (#{r.strip[0, 70]}) -- the rare for this area isn't dead yet."
+      return false
+    end
+    sleep 1.5
+    waitrt?
+    room_id == to.to_i || stage_of(room_id) == stage_of(to)
+  end
+
+  def self.climb_out_of_pit
+    return if busy?
+    r = dothistimeout("climb rope", 6, /climb|rope|You (?:cannot|can't)|Roundtime/i).to_s
+    echo "in the pit trap, no one left to fight -- CLIMB ROPE: #{r.strip[0, 80]}"
+    sleep 2
+  end
+
+  # --- getting in ------------------------------------------------------------------
+
+  def self.hands_free_for_orb?
+    GameObj.left_hand.id.nil? || GameObj.right_hand.id.nil?
+  end
+
+  # one orb charge: GET ORB, RUB MY ORB (+ the 30 s confirm), PUT it back. true if it took.
+  def self.use_orb
+    unless hands_free_for_orb?
+      echo "both hands are full -- can't take the orb out of the boot. (Empty a hand and run ;fizzreim again.)"
+      return false
+    end
+    r = dothistimeout("get orb from my boot", 5, /You remove|could not find|What were you referring|hands are full|need a free hand/i).to_s
+    unless r =~ /You remove/i
+      echo "no orb came out of the boot: #{r.strip[0, 90]}"
+      return false
+    end
+    r = dothistimeout("rub my orb", 6, /REPEAT THIS COMMAND|dims slightly|You lift your/i).to_s
+    r = dothistimeout("rub my orb", 6, /dims slightly|You lift your|no (?:more )?charges|nothing happens/i).to_s if r =~ /REPEAT THIS COMMAND/i
+    ok = r =~ /dims slightly|You lift your/i ? true : false
+    fput "put orb in my boot"
+    echo(ok ? "orb rubbed (one charge spent)." : "the orb rub didn't take: #{r.strip[0, 90]}")
+    ok
+  end
+
+  # CLIMB CHAIN up to the village. Handles the "paid entry" confirm. true once inside.
+  def self.climb_in
+    16.times do
+      return true if stage_of(room_id)          # up the chains and in the village (24888)
+      waitrt?
+      r = dothistimeout("climb chain", 10,
+            /Are you sure you wish to enter Reim|you will have to wait another|tentative step|tentatively begin|sideways leap|dizzying nimbus|climb|Roundtime/i).to_s
+      if r =~ /you will have to wait another ([^.]*)/i
+        echo "the chains won't take you: #{Regexp.last_match(1)} until the next premium entry, and no paid entry is banked."
+        return false
+      end
+      sleep 0.5   # the confirm prompt needs nothing but the command sent again; Room.current lags a beat
+    end
+    !stage_of(room_id).nil?
+  end
+
+  def self.prepare
+    Script.run("Fizzleworth-prep", "here")
+  rescue StandardError => e
+    echo "prep: #{e.class} #{e.message}"
+  end
+
+  # Whatever state we're in outside the quest: get back to the chains and climb in.
+  # info = reim_info. Returns false if it can't or won't.
+  def self.enter(info)
+    quest_running = !info[:time_left].nil?
+    if !quest_running
+      if @entered
+        return false                    # the run we started has ended
+      elsif !info[:premium_ready]
+        if (Script.current.vars[1..-1] || []).any? { |a| a.to_s.downcase == "noorb" }
+          echo "no quest running and the premium entry is on cooldown (#{info[:premium_wait]}); 'noorb' given -- not spending an orb charge."
+          return false
+        end
+        echo "no quest running, premium entry on cooldown (#{info[:premium_wait]}): spending an orb charge."
+        return false unless go2(approach_room) || room_id == approach_room
+        return false unless use_orb
+      else
+        echo "no quest running, premium entry ready: using it."
+      end
+    else
+      echo "quest still running (#{info[:time_left]} left): going back in."
+    end
+
+    go2(approach_room) unless room_id == approach_room
+    return false unless room_id == approach_room
+    prepare
+    ok = climb_in
+    if ok
+      @entered = true
+      @stage_since = Time.now.to_f
+      echo "inside Reim."
+    end
+    ok
+  end
+
+  # --- helpers ---------------------------------------------------------------------
+
+  def self.start_helper(name)
+    return unless Script.exists?(name)
+    return if Script.running?(name)
+    Script.start(name)
+    @started_here << name
+  end
+
+  def self.start_treim
+    return if Script.running?("treim")
+    Script.start("treim", treim_attack)
+    @started_here << "treim"
+  end
+
+  def self.cleanup
+    (@started_here || []).each { |n| Script.kill(n) if Script.running?(n) }
+    Script.kill(attack_name) if Script.running?(attack_name)
+  end
+
+  # --- one step inside Reim ---------------------------------------------------------
+
+  def self.reim_step
+    now = Time.now.to_f
+    @entered = true          # we have been in Reim during this run: never start a second one
+    start_treim
+    %w[stand ecleanse].each { |n| start_helper(n) }
+
+    if in_pit?
+      climb_out_of_pit
+      return
+    end
+
+    busy = busy?
+    if busy
+      @was_busy = true
+      return
+    end
+
+    # quiet. A fight just ended -> look at the flag now, else every flag_every seconds.
+    due = @was_busy || now - @last_flag >= flag_every
+    @was_busy = false
+
+    if now - @last_waggle >= waggle_every
+      @last_waggle = now
+      Script.run("ewaggle") if Script.exists?("ewaggle")
+    end
+
+    return unless due
+    @last_flag = now
+    info = reim_info
+    return unless info
+    here  = stage_of(room_id)
+    flag  = info[:flag]
+
+    if now - @last_report >= report_every
+      @last_report = now
+      echo "Reim: #{info[:time_left] || 'no timer'} left, flagged to the #{info[:flag_text]}, #{info[:kills]} kills, #{info[:scrip]} scrip this run; standing in #{here ? stage_names[here] : 'room ' + room_id.to_s}."
+    end
+
+    if info[:time_left].nil?
+      said_once(:over, "REIM INFO shows no quest time left: the run is over.")
+      return
+    end
+    return said_once(:noflag, "can't read the 'flagged for entry' line (#{info[:flag_text].inspect}) -- standing still.") if flag.nil?
+
+    if flag >= 7
+      said_once(:treasury, "REIM INFO: the Treasury is open (#{info[:flag_text]}). The vault, the exit and TURN BOARD are yours -- stopping here.")
+      @done = true
+      return
+    end
+
+    if here.nil?
+      # somewhere off the area lists (the wind tunnel, a stray room): go back to the front of the open area
+      target = [flag, 5].min
+      echo "not in a known area (#{title}) -- walking back to #{stage_names[target]}."
+      go2(entry_rooms[target])
+      return
+    end
+
+    if @stage != here
+      @stage = here
+      @stage_since = now
+      @last_stuck = now
+    end
+
+    advance(here, flag)
+
+    if flag == here && now - @last_stuck >= stuck_every
+      @last_stuck = now
+      mins = ((now - @stage_since) / 60).round
+      echo "#{mins} min in the #{stage_names[here]} and its rare hasn't shown yet -- still fighting waves (the spawns come about every 35 s)."
+    end
+  end
+
+  def self.advance(here, flag)
+    if here <= 4 && flag > here
+      room, cmd, nxt = gates[here]
+      echo "the #{stage_names[here]} is cleared (flag: #{stage_names[flag]}): to #{room}, #{cmd}."
+      go2(room) unless room_id == room
+      return unless room_id == room
+      return if busy?                       # something spawned on the way
+      if pass_gate(cmd, nxt)
+        echo "through: now in the #{stage_names[stage_of(room_id) || here + 1]}."
+        @stage = nil
+        @last_flag = 0.0
+      end
+    elsif here == 5 && flag >= 6 && room_id != throne_room
+      echo "the Throne Room is open: to #{throne_room}."
+      go2(throne_room)
+      said_once(:throne, "in the Throne Room. treim fights what spawns (unverified: the Emperor and Empress, ten in-game minutes). I stop when REIM INFO shows the Treasury open.")
+    end
+  end
+
+  # --- modes -----------------------------------------------------------------------------
+
+  def self.status
+    info = reim_info
+    echo "room #{room_id} (#{title}); area: #{(s = stage_of(room_id)) ? stage_names[s] : '-'}"
+    if info
+      echo "time left: #{info[:time_left] || 'none (no quest running)'}; flagged to the #{info[:flag_text]} (area #{info[:flag].inspect})"
+      echo "premium entry: #{info[:premium_ready] ? 'ready' : info[:premium_wait]}; #{info[:kills]} kills, #{info[:scrip]} scrip this run"
+      s = stage_of(room_id)
+      if !in_reim?
+        echo(info[:time_left] ? "would: go back in (free)." : (info[:premium_ready] ? "would: start a new run on the premium entry." : "would: start a new run with one orb charge."))
+      elsif s && info[:flag] && info[:flag] > s && s <= 4
+        echo "would: go to room #{gates[s][0]} and #{gates[s][1]}."
+      else
+        echo "would: stay and fight."
+      end
+    else
+      echo "REIM INFO gave nothing."
+    end
+  end
+
+  def self.turn_in
+    go2(tavern_room)
+    r = dothistimeout("turn board", 6, /Good work|do not have a finished task|You reach for the board/i).to_s
+    echo "TURN BOARD: #{r.strip[0, 100]}"
+  end
+
+  def self.run
+    reset
+    mode = Script.current.vars[1].to_s.downcase
+    return status if mode == "status"
+    return turn_in if mode == "turnin"
+
+    before_dying { cleanup }
+    echo "fizzreim: starting (#{title})."
+
+    loop do
+      break if @done
+      if checkdead
+        sleep 5
+        next
+      end
+      if in_reim?
+        reim_step
+      else
+        info = reim_info
+        unless info
+          sleep poll
+          next
+        end
+        unless enter(info)
+          if @entered
+            echo "the run has ended (REIM INFO shows no quest time). #{info[:kills]} kills, #{info[:scrip]} scrip. ;fizzreim turnin hands in a finished task."
+          else
+            echo "not entering Reim (the reason is above)."
+          end
+          break
+        end
+        start_treim
+      end
+      sleep poll
+    end
+    cleanup
+  end
+end
+
+FizzReim.run

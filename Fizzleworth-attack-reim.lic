@@ -1,0 +1,75 @@
+# Fizzleworth-attack-reim.lic
+# The attack script for ;treim, for Fizzleworth in the Settlement of Reim:
+#
+#   ;treim fizzleworth-attack-reim.lic
+#
+# (;fizzreim starts treim with this itself.)
+#
+# WHY A WRAPPER AROUND ULTIMA. treim starts its custom attack script ONCE per spawned wave
+# and does not look at it again, but Fizzleworth-attack-ultima is built for bigshot, which
+# relaunches it after every pass until the target is dead: one pass is Web, 710, 706 and a
+# 10 s hold, then it exits. That kills the ordinary Reim wave (one ethereal villager every
+# ~35 s dies inside the 710 DoT) but not a rare spawn: the Patrol Leader took 80 s and the
+# Guard Captain 95 s by hand on 11/21, and a single pass would have left either one alive and
+# hitting while treim waited. So this script does what bigshot does: run ultima pass after
+# pass until no living hostile is left in the room, then give up the launch.
+#
+# Everything else -- the Web/Maelstrom/Tether finish, crowd control on a crowd, the mana
+# gating and recovery (demon mana, sacrifice mana, Symbol of Mana), the out-of-mana back-off --
+# is ultima's, untouched, so a fix there applies here. Nothing in ultima's Den/Rift
+# special cases (inciters, the Rift hazards, the minotaurs, the one-shot animate) can match a
+# Reim creature, which are all "ethereal ...", "ghostly ...", "celestial ...", "unworldly ..."
+# or a named rare.
+#
+# SAFETY. One launch never runs longer than MAX_SECONDS (treim starts a fresh one on the next
+# wave), stops if you die or leave Reim, and backs off when ultima returns at once without
+# casting anything (so it can never spin hot).
+
+module FizzReimAttack
+  ULTIMA      = "Fizzleworth-attack-ultima"
+  MAX_SECONDS = 300   # longest one launch may run; the next spawn starts another
+  GRACE       = 2.5   # seconds with an empty room before this launch is over (a pair's second mob walks in late)
+  IN_REIM     = /Reim (?:Settlement|Castle)|Pitfall Trap/i
+  IGNORE      = /animated|verlok|minor demon|raven/i
+
+  def self.in_reim?
+    XMLData.room_title.to_s =~ IN_REIM ? true : false
+  end
+
+  def self.hostiles
+    GameObj.targets.select { |t| t && t.status.to_s !~ /dead|gone/ && t.name.to_s !~ IGNORE }
+  rescue StandardError
+    []
+  end
+
+  def self.run
+    started    = Time.now.to_f
+    empty_at   = nil
+    quick      = 0
+    loop do
+      break unless in_reim?
+      break if checkdead
+      break if $bigshot_flee
+      now = Time.now.to_f
+      break if now - started > MAX_SECONDS
+
+      if hostiles.empty?
+        empty_at ||= now
+        break if now - empty_at > GRACE
+        sleep 0.4
+        next
+      end
+      empty_at = nil
+
+      t0 = Time.now.to_f
+      Script.run(ULTIMA)
+      took = Time.now.to_f - t0
+      # ultima exits at once when it has nothing it will do (no target it likes, out of mana
+      # with the back-off already spent): don't hammer it
+      quick = took < 1.0 ? quick + 1 : 0
+      sleep(quick >= 3 ? 3 : 0.4)
+    end
+  end
+end
+
+FizzReimAttack.run
