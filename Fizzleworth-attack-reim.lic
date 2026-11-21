@@ -31,6 +31,10 @@
 #   ;vars set reim_pain=off          no Pain opener (default on)
 #   ;vars set reim_pain_max=N        casts per rare (default 10)
 #   ;vars set reim_pain_reserve=N    mana kept back for ultima's finish (default 21)
+# A burst costs about 90 mana (the Dignitary took 8 Pains), and ultima only tops the pool off below
+# 45, so when a rare shows up and mana is under what a burst needs (7 Pains plus the reserve) this
+# refills first, the way ultima does: the demon's stored mana (once per hunt, the same
+# $demonmana_taken latch), `sacrifice mana` (1 shadow essence, if off cooldown), then Symbol of Mana.
 #
 # LOOT. Reim corpses only carry silver (about a third of the kills, 180-390 each; the Patrol Leader had
 # 387) and "ethereal hands" pull a corpse away within seconds, so as soon as the room is clear after a
@@ -85,6 +89,32 @@ module FizzReimAttack
     c.positive? ? c : 11
   rescue StandardError
     11
+  end
+
+  # ultima's recover_mana, for the moment a rare turns up with too little in the pool for a Pain burst.
+  # true if it did something that should have brought mana back.
+  def self.refill_mana
+    unless $demonmana_taken
+      $demonmana_taken = true
+      before = checkmana
+      Script.run("demonmana", "get") if Script.exists?("demonmana")
+      return true if checkmana > before
+    end
+    essence  = (Resources.shadow_essence.to_i rescue 0)
+    cooldown = (Effects::Cooldowns.to_h.keys.any? { |k| k.to_s =~ /sacrifice\s*\(\s*mana\s*\)/i } rescue false)
+    if essence.positive? && !cooldown
+      waitrt?
+      waitcastrt?
+      r = dothistimeout("sacrifice mana", 4, /mana surge into you|overwhelm you with shadow essence|don't have (?:enough|any)/i)
+      waitrt?
+      return true if r.to_s =~ /mana surge into you|overwhelm you with shadow essence/i
+    end
+    if !(Effects::Cooldowns.active?("Symbol of Mana") rescue true) && (Experience.deeds.to_i rescue 0) > 3
+      fput "symbol of mana"
+      waitrt?
+      return true
+    end
+    false
   end
 
   def self.alive?(t)
@@ -149,6 +179,7 @@ module FizzReimAttack
 
   def self.run
     @pains     = Hash.new(0)
+    @refilled  = {}
     fought     = false
     started    = Time.now.to_f
     empty_at   = nil
@@ -175,6 +206,11 @@ module FizzReimAttack
       fought = true
       if uv_on?(:reim_pain) && (boss = hostiles.find { |t| boss?(t) })
         @pains ||= Hash.new(0)
+        @refilled ||= {}
+        if checkmana < pain_cost * 7 + uv_int(:reim_pain_reserve, 21) && !@refilled[boss.id.to_i]
+          @refilled[boss.id.to_i] = true       # one try per rare
+          refill_mana
+        end
         if @pains[boss.id.to_i] < uv_int(:reim_pain_max, 10) && checkmana >= pain_cost + uv_int(:reim_pain_reserve, 21)
           pain_burst(boss)
           next

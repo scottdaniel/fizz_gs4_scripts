@@ -150,7 +150,9 @@ module FizzReim
     {
       flag:          flag_index(flag_text),
       flag_text:     flag_text,
-      time_left:     text[/You have (\d[^.\n]*?) remaining/i, 1],
+      # scoped to the quest-status line: the capture also catches stray lines (11/21 15:34 it took the
+      # Lumnis "You have 2,454 points of tripled experience ... remaining" for the quest timer)
+      time_left:     text[/Current quest status:\s+You have (\d[^.\n]*?) remaining/i, 1],
       premium_ready: !!(text =~ /Time until next premium entry:\s+You are ready to quest again/i),
       premium_wait:  text[/Time until next premium entry:\s+([^\n]*?)\.?\s*$/i, 1],
       kills:         text[/slain a total of (\d+)/i, 1].to_i,
