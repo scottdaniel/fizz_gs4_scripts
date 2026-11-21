@@ -5,7 +5,7 @@
         game: gemstone
         tags: bounty, adventurer's guild
     requires: Lich > 5.4.0
-     version: 1.8
+     version: 1.9
 
   undead_bounty.lic with the "must be undead" test replaced by an allowed list, and
   with heirloom and rescue-child tasks accepted by AREA.
@@ -36,6 +36,7 @@
     ;bounty_chooser kill skeletal ice troll, cold guardian, frost giant --areas=Ice Plains, Icemule Trail
     ;bounty_chooser kill darkwoode, greater orc, werebear --kill-areas=Upper Trollfang
     ;bounty_chooser dangerous frost giant
+    ;bounty_chooser kill undead     (ANY undead kill or dangerous-creature task, plus gem orders)
     ;bounty_chooser                 (no arguments: everything from data/GSIV/<char>/bounty_chooser.yaml)
 
   Everything else is inherited: turning in a completed bounty first, leaving an
@@ -45,6 +46,13 @@
   started in. See undead_bounty.lic for those details.
 
   changelog:
+    1.9
+      - `undead` as a list entry (or `undead: true` in the yaml) keeps ANY undead creature on kill
+        and dangerous-creature tasks, judged the way undead_bounty does (gameobj-data type, with the
+        known-undead-name fallback). Only cull and dangerous tasks: an heirloom or rescue-child task
+        still needs its attacker on the creature list or its area on the areas list, so
+        `;bounty_chooser kill undead` is "undead kills and bosses wherever I am, plus gem orders".
+        Fizzleworth-prerest, 11/21: the minotaur list is gone, this takes its place.
     1.8
       - does nothing while fizzbounty or ebounty is running: they choose, work and turn in the
         bounty themselves. 11/13 Davu's prerest bounty_chooser removed the skin task fizzbounty was
@@ -383,7 +391,7 @@ module BountyChooser
   IN_PROGRESS_STATES = %i[dangerous_spawned rescue_spawned].freeze
 
   # What counts as a good task. creatures/areas/gem_towns/kill_areas are lowercase lists.
-  Rules = Struct.new(:creatures, :areas, :gem_towns, :kill_areas)
+  Rules = Struct.new(:creatures, :areas, :gem_towns, :kill_areas, :undead)
 
   def self.ask_master_for_bounty(bounty_type, max_attempts: 10)
     go_to_advguild
@@ -865,12 +873,37 @@ module BountyChooser
     known_creatures.select { |name| name.downcase.include?(q) }
   end
 
+  # same technique ;ebestiary and undead_bounty use: build a throwaway GameObj and read its type
+  # string out of data/gameobj-data.xml
+  def self.creature_undead?(creature_name)
+    return false if creature_name.to_s.empty?
+
+    noun = creature_name.split(' ').last
+    type = GameObj.new(666_999, noun, creature_name).type
+    return true if type.to_s.split(',').include?('undead')
+    return false unless type.nil? # matched some other type - trust that, don't fall through
+
+    # Bounty.current normalizes a name like "horrific magna vereri" down to the bare "magna vereri",
+    # which the direct lookup above finds nothing for: fall back to a known undead name that ends
+    # with this one.
+    q = creature_name.downcase
+    known_undead_creatures.any? { |name| name.downcase == q || name.downcase.end_with?(" #{q}") }
+  end
+
+  def self.known_undead_creatures
+    return @known_undead_creatures if defined?(@known_undead_creatures)
+
+    GameObj.load_data if GameObj.type_data.nil? || GameObj.type_data.empty?
+    @known_undead_creatures = creature_names_from_pattern(GameObj.type_data.dig('undead', :name))
+  end
+
   # The allowed list: a task's creature qualifies if its name contains any entry
   # (case-insensitive), e.g. "skeletal ice troll" for a "skeletal ice troll" bounty.
-  def self.creature_allowed?(creature_name, creatures)
+  def self.creature_allowed?(creature_name, creatures, undead = false)
     name = creature_name.to_s.downcase
     return false if name.empty?
     return false if bigshot_flees_from?(name)
+    return true if undead && creature_undead?(creature_name)
 
     creatures.any? { |entry| !entry.empty? && name.include?(entry.downcase) }
   end
@@ -888,8 +921,8 @@ module BountyChooser
   # areas too. 10/30: Fizzlestiks hunts darkwoodes in Upper Trollfang, where greater orcs
   # and werebears also live, but their bounties came up in Cairnfang and the foothills of
   # Zeltoph as well -- the right creature in a place he never goes.
-  def self.creature_task_allowed?(task, rules)
-    return false unless creature_allowed?(task.creature, rules.creatures)
+  def self.creature_task_allowed?(task, rules, undead: false)
+    return false unless creature_allowed?(task.creature, rules.creatures, undead && rules.undead)
 
     kill_areas = Array(rules.kill_areas)
     kill_areas.empty? || area_allowed?(task.location, kill_areas)
@@ -923,7 +956,7 @@ module BountyChooser
   def self.task_acceptable?(task, rules)
     case task.type
     when :cull, :dangerous
-      creature_task_allowed?(task, rules)
+      creature_task_allowed?(task, rules, undead: true)
     when *AREA_TASK_TYPES
       creature_task_allowed?(task, rules) || area_allowed?(task.location, rules.areas)
     when :gem
@@ -1023,6 +1056,7 @@ module BountyChooser
     respond "    ;#{n} help"
     respond "    ;#{n} kill skeletal ice troll, cold guardian, frost giant --areas=Ice Plains, Icemule Trail"
     respond "    ;#{n} kill darkwoode, greater orc, werebear --kill-areas=Upper Trollfang"
+    respond "    ;#{n} kill undead                 (any undead kill / dangerous-creature task, plus gem orders)"
     respond "    ;#{n} dangerous frost giant"
     respond "    ;#{n} deliver         - only hand a rescue child who is in the room to the guard (echild)"
     respond "    ;#{n} deliver stay    - same, but don't walk back to the room you started in afterwards"
@@ -1034,6 +1068,8 @@ module BountyChooser
     respond 'bounties are kept when the attacking creature is on the creature list (you have to kill'
     respond 'it) or their AREA contains any entry of --areas=. Gem orders are kept too (any'
     respond 'gem; optionally only for certain towns -- see gem_towns below).'
+    respond 'Put `undead` in the list (or undead: true in the yaml) to keep ANY undead creature on'
+    respond 'kill and dangerous-creature tasks (heirloom / rescue-child tasks still need their list).'
     respond 'With --kill-areas= (kill_areas: in the yaml), anything kept for its creature must also'
     respond 'be in one of those areas -- for creatures that live in more than one place.'
     respond ''
@@ -1101,6 +1137,7 @@ kill_areas_arg = flag_arg.call('kill-areas')
 creature_arg = rest.sub(/(?:\A|\s)--[a-z-]+=.*\z/im, '')
 split_list = ->(text) { text.to_s.split(',').map { |c| c.strip.downcase }.reject(&:empty?) }
 creatures = split_list.call(creature_arg)
+undead = !creatures.delete('undead').nil?   # `kill undead`: any undead creature (kill / dangerous tasks)
 areas = split_list.call(areas_arg)
 kill_areas = split_list.call(kill_areas_arg)
 
@@ -1120,8 +1157,9 @@ unless BountyChooser::BOUNTY_TYPES.include?(bounty_type)
 end
 # Towns whose gem dealer you'll take an order from; empty = any town.
 gem_towns = Array(saved['gem_towns'] || saved[:gem_towns]).map { |c| c.to_s.strip.downcase }.reject(&:empty?)
+undead ||= (saved['undead'] || saved[:undead]).to_s =~ /\A\s*(?:true|yes|on|1)\s*\z/i ? true : false
 if creatures.empty? || areas.empty?
-  if creatures.empty?
+  if creatures.empty? && !undead
     creatures = Array(saved['creatures'] || saved[:creatures]).map { |c| c.to_s.strip.downcase }.reject(&:empty?)
     respond "BountyChooser: using the creature list from #{File.basename(path)}." unless creatures.empty?
   end
@@ -1133,7 +1171,7 @@ if kill_areas.empty?
   kill_areas = Array(saved['kill_areas'] || saved[:kill_areas]).map { |c| c.to_s.strip.downcase }.reject(&:empty?)
 end
 
-if creatures.empty?
+if creatures.empty? && !undead
   respond "BountyChooser: no creature list given and none in #{path} -- try ;#{Script.current.name} help"
   exit
 end
@@ -1141,16 +1179,18 @@ end
 # Typo guard, before a Bounty Boost can be spent: every entry that matches no known
 # creature is called out, and a list where NOTHING matches is rejected outright.
 unknown = creatures.reject { |c| BountyChooser.find_creature_matches(c).any? }
-if unknown.length == creatures.length
+if !creatures.empty? && unknown.length == creatures.length
   respond "BountyChooser: none of #{creatures.map { |c| "'#{c}'" }.join(', ')} match a known creature name -- check the spelling, stopping."
   exit
 end
 respond "BountyChooser: unrecognised name#{'s' if unknown.length > 1} #{unknown.map { |c| "'#{c}'" }.join(', ')} (will still match by name)." unless unknown.empty?
-respond "BountyChooser: accepting kill / dangerous-creature bounties for: #{creatures.join(', ')}"
+respond "BountyChooser: accepting kill / dangerous-creature bounties for: #{[('any undead creature' if undead), *creatures].compact.join(', ')}"
 respond "BountyChooser: ...but only in: #{kill_areas.join(', ')}" unless kill_areas.empty?
 flee_from = (defined?(UserVars) && UserVars.op.is_a?(Hash) ? UserVars.op['always_flee_from'] : nil).to_s.strip
 respond "BountyChooser: ...and never what bigshot flees from: #{flee_from}" unless flee_from.empty?
-if areas.empty?
+if areas.empty? && creatures.empty?
+  respond 'BountyChooser: heirloom / rescue-child tasks are not kept (no creature list and no areas set).'
+elsif areas.empty?
   respond 'BountyChooser: heirloom / rescue-child tasks are kept when the attacker is on the creature list (no areas set).'
 else
   respond "BountyChooser: heirloom / rescue-child tasks are kept when the attacker is on that list, or the area is: #{areas.join(', ')}"
@@ -1158,4 +1198,4 @@ end
 
 respond "BountyChooser: and gem orders#{gem_towns.empty? ? ' in any town' : " from the gem dealers in: #{gem_towns.join(', ')}"}."
 
-BountyChooser.run(bounty_type, BountyChooser::Rules.new(creatures, areas, gem_towns, kill_areas))
+BountyChooser.run(bounty_type, BountyChooser::Rules.new(creatures, areas, gem_towns, kill_areas, undead))

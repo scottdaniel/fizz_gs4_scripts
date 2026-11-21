@@ -341,7 +341,7 @@ module FizzReim
     end
 
     if info[:time_left].nil?
-      said_once(:over, "REIM INFO shows no quest time left: the run is over.")
+      said_once(:over, "REIM INFO shows no quest time left: time is up. The game lets you stay and fight for about a minute and then ejects you; I keep going until then.")
       return
     end
     return said_once(:noflag, "can't read the 'flagged for entry' line (#{info[:flag_text].inspect}) -- standing still.") if flag.nil?
