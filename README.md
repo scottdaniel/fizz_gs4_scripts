@@ -69,7 +69,7 @@ Attack routines (pick one per bigshot profile):
 | `Fizzleworth-attack-base.lic` | Baseline Web, Energy Maelstrom, Tenebrous Tether rotation. | cmd |
 | `Fizzleworth-attack-cat.lic` | Variant opening with Grasp of the Grave (709) only when enough targets are in the room; returns at the flee threshold so bigshot flees. | cmd |
 | `Fizzleworth-attack-ultima.lic` | `-base` plus a creature-specific disable step and a one-shot animate (`reanim`) per hunt, using `demonmana` and a shadow-essence grind. | cmd |
-| `Fizzleworth-attack-reim.lic` | Attack script for `;treim` in the Settlement of Reim (`;treim fizzleworth-attack-reim.lic`): runs `-ultima` pass after pass until the room is clear, because treim starts a custom attack script once per wave and a rare spawn takes 80+ s. | no |
+| `Fizzleworth-attack-reim.lic` | Attack script for `;treim` in the Settlement of Reim (`;treim fizzleworth-attack-reim.lic`): runs `-ultima` pass after pass until the room is clear, because treim starts a custom attack script once per wave and a rare spawn takes 80+ s. Rare spawns (Patrol Leader, Guard Captain, the Emperor ...) are opened with Pain (711) first; `;vars set reim_pain=off` / `reim_pain_max=N` / `reim_pain_reserve=N`. Runs `;eloot` once when a fight clears (`reim_loot=off` to skip): Reim corpses carry only silver and the ethereal hands take them within seconds. | no |
 
 Between-hunt chain:
 

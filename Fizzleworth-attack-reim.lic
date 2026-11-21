@@ -21,6 +21,22 @@
 # Reim creature, which are all "ethereal ...", "ghostly ...", "celestial ...", "unworldly ..."
 # or a named rare.
 #
+# BOSSES GET PAIN FIRST. A rare spawn (Patrol Leader, Guard Captain, ... the Emperor: any creature
+# whose noun is in treim's boss list) is opened with Pain (711, 11 mana): by hand on 11/21 the
+# Guard Captain went down to about seven Pains (crits of 105 and 200) with 710 and 706 only finishing
+# it. The loop casts Pain at the rare, one cast after another, until it is dead, REIM_PAIN_MAX casts
+# have gone out at that one creature (default 10), or mana is down to a Pain plus 21 -- the cost of
+# ultima's Web, 710 and 706 -- so the finish is always affordable. After that, ultima takes over as
+# for any other creature (its mana recovery included). Knobs, read live:
+#   ;vars set reim_pain=off          no Pain opener (default on)
+#   ;vars set reim_pain_max=N        casts per rare (default 10)
+#   ;vars set reim_pain_reserve=N    mana kept back for ultima's finish (default 21)
+#
+# LOOT. Reim corpses only carry silver (about a third of the kills, 180-390 each; the Patrol Leader had
+# 387) and "ethereal hands" pull a corpse away within seconds, so as soon as the room is clear after a
+# fight this runs ;eloot once, the same call you made by hand after every kill. Neither treim nor
+# ultima loots. `;vars set reim_loot=off` turns it off.
+#
 # SAFETY. One launch never runs longer than MAX_SECONDS (treim starts a fresh one on the next
 # wave), stops if you die or leave Reim, and backs off when ultima returns at once without
 # casting anything (so it can never spin hot).
@@ -42,7 +58,98 @@ module FizzReimAttack
     []
   end
 
+  # treim's Treim::Bosses::BOSS_NOUNS: the nouns of the named rare spawns
+  BOSS_NOUNS = %w[Cook Shopkeeper Innkeeper Bartender Leader Lord Lady Queen King Captain Sergeant
+                  Hostler Master Torturer Butler Dignitary Prince Princess Jester Emperor Empress] unless defined?(BOSS_NOUNS)
+  CAST_DONE  = /Cast Roundtime \d+|Roundtime: \d+ sec|can't think clearly enough to prepare|don't have a spell prepared|^Wait \d+ sec|You can't cast|You have no/i unless defined?(CAST_DONE)
+  WOUNDED    = /can't think clearly enough to prepare/i unless defined?(WOUNDED)
+
+  def self.boss?(t)
+    t && t.noun.to_s =~ /\A(?:#{BOSS_NOUNS.join('|')})\z/ ? true : false
+  end
+
+  def self.uv_on?(name)
+    v = UserVars.send(name)
+    return true if v.nil?
+    return v if v == true || v == false
+    v.to_s !~ /\A\s*(?:0|false|off|no)\s*\z/i
+  end
+
+  def self.uv_int(name, default)
+    v = UserVars.send(name)
+    v.to_s =~ /\A\s*\d+\s*\z/ ? v.to_i : default
+  end
+
+  def self.pain_cost
+    c = Spell[711].mana_cost.to_i
+    c.positive? ? c : 11
+  rescue StandardError
+    11
+  end
+
+  def self.alive?(t)
+    t && GameObj.targets.any? { |x| x.id.to_i == t.id.to_i && x.status.to_s !~ /dead|gone/ }
+  end
+
+  # Cast `cmd` and read every line through the cast's own terminal line.
+  def self.cast_collect(cmd, timeout = 6)
+    lines = []
+    nil while get?
+    put cmd
+    deadline = Time.now.to_f + timeout
+    loop do
+      line = get?
+      if line.nil?
+        sleep 0.1
+      else
+        lines << line
+        break if line =~ CAST_DONE
+      end
+      break if Time.now.to_f >= deadline
+    end
+    lines.join("\n")
+  end
+
+  # Pain at the rare until it is dead, the per-creature cap is reached or the mana floor is hit.
+  # @pains[id] counts casts at each rare within one launch (run resets it: ids are only good for a login).
+  def self.pain_burst(boss)
+    @pains ||= Hash.new(0)
+    id = boss.id.to_i
+    cap = uv_int(:reim_pain_max, 10)
+    floor = pain_cost + uv_int(:reim_pain_reserve, 21)
+    while alive?(boss) && @pains[id] < cap && checkmana >= floor
+      break unless in_reim?
+      break if checkdead || $bigshot_flee
+      waitrt?
+      waitcastrt?
+      fput "target ##{id}" unless XMLData.current_target_id.to_i == id
+      text = cast_collect("incant 711")
+      @pains[id] += 1
+      if text =~ WOUNDED
+        Script.run("eherbs", "--spellcast")
+        @pains[id] = cap
+        break
+      end
+      break if text =~ /You have no|You can't cast|don't have a spell prepared/i
+      waitcastrt?
+      waitrt?
+    end
+    @pains[id] = cap if checkmana < floor     # out of mana for it: hand over to ultima, don't come back
+  end
+
+  # ;eloot the corpses the fight left (it searches them and gathers the silver)
+  def self.loot
+    return unless uv_on?(:reim_loot)
+    return unless Script.exists?("eloot")
+    return if Script.running?("eloot")
+    Script.run("eloot")
+  rescue StandardError => e
+    echo "loot: #{e.class} #{e.message}"
+  end
+
   def self.run
+    @pains     = Hash.new(0)
+    fought     = false
     started    = Time.now.to_f
     empty_at   = nil
     quick      = 0
@@ -54,12 +161,25 @@ module FizzReimAttack
       break if now - started > MAX_SECONDS
 
       if hostiles.empty?
+        if fought
+          fought = false
+          loot unless checkdead
+        end
         empty_at ||= now
         break if now - empty_at > GRACE
         sleep 0.4
         next
       end
       empty_at = nil
+
+      fought = true
+      if uv_on?(:reim_pain) && (boss = hostiles.find { |t| boss?(t) })
+        @pains ||= Hash.new(0)
+        if @pains[boss.id.to_i] < uv_int(:reim_pain_max, 10) && checkmana >= pain_cost + uv_int(:reim_pain_reserve, 21)
+          pain_burst(boss)
+          next
+        end
+      end
 
       t0 = Time.now.to_f
       Script.run(ULTIMA)
