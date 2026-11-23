@@ -56,6 +56,9 @@
     ;vars set chargedsack=<container>     recharged magic items (default: chargesack)
     ;vars set greensack=<container>       greened items (default: where they'd go anyway)
     ;vars set charge_maxrubs=<n>          most tries at the orb per item per session (default 3)
+    ;vars set charge_first=<names>        order for the wands, e.g. drake,copper,electrum; any
+                                          not listed go last, in bag order (magic items still
+                                          go before wands). ;vars delete charge_first to clear
     ;vars set charge_symbol=false         never use Symbol of Mana (default true: while waiting
                                           to charge, whenever it's off cooldown; it costs Voln
                                           favor, and one "not enough favor" stops it for the run)
@@ -197,6 +200,32 @@ module ChargeMeUpScotty
 
   def self.pour?
     UserVars.charge_pour.to_s !~ /\A(?:false|no|off|0)\z/i
+  end
+
+  # ";vars set charge_first=drake,copper,electrum" -> ["drake", "copper", "electrum"]
+  def self.charge_first
+    UserVars.charge_first.to_s.split(/[,|]/).map(&:strip).reject(&:empty?)
+  end
+
+  def self.first_match(rec, word)
+    rec[:name].to_s =~ /\b#{Regexp.escape(word)}\b/i
+  end
+
+  # Magic items (rings, bracelets, statues, ...) get the first and best orb, then the wands.
+  # Within each, charge_first decides; anything it doesn't name keeps bag order, at the end.
+  def self.charge_order(recs)
+    first = charge_first
+    recs.each_with_index.sort_by { |rec, i|
+      [rec[:kind] == :wand ? 1 : 0, first.index { |word| first_match(rec, word) } || first.size, i]
+    }.map(&:first)
+  end
+
+  # What's about to be charged, in order, and any charge_first entry nothing matched (a typo?)
+  def self.say_order(recs)
+    runs = recs.chunk_while { |a, b| a[:name] == b[:name] }
+    msg "Charging in this order: #{runs.map { |run| run.size > 1 ? "#{run.size} x #{run.first[:name]}" : run.first[:name] }.join(', ')}."
+    unused = charge_first.reject { |word| recs.any? { |rec| first_match(rec, word) } }
+    msg "Nothing to charge matches #{unused.join(', ')} (from charge_first)." unless unused.empty?
   end
 
   def self.max_rubs
@@ -1111,6 +1140,7 @@ module ChargeMeUpScotty
     respond "  chargedsack      #{setting(:chargedsack) || '(chargesack)'}   recharged magic items"
     respond "  greensack        #{setting(:greensack) || '(not set)'}   greened items"
     respond "  charge_maxrubs   #{max_rubs}   most tries at the orb per item per session"
+    respond "  charge_first     #{charge_first.empty? ? '(not set)' : charge_first.join(', ')}   which wands go first (magic items still go before wands)"
     respond "  charge_symbol    #{symbol?}   use Voln's Symbol of Mana while waiting to charge (costs favor)"
     respond "  dead wands       #{op_setting('dead_wand_container', 'bag')}   from bigshot (dead_wand_container)"
     respond "  fresh wands      #{op_setting('fresh_wand_container', 'sack')}   from bigshot (fresh_wand_container)"
@@ -1183,13 +1213,12 @@ module ChargeMeUpScotty
     @emptied_hands = true
 
     survey
-    # Magic items (rings, bracelets, statues, ...) get the first and best orb, then the wands
-    to_charge = @records.select { |rec| rec[:status] == :charge }
-                        .each_with_index.sort_by { |rec, i| [rec[:kind] == :wand ? 1 : 0, i] }.map(&:first)
+    to_charge = charge_order(@records.select { |rec| rec[:status] == :charge })
     if check_only || to_charge.empty?
       msg "Nothing needs charging." if to_charge.empty? && !@records.empty?
       return
     end
+    say_order(to_charge)
 
     # Gems, appraisals and potion before the workshop, so none of those trips start from it
     start_room = Room.current&.id
