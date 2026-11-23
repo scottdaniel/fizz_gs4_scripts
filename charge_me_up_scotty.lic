@@ -25,7 +25,9 @@
        then deposits what's left. Sorena's (Icemule) potions are one dose, so
        expect another trip each time a new orb is needed.
     4. Goes to the nearest Wizard Guild workshop (charging bonus) unless --here.
-    5. Pours the potion on an orb gem and casts 517 at it to make a
+    5. Waits for full mana (less if what's left to charge needs less): an orb only
+       lives 15-18 minutes, so that time shouldn't go to waiting. Then pours the
+       potion on an orb gem and casts 517 at it to make a
        pulsating orb, then casts 517 at the orb until it's humming (ready).
        A poured gem is remembered, so if a run stops before the orb is made,
        the next one uses that gem first without pouring again.
@@ -42,6 +44,11 @@
        the dead wands) and go to chargedsack. Items that aren't mage rechargeable
        stay where they were.
     8. Goes back where you started and prints a report.
+
+  If something walks you away from the orb (2026-11-23: go4invoker left between two casts and
+  the run ended there), it waits, goes back to the room it was charging in and carries on.
+  go4invoker asks first: this stops at the next good place (waiting on mana, or before making
+  a new orb), lets it make the trip, and picks up where it was.
 
   Candidates:
     - wands in bigshot's dead_wand_container (UserVars.op, the active profile)
@@ -92,6 +99,11 @@ module ChargeMeUpScotty
   # Wait for this share of max mana at most before a rub, so the orb isn't left
   # waiting on the last few points of regen
   RUB_MANA_SHARE   = 0.9
+  # "Full" for starting a new orb. Not 1.0: mana comes in chunks, and the last few points
+  # can take a whole one
+  ORB_MANA_SHARE   = 0.95
+  # Making an orb (17) plus preparing it (1 a cast, gswiki), with some to spare
+  ORB_MANA_COST    = 30
   WORKSHOP_TAG     = 'wizard guild workshop'
   # Withdrawn for a grot t'kel potion only if you carry less (2,000 at Sorena's, 2026-10-20)
   POTION_SILVER    = 5_000
@@ -103,6 +115,13 @@ module ChargeMeUpScotty
   ORB_GEM_FLOOR    = 1_000
   # A gem the shop won't quote ("not buying anything this valuable") sorts first
   TOO_VALUABLE     = 1_000_000
+
+  # The invoker's room on Four Winds Isle (go4invoker's trips)
+  INVOKER_ROOM     = 3677
+  # Moved away from the orb: go back once nothing has moved us for this long, and give up
+  # waiting for that after AWAY_MAX (the invoker's whole visit is about 15 minutes)
+  AWAY_QUIET       = 15
+  AWAY_MAX         = 20 * 60
 
   # === game text =================================================================
   PREP_DONE   = /^Your spell(?:song)? is ready\.|^You already have a spell readied|^You can't think clearly enough|^You are concentrating too intently|^You are too injured|^But you don't have any mana|^You can't make that dextrous|^You do not know that spell|cough up some blood/
@@ -363,6 +382,9 @@ module ChargeMeUpScotty
     msg "Waiting for #{amount} mana#{reason ? " #{reason}" : ''} (you have #{checkmana})."
     until checkmana >= amount
       drain
+      # Nothing to lose by stopping here, as long as no spell is prepared (it would fade)
+      hold_for_invoker if checkprep == 'None'
+      back_to_work
       return if stop_if&.call
       # Once charging has started, every wait is worth a symbol: the mana carries over to
       # the next try at the orb. The survey's small 405 waits don't count (a ;check run
@@ -494,6 +516,73 @@ module ChargeMeUpScotty
     return cap if per.nil?
 
     [[per * (rec[:target] - rec[:charges]), cap].min, per].max
+  end
+
+  # === staying with the orb =======================================================
+  # go4invoker sets $go4invoker_trip when it wants to leave for the invoker, waits for us to
+  # set $charge_me_up_scotty_held, and clears $go4invoker_trip once it's back.
+  def self.invoker_trip?
+    $go4invoker_trip && Script.running?('go4invoker') ? true : false
+  end
+
+  # Only called where it's fine to leave: nothing half cast, no potion run under way. An orb
+  # on the floor is left there; it outlasts the minute or two a trip takes.
+  def self.hold_for_invoker
+    return unless invoker_trip?
+
+    msg "Stopping here while go4invoker gets the invoker's spells."
+    $charge_me_up_scotty_held = true
+    sleep 0.5 while invoker_trip?
+    $charge_me_up_scotty_held = false
+    back_to_work
+    drain
+    msg "Carrying on."
+  ensure
+    $charge_me_up_scotty_held = false
+  end
+
+  # Not in the room we're charging in
+  def self.moved?
+    !@work_room.nil? && Room.current&.id != @work_room
+  end
+
+  # Something walked us off: wait for it to finish (go2 and go4invoker bring us back on their
+  # own), then go back. Never returns anywhere but the work room.
+  def self.back_to_work
+    return unless moved?
+    return if wait_for(1) { !moved? } # the room can read wrong for a moment
+
+    msg "Moved out of room #{@work_room}, where I was charging. Waiting to go back."
+    give_up = Time.now + AWAY_MAX
+    quiet = nil
+    while moved? && Time.now < give_up
+      if Script.running?('go2') || Room.current&.id == INVOKER_ROOM || invoker_trip?
+        quiet = nil
+      else
+        quiet ||= Time.now
+        break if Time.now - quiet >= AWAY_QUIET
+      end
+      sleep 0.5
+    end
+    go2(@work_room) if moved?
+    if moved?
+      msg "Couldn't get back to room #{@work_room}. Stopping."
+      exit
+    end
+    drain
+    msg "Back in room #{@work_room}."
+  end
+
+  # Mana to have before making a new orb: full, unless everything still to be charged needs
+  # less. 2026-11-23: an orb made at 27 mana spent 2:43 of its 15 minutes waiting for the
+  # first try at it.
+  def self.orb_mana
+    full = (maxmana * ORB_MANA_SHARE).floor
+    needs = @records.select { |rec| %i[charge partial].include?(rec[:status]) && rec[:rubs] < max_rubs }
+                    .map { |rec| (per = per_charge(rec)) && per * (rec[:target] - rec[:charges]) }
+    return full if needs.empty? || needs.any?(&:nil?)
+
+    [needs.sum + ORB_MANA_COST, full].min
   end
 
   # === survey ====================================================================
@@ -736,7 +825,10 @@ module ChargeMeUpScotty
   end
 
   # === grot t'kel potion =========================================================
+  # One go2 at a time: started while another script's go2 is running, ours just says "go2 is
+  # already running" and we'd be left wherever that one ends
   def self.go2(place)
+    wait_for(120) { !Script.running?('go2') }
     Script.run('go2', "#{place} --disable-confirm")
   end
 
@@ -856,10 +948,13 @@ module ChargeMeUpScotty
       needs_pour = pour? && !poured?(gem)
       # Before the gem comes out: a potion run needs empty hands
       potion = needs_pour && ensure_potion
+      back_to_work
       if needs_pour && potion.nil?
         msg "No grot t'kel potion to pour on #{gem.name}. If your orb gems are already poured, ;vars set charge_pour=false"
         return false
       end
+      # Here, not sooner: the potion trip is over, so this waits where we charge
+      wait_for_mana(orb_mana, 'before making the next orb', symbol: true)
       return false unless take(gem.id, @gemsack)
 
       if needs_pour
@@ -906,7 +1001,8 @@ module ChargeMeUpScotty
   def self.prep_orb
     unknown = 0
     PREP_MAX.times do
-      return false unless orb_alive?
+      back_to_work
+      return :gone unless orb_alive?
 
       lines = cast_at(517, "##{@orb_id}", Regexp.union(ORB_READY, ORB_GROW, ORB_SHRINK, ORB_GONE, CAST_RT))
       if lines.any? { |line| line =~ ORB_READY }
@@ -949,6 +1045,7 @@ module ChargeMeUpScotty
   ORB_RETRY_MAX = 3
 
   def self.ensure_orb
+    back_to_work
     return true if orb_alive? && @orb_ready
 
     imploded = 0
@@ -956,20 +1053,23 @@ module ChargeMeUpScotty
       unless orb_alive?
         msg "The pulsating orb is gone." if @orb_id
         @orb_id = nil
+        # The best place to stop for the invoker: no orb to keep up and nothing in hand
+        hold_for_invoker
         return false unless make_orb
       end
       result = prep_orb
       return true if result == true
-      return false unless result == :imploded
+      # :gone is an orb that was there and isn't any more: the next gem, the same as :imploded
+      return false unless %i[imploded gone].include?(result)
 
       imploded += 1
       @orb_id = nil
       @orb_ready = false
       if imploded >= ORB_RETRY_MAX
-        msg "#{imploded} orbs in a row imploded while being prepared. Stopping."
+        msg "#{imploded} orbs in a row were lost before they were ready. Stopping."
         return false
       end
-      msg "That orb imploded while it was being prepared. Making another from the next gem."
+      msg "That orb #{result == :gone ? 'was gone before it was ready' : 'imploded while it was being prepared'}. Making another from the next gem."
     end
   end
 
@@ -983,15 +1083,10 @@ module ChargeMeUpScotty
     rec[:status] = :partial if rec[:status] == :charge
     short_on_mana = false
     while rec[:charges] < rec[:target] && rec[:rubs] < max_rubs
-      unless orb_alive?
-        stash(rec[:id], rec[:src])
-        return :orb_lost
-      end
-      # == true: :imploded is truthy but means the orb's gone
-      unless @orb_ready || prep_orb == true
-        stash(rec[:id], rec[:src])
-        return :orb_lost
-      end
+      back_to_work
+      return orb_lost(rec) unless orb_alive?
+      # == true: :imploded and :gone are truthy but mean there's no orb
+      return orb_lost(rec) unless @orb_ready || prep_orb == true
 
       wanted = short_on_mana ? (maxmana * RUB_MANA_SHARE).floor : rub_mana(rec)
       wait_for_mana(wanted, "to charge the #{rec[:name]}", symbol: true, stop_if: -> { !orb_alive? })
@@ -1001,6 +1096,8 @@ module ChargeMeUpScotty
       lines = collect("rub ##{@orb_id}", RUB_DONE)
       lines += more_lines(1.5) if lines.any? { |line| line =~ RUB_OK }
       text = lines.join("\n")
+      # Walked off before the RUB landed: that's no news about the orb or the item
+      next if moved? && (text =~ RUB_GONE || text !~ RUB_DONE)
 
       if text =~ RUB_GREEN
         rec[:rubs] += 1
@@ -1015,6 +1112,8 @@ module ChargeMeUpScotty
         else
           detect(rec)
         end
+        # Saved after every try, so a run that's killed here still knows the count next time
+        save_charges(rec)
         msg "#{rec[:name]}: #{rec[:charges]}/#{rec[:target]} charges after try #{rec[:rubs]} at the orb."
       elsif text =~ RUB_FULL
         rec[:status] = :full
@@ -1043,14 +1142,27 @@ module ChargeMeUpScotty
 
     rec[:status] = :charged if rec[:status] == :partial && rec[:charges] >= rec[:target]
     stash(rec[:id], destination(rec))
-    # A greened item needs a fresh 405 next time; anything else keeps its new charge count
+    save_charges(rec)
+    :done
+  end
+
+  # Back in its container until there's another orb. Its charge count is saved now: if no orb
+  # can be made the run ends here, and on 2026-11-23 the next run took a wand with 23 charges
+  # for an empty one and left it with the dead wands.
+  def self.orb_lost(rec)
+    stash(rec[:id], rec[:src])
+    save_charges(rec)
+    :orb_lost
+  end
+
+  # A greened item needs a fresh 405 next time; anything else keeps its new charge count
+  def self.save_charges(rec)
     if rec[:status] == :greened
       @survey_cache.delete(rec[:id].to_s)
     else
       cache_record(rec)
     end
     save_survey
-    :done
   end
 
   def self.destination(rec)
@@ -1164,6 +1276,8 @@ module ChargeMeUpScotty
     @symbol_off = false
     @symbol_next = nil
     @charging = false
+    @work_room = nil
+    $charge_me_up_scotty_held = false
     @unmarked = []
     @survey_cache = recall('charge_survey', {})
     @gem_values = recall('charge_gem_values', {})
@@ -1234,6 +1348,7 @@ module ChargeMeUpScotty
     end
 
     go_to_workshop unless here
+    @work_room = Room.current&.id
     adopt_orb unless orb_ids.empty?
 
     @charging = true
@@ -1244,6 +1359,7 @@ module ChargeMeUpScotty
     end
     msg "The pulsating orb is still here if you have more to charge." if orb_alive?
 
+    @work_room = nil
     go2(start_room) if start_room && !here && Room.current&.id != start_room
   end
 
@@ -1252,6 +1368,7 @@ module ChargeMeUpScotty
     return if @cleaned_up
 
     @cleaned_up = true
+    $charge_me_up_scotty_held = false
     fput "release" unless checkprep == 'None'
     # Stopped between unmarking a gem and marking it again: mark it now (it has to be held)
     @unmarked.to_a.each { |id|

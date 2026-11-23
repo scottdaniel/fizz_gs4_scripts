@@ -13,6 +13,12 @@
   you or there's a creature in the room. 11/13 Davu sat in the inn through the 16:00 visit
   because this used to do nothing at all without bigshot.
 
+  charge_me_up_scotty has an orb on the floor where you are, so it's asked to stop first: it
+  carries on until it's waiting for mana or between orbs, holds there, and resumes when you're
+  back. With it running the trip starts a minute after she's due, so there's no waiting for
+  her while the orb shrinks. 11/23 13:59 this walked Picko out between two casts at a new orb:
+  the orb was wasted and the charge run ended.
+
   What a visit looks like with bigshot (all automatic, only when one is due):
     * From 12 minutes before she arrives until 3 minutes after, a hunting bigshot is told to
       rest ($bigshot_should_rest). It finishes the fight, walks home and does its normal
@@ -70,6 +76,7 @@ module Go4Invoker
   def window_open;  -12; end   # start bringing bigshot home / catching it resting
   def force_until;    3; end   # last minute to tell a hunting bigshot to rest
   def leave_at;      -1; end   # leave the resting room for the island
+  def leave_at_charging; 1; end # the same, with charge_me_up_scotty running
   def last_leave;    10; end   # too late to start the trip after this
   def give_up_at;    14; end   # stop waiting for her / asking
   def poll_seconds;   5; end
@@ -342,6 +349,34 @@ module Go4Invoker
     args.strip.empty? ? Script.start("playsongs") : Script.start("playsongs", args)
   end
 
+  # ---- charge_me_up_scotty ----------------------------------------------------------
+
+  def charging?
+    Script.running?("charge_me_up_scotty")
+  end
+
+  # Ask charge_me_up_scotty to stop, and wait until it has (it sets $charge_me_up_scotty_held)
+  # or has finished. $go4invoker_trip stays set until trip is done with it. False if it never
+  # got to a stopping place in time to see her.
+  def hold_charging
+    return true unless charging?
+
+    say "waiting for charge_me_up_scotty to get to a stopping place."
+    $go4invoker_trip = true
+    while charging? && !$charge_me_up_scotty_held
+      return false if rel_minutes >= give_up_at - 1
+
+      sleep 0.5
+    end
+    # If it ended instead, it may have been on its way somewhere
+    until charging? || !Script.running?("go2")
+      return false if rel_minutes >= give_up_at - 1
+
+      sleep 0.5
+    end
+    true
+  end
+
   # ---- the trip -------------------------------------------------------------------
 
   def silver_on_hand
@@ -402,17 +437,23 @@ module Go4Invoker
   end
 
   # Bank if needed, island, spells, home. Returns :paid, :poor, :no_silver, :absent,
-  # :no_answer or :unreachable.
+  # :no_answer, :unreachable, :no_trinket or :charging.
   def trip
     if (problem = trinket_problem)
       say "!! not going: #{problem}"
       notice("go4invoker skipped the invoker trip: #{problem}")
       return :no_trinket
     end
-    home = room_id
-    music = stop_music
+    home = nil
+    music = nil
     result = nil
     begin
+      unless hold_charging
+        result = :charging
+        return result
+      end
+      home = room_id
+      music = stop_music
       waitrt?
       waitcastrt?
       unless ensure_silver
@@ -437,6 +478,7 @@ module Go4Invoker
       say "!! couldn't get back to room #{home} (in #{room_id.inspect})." unless back
       notice("go4invoker could not get back to room #{home} after the invoker trip (now in #{room_id.inspect}).") unless back
       restart_music(music) if back
+      $go4invoker_trip = nil # lets charge_me_up_scotty carry on
     end
     result
   end
@@ -456,6 +498,9 @@ module Go4Invoker
       say "!! she never showed by #{give_up_at} past the hour."
     when :no_trinket
       nil # trip already said why and sent the notice
+    when :charging
+      notice("invoker trip skipped: charge_me_up_scotty never got to a stopping place (#{clock(visit)} visit).")
+      say "!! charge_me_up_scotty never got to a stopping place -- no spells this visit."
     when :unreachable
       notice("go4invoker couldn't get to room #{INVOKER_ROOM} (FWI trinket?) for the #{clock(visit)} visit.")
       say "!! couldn't get to room #{INVOKER_ROOM}. Is go2's FWI trinket set (;go2 --fwi-trinket=<name>)?"
@@ -491,7 +536,7 @@ module Go4Invoker
   # No bigshot running (resting by hand): go from wherever you are, a minute before she
   # arrives, once nothing is moving you and there's nothing to fight.
   def solo_tick(visit, r)
-    return :solo_waiting if r < leave_at
+    return :solo_waiting if r < (charging? ? leave_at_charging : leave_at)
 
     busy = solo_chores.select { |n| Script.running?(n) }
     why = if busy.any? then "#{busy.join(', ')} running"
@@ -594,6 +639,7 @@ module Go4Invoker
     @solo_blocked = nil
     @solo_why = nil
     $go4invoker_paid_at = nil
+    $go4invoker_trip = nil
     case arg.to_s.strip.downcase
     when ""
       install_hook
@@ -619,6 +665,7 @@ before_dying do
   Go4Invoker.unpause_bigshot
   Go4Invoker.remove_hook
   Go4Invoker.save_paid
+  $go4invoker_trip = nil
   $go4invoker_status = nil
 end
 
