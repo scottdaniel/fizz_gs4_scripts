@@ -938,7 +938,9 @@ module ChargeMeUpScotty
   end
 
   # Turns the next orb gem into a pulsating orb on the ground. Hands must be empty.
-  def self.make_orb
+  # full_mana: false for an orb replacing one that imploded before it was ready: we just
+  # waited for that one, and near full most of the next chunk of mana would be lost
+  def self.make_orb(full_mana: true)
     loop do
       gem = next_gem
       if gem.nil?
@@ -954,7 +956,7 @@ module ChargeMeUpScotty
         return false
       end
       # Here, not sooner: the potion trip is over, so this waits where we charge
-      wait_for_mana(orb_mana, 'before making the next orb', symbol: true)
+      wait_for_mana(orb_mana, 'before making the next orb', symbol: true) if full_mana
       return false unless take(gem.id, @gemsack)
 
       if needs_pour
@@ -1049,13 +1051,18 @@ module ChargeMeUpScotty
     return true if orb_alive? && @orb_ready
 
     imploded = 0
+    # Not "imploded.zero?": the orb that implodes can be an old one being re-prepared, with
+    # the mana already spent
+    waited = false
     loop do
       unless orb_alive?
         msg "The pulsating orb is gone." if @orb_id
         @orb_id = nil
         # The best place to stop for the invoker: no orb to keep up and nothing in hand
         hold_for_invoker
-        return false unless make_orb
+        return false unless make_orb(full_mana: !waited)
+
+        waited = true
       end
       result = prep_orb
       return true if result == true
