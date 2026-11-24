@@ -28,11 +28,13 @@
 #      Courtyard 25076 go gate -> Servant 25109      Royal: the Throne Room is 25137
 #  * Getting in. A quest that is still running (REIM INFO shows "You have 1 hour and 10 minutes
 #    remaining.") is just walked back into -- leaving and re-entering is free for the two real-
-#    time hours. A new run: if REIM INFO says "You are ready to quest again!" the daily premium
-#    entry is used (no orb); otherwise one orb charge is spent (GET ORB FROM MY BOOT, RUB MY ORB
-#    twice, PUT it back, then CLIMB CHAIN confirms "This will use your paid entry"). The orb has
-#    25 charges. Rubbing it clears any quest progress, which is why it is only rubbed when no
-#    quest is running. At most ONE new run per ;fizzreim.
+#    time hours. A NEW run tries the free daily entry first (Premium: one entry per 22 hours): it
+#    goes to the chains and climbs, whether or not REIM INFO's "Time until next premium entry" line
+#    could be read. An orb charge is spent only when the free entry is already used -- REIM INFO
+#    shows a time on that line, or the chains answer "you will have to wait another ..." (then: GET
+#    ORB FROM MY BOOT, RUB MY ORB twice, PUT it back, CLIMB CHAIN confirms "This will use your paid
+#    entry"). The orb has 25 charges. Rubbing it clears any quest progress, which is why it is only
+#    rubbed when no quest is running. At most ONE new run per ;fizzreim; `noorb` never rubs.
 #  * Before a (re-)entry it runs ;Fizzleworth-prep here, then every 20 minutes while idle ;ewaggle.
 #    ;stand and ;ecleanse run alongside (a chain trap drops you for 10 s; ;stand gets you up).
 #
@@ -211,8 +213,8 @@ module FizzReim
       # scoped to the quest-status line: the capture also catches stray lines (11/21 15:34 it took the
       # Lumnis "You have 2,454 points of tripled experience ... remaining" for the quest timer)
       time_left:     text[/Current quest status:\s+You have (\d[^.\n]*?) remaining/i, 1],
-      premium_ready: !!(text =~ /Time until next premium entry:\s+You are ready to quest again/i),
-      premium_wait:  text[/Time until next premium entry:\s+([^\n]*?)\.?\s*$/i, 1],
+      premium_ready: !!(text =~ /Time until next premium entry:[ \t]+You are ready to quest again/i),
+      premium_wait:  text[/Time until next premium entry:[ \t]+([^\n]*?)\.?[ \t]*$/i, 1],
       kills:         text[/slain a total of (\d+)/i, 1].to_i,
       scrip:         text[/Total Ethereal Scrip for this run:\s*(\d+)/i, 1].to_i,
     }
@@ -284,6 +286,7 @@ module FizzReim
 
   # CLIMB CHAIN up to the village. Handles the "paid entry" confirm. true once inside.
   def self.climb_in
+    @climb_refused = false
     16.times do
       return true if stage_of(room_id)          # up the chains and in the village (24888)
       waitrt?
@@ -291,6 +294,7 @@ module FizzReim
             /Are you sure you wish to enter Reim|you will have to wait another|tentative step|tentatively begin|sideways leap|dizzying nimbus|climb|Roundtime/i).to_s
       if r =~ /you will have to wait another ([^.]*)/i
         echo "the chains won't take you: #{Regexp.last_match(1)} until the next premium entry, and no paid entry is banked."
+        @climb_refused = true
         return false
       end
       sleep 0.5   # the confirm prompt needs nothing but the command sent again; Room.current lags a beat
@@ -304,44 +308,83 @@ module FizzReim
     echo "prep: #{e.class} #{e.message}"
   end
 
+  # :ready (REIM INFO says "You are ready to quest again!"), :cooldown ("15 hours and 50 minutes") or
+  # :unknown (the line is missing or says something else). NB premium_wait also holds the "ready"
+  # sentence, so it only counts as a cooldown when it has a time in it.
+  def self.premium_state(info)
+    return :ready if info[:premium_ready]
+    info[:premium_wait].to_s =~ /\d+\s*(?:day|hour|minute|second)/i ? :cooldown : :unknown
+  end
+
+  def self.entered!
+    @entered = true
+    @stage_since = Time.now.to_f
+    echo "inside Reim."
+    true
+  end
+
+  # Is spending an orb charge allowed and possible right now? (noorb, a free hand for the boot)
+  def self.orb_ok?
+    if arg?("noorb")
+      echo "the free daily entry is used up; 'noorb' given -- not spending an orb charge."
+      return false
+    end
+    unless hands_free_for_orb?
+      echo "both hands are full -- can't take the orb out of the boot. (Empty a hand and run ;fizzreim again.)"
+      return false
+    end
+    true
+  end
+
+  # The orb: one charge from the boot, then the chains (which ask to confirm the paid entry).
+  # prepared: ;Fizzleworth-prep here has already run for this entry.
+  def self.orb_entry(prepared)
+    return false unless orb_ok?
+    echo "spending an orb charge."
+    go2(approach_room) unless room_id == approach_room
+    return false unless room_id == approach_room
+    return false unless use_orb
+    prepare unless prepared
+    climb_in ? entered! : false
+  end
+
   # Whatever state we're in outside the quest: get back to the chains and climb in.
   # info = reim_info. Returns false if it can't or won't.
+  #
+  # A NEW run tries the free daily entry first: the first time each day just go and climb the chains.
+  # The orb is only for when the game refuses ("you will have to wait another ..."), i.e. the one
+  # freebie of the day is already spent -- whether or not REIM INFO's premium line could be read.
   def self.enter(info)
     quest_running = !info[:time_left].nil?
-    if !quest_running
-      if @entered
-        return false                    # the run we started has ended
-      elsif !info[:premium_ready]
-        if arg?("noorb")
-          echo "no quest running and the premium entry is on cooldown (#{info[:premium_wait]}); 'noorb' given -- not spending an orb charge."
-          return false
-        end
-        echo "no quest running, premium entry on cooldown (#{info[:premium_wait]}): spending an orb charge."
-        unless hands_free_for_orb?
-          echo "both hands are full -- can't take the orb out of the boot. (Empty a hand and run ;fizzreim again.)"
-          return false
-        end
-        board_visit if tasks_on?
-        return false unless go2(approach_room) || room_id == approach_room
-        return false unless use_orb
-      else
-        echo "no quest running, premium entry ready: using it."
-        board_visit if tasks_on?
-      end
-    else
+    return false if !quest_running && @entered      # the run we started has ended
+
+    if quest_running
       echo "quest still running (#{info[:time_left]} left): going back in."
+    else
+      state = premium_state(info)
+      case state
+      when :ready
+        echo "no quest running, free daily entry ready: using it."
+      when :unknown
+        echo "no quest running; REIM INFO doesn't show the free daily entry's timer (#{info[:premium_wait].inspect}): trying the chains first, an orb only if they refuse."
+      else
+        echo "no quest running, free daily entry already used (#{info[:premium_wait]})."
+      end
+      if state == :cooldown
+        return false unless orb_ok?       # no point walking to the board if the orb can't be used
+        board_visit if tasks_on?
+        return orb_entry(false)           # no point trying the chains: the game already said wait
+      end
+      board_visit if tasks_on?
     end
 
     go2(approach_room) unless room_id == approach_room
     return false unless room_id == approach_room
     prepare
-    ok = climb_in
-    if ok
-      @entered = true
-      @stage_since = Time.now.to_f
-      echo "inside Reim."
-    end
-    ok
+    return entered! if climb_in
+    # refused although the quest isn't running: the free entry was already spent after all
+    return orb_entry(true) if !quest_running && @climb_refused
+    false
   end
 
   # --- helpers ---------------------------------------------------------------------
@@ -709,12 +752,12 @@ module FizzReim
     echo "room #{room_id} (#{title}); area: #{(s = stage_of(room_id)) ? stage_names[s] : '-'}"
     if info
       echo "time left: #{info[:time_left] || 'none (no quest running)'}; flagged to the #{info[:flag_text]} (area #{info[:flag].inspect})"
-      echo "premium entry: #{info[:premium_ready] ? 'ready' : info[:premium_wait]}; #{info[:kills]} kills, #{info[:scrip]} scrip this run"
+      echo "free daily entry: #{premium_state(info)} (#{info[:premium_wait].inspect}); #{info[:kills]} kills, #{info[:scrip]} scrip this run"
       ts = tasks_on? ? task_state : nil
       echo "task: #{ts ? "#{ts[:state]} (#{ts[:line]})" : (tasks_on? ? '?' : 'ignored (notask)')}; rest: #{uv_on?(:reim_rest) ? "inn #{rest_room} when mana < #{uv_int(:reim_rest_mana, 30)} or after a turn-in" : 'off'}; boosts: #{uv_on?(:reim_boost) ? 'on' : 'off'}; mind #{percentmind}%, mana #{Char.percent_mana}%"
       s = stage_of(room_id)
       if !in_reim?
-        echo(info[:time_left] ? "would: go back in (free)." : (info[:premium_ready] ? "would: start a new run on the premium entry." : "would: start a new run with one orb charge."))
+        echo(info[:time_left] ? "would: go back in (free)." : (premium_state(info) == :cooldown ? "would: start a new run with one orb charge (the free entry is used)." : "would: start a new run on the free daily entry (an orb only if the chains refuse)."))
       elsif s && info[:flag] && info[:flag] > s && s <= 4
         echo "would: go to room #{gates[s][0]} and #{gates[s][1]}."
       else
