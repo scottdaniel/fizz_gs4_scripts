@@ -21,20 +21,25 @@
 # Reim creature, which are all "ethereal ...", "ghostly ...", "celestial ...", "unworldly ..."
 # or a named rare.
 #
-# BOSSES GET PAIN FIRST. A rare spawn (Patrol Leader, Guard Captain, ... the Emperor: any creature
-# whose noun is in treim's boss list) is opened with Pain (711, 11 mana): by hand on 11/21 the
-# Guard Captain went down to about seven Pains (crits of 105 and 200) with 710 and 706 only finishing
-# it. The loop casts Pain at the rare, one cast after another, until it is dead, REIM_PAIN_MAX casts
-# have gone out at that one creature (default 10), or mana is down to a Pain plus 21 -- the cost of
-# ultima's Web, 710 and 706 -- so the finish is always affordable. After that, ultima takes over as
-# for any other creature (its mana recovery included). Knobs, read live:
-#   ;vars set reim_pain=off          no Pain opener (default on)
-#   ;vars set reim_pain_max=N        casts per rare (default 10)
+# BOSSES GET A CURSE, THEN PAIN AND MANA DISRUPTION. A rare spawn (Patrol Leader, Guard Captain, ... the
+# Emperor: any creature whose noun is in treim's boss list) is opened the way the Duskruin champions are in
+# Fizzleworth-duskattack: Curse (715, 15 mana) once, to push its TD down, then Pain (711, 11 mana) and Mana
+# Disruption (702, 2 mana) alternately, which keeps the mana bill down (by hand on 11/21 the Guard Captain
+# went down to about seven Pains with crits of 105 and 200, and the Foreign Dignitary to 8 Pains). The loop
+# casts at the rare one spell after another until it is dead, REIM_PAIN_MAX casts (the Curse counts) have gone
+# out at that one creature (default 16), or mana is down to the next spell plus 21 -- the cost of ultima's
+# Web, 710 and 706 -- so the finish is always affordable. If the spell whose turn it is can't be afforded
+# but the other can, the other is cast. After that, ultima takes over as for any other creature (its mana
+# recovery included). Knobs, read live:
+#   ;vars set reim_pain=off          no opener at all (default on)
+#   ;vars set reim_curse=off         skip the 715 (default on)
+#   ;vars set reim_pain_max=N        casts per rare (default 16)
 #   ;vars set reim_pain_reserve=N    mana kept back for ultima's finish (default 21)
-# A burst costs about 90 mana (the Dignitary took 8 Pains), and ultima only tops the pool off below
-# 45, so when a rare shows up and mana is under what a burst needs (7 Pains plus the reserve) this
-# refills first, the way ultima does: the demon's stored mana (once per hunt, the same
-# $demonmana_taken latch), `sacrifice mana` (1 shadow essence, if off cooldown), then Symbol of Mana.
+# A burst costs about 70 mana (the Curse, four Pains, four Disruptions), and ultima only tops the pool off
+# below 45, so when a rare shows up and mana is under that plus the reserve this refills first, the way
+# ultima does: the demon's stored mana (once per hunt, the same $demonmana_taken latch), `sacrifice mana`
+# (1 shadow essence, if off cooldown), then Symbol of Mana. `;Fizzleworth-attack-reim refill` runs just that
+# refill and exits (;fizzreim uses it before it decides it is out of mana).
 #
 # LOOT. Reim corpses only carry silver (about a third of the kills, 180-390 each; the Patrol Leader had
 # 387) and "ethereal hands" pull a corpse away within seconds, so as soon as the room is clear after a
@@ -84,11 +89,24 @@ module FizzReimAttack
     v.to_s =~ /\A\s*\d+\s*\z/ ? v.to_i : default
   end
 
-  def self.pain_cost
-    c = Spell[711].mana_cost.to_i
-    c.positive? ? c : 11
+  def self.spell_cost(num, default)
+    c = Spell[num].mana_cost.to_i
+    c.positive? ? c : default
   rescue StandardError
-    11
+    default
+  end
+
+  def self.pain_cost;  spell_cost(711, 11); end
+  def self.mdis_cost;  spell_cost(702, 2);  end
+  def self.curse_cost; spell_cost(715, 15); end
+
+  def self.cost_of(num)
+    { 711 => pain_cost, 702 => mdis_cost, 715 => curse_cost }.fetch(num)
+  end
+
+  # what a typical burst on one rare takes: the Curse, then four Pains and four Mana Disruptions
+  def self.burst_mana
+    curse_cost + 4 * pain_cost + 4 * mdis_cost
   end
 
   # ultima's recover_mana, for the moment a rare turns up with too little in the pool for a Pain burst.
@@ -140,31 +158,47 @@ module FizzReimAttack
     lines.join("\n")
   end
 
-  # Pain at the rare until it is dead, the per-creature cap is reached or the mana floor is hit.
-  # @pains[id] counts casts at each rare within one launch (run resets it: ids are only good for a login).
-  def self.pain_burst(boss)
-    @pains ||= Hash.new(0)
-    id = boss.id.to_i
-    cap = uv_int(:reim_pain_max, 10)
-    floor = pain_cost + uv_int(:reim_pain_reserve, 21)
-    while alive?(boss) && @pains[id] < cap && checkmana >= floor
+  # Curse once, then Pain and Mana Disruption in turns, at the rare until it is dead, the per-creature cap
+  # is reached or the mana floor is hit. @boss[id] counts the casts at each rare within one launch (run
+  # resets it: ids are only good for a login).
+  def self.boss_burst(boss)
+    @boss ||= {}
+    id      = boss.id.to_i
+    st      = (@boss[id] ||= { casts: 0, cursed: false, turn: 0 })
+    cap     = uv_int(:reim_pain_max, 16)
+    reserve = uv_int(:reim_pain_reserve, 21)
+    while alive?(boss) && st[:casts] < cap
       break unless in_reim?
       break if checkdead || $bigshot_flee
+
+      if !st[:cursed] && uv_on?(:reim_curse)
+        st[:cursed] = true                      # one try, whatever happens
+        next if checkmana < curse_cost + reserve
+        spell = 715
+      else
+        order = st[:turn].even? ? [711, 702] : [702, 711]
+        spell = order.find { |n| checkmana >= cost_of(n) + reserve }
+        if spell.nil?
+          st[:casts] = cap                      # not even a Mana Disruption: ultima takes over (and recovers mana)
+          break
+        end
+        st[:turn] += 1
+      end
+
       waitrt?
       waitcastrt?
       fput "target ##{id}" unless XMLData.current_target_id.to_i == id
-      text = cast_collect("incant 711")
-      @pains[id] += 1
+      text = cast_collect("incant #{spell}")
+      st[:casts] += 1
       if text =~ WOUNDED
         Script.run("eherbs", "--spellcast")
-        @pains[id] = cap
+        st[:casts] = cap
         break
       end
       break if text =~ /You have no|You can't cast|don't have a spell prepared/i
       waitcastrt?
       waitrt?
     end
-    @pains[id] = cap if checkmana < floor     # out of mana for it: hand over to ultima, don't come back
   end
 
   # ;eloot the corpses the fight left (it searches them and gathers the silver)
@@ -178,7 +212,7 @@ module FizzReimAttack
   end
 
   def self.run
-    @pains     = Hash.new(0)
+    @boss      = {}
     @refilled  = {}
     fought     = false
     started    = Time.now.to_f
@@ -205,14 +239,15 @@ module FizzReimAttack
 
       fought = true
       if uv_on?(:reim_pain) && (boss = hostiles.find { |t| boss?(t) })
-        @pains ||= Hash.new(0)
+        @boss ||= {}
         @refilled ||= {}
-        if checkmana < pain_cost * 7 + uv_int(:reim_pain_reserve, 21) && !@refilled[boss.id.to_i]
+        if checkmana < burst_mana + uv_int(:reim_pain_reserve, 21) && !@refilled[boss.id.to_i]
           @refilled[boss.id.to_i] = true       # one try per rare
           refill_mana
         end
-        if @pains[boss.id.to_i] < uv_int(:reim_pain_max, 10) && checkmana >= pain_cost + uv_int(:reim_pain_reserve, 21)
-          pain_burst(boss)
+        st = (@boss[boss.id.to_i] ||= { casts: 0, cursed: false, turn: 0 })
+        if st[:casts] < uv_int(:reim_pain_max, 16) && checkmana >= mdis_cost + uv_int(:reim_pain_reserve, 21)
+          boss_burst(boss)
           next
         end
       end
@@ -228,4 +263,9 @@ module FizzReimAttack
   end
 end
 
-FizzReimAttack.run
+# `;Fizzleworth-attack-reim refill`: just the mana refill, then exit (fizzreim calls this when mana is low)
+if Script.current.vars[1].to_s.downcase == "refill"
+  FizzReimAttack.refill_mana
+else
+  FizzReimAttack.run
+end

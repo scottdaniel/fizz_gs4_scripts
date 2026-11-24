@@ -5,6 +5,7 @@
 #
 #   ;fizzreim            go (see below)
 #   ;fizzreim noorb      same, but never spend an orb charge to get in
+#   ;fizzreim notask     same, but leave the Base Camp bounty board alone (no GET BOARD / TURN BOARD)
 #   ;fizzreim status     print REIM INFO in short, where you are, what it would do; change nothing
 #   ;fizzreim turnin     walk to the Base Camp tavern and TURN BOARD (hands in a finished task)
 #
@@ -35,11 +36,36 @@
 #  * Before a (re-)entry it runs ;Fizzleworth-prep here, then every 20 minutes while idle ;ewaggle.
 #    ;stand and ;ecleanse run alongside (a chain trap drops you for 10 s; ;stand gets you up).
 #
+#  * Full mind. When the mind is full (must rest or saturated) it tries `boost longterm`, then
+#    `boost absorb` once the longterm boosts run out, one boost per full mind (the same dance
+#    Fizzleworth-duskattack does, but with the replies from the August Duskruin logs: an empty
+#    absorb answers "You do not have any Instant Mind Clearers to redeem."). `;vars set
+#    reim_boost=off` turns it off.
+#  * Resting is kept to a minimum, because the quest is a two-hour clock. It only rests (a) after a
+#    Reim task has been handed in and (b) when it is out of mana, and then only until mana is full:
+#      - Tasks: the Base Camp bounty board gives "slay 35 creatures" / "hunt the Emperor". The line
+#        "[You have finished your task of culling within Reim!]" sets a flag (that is the 35-kill task's
+#        wording; the Emperor task's may differ, so REIM TASK is also polled every 3 minutes when the
+#        room is quiet: finished, or an active task turning into something unrecognised, sets the
+#        flag too, and the new wording is echoed so it lands in the log). The next time the room is
+#        quiet it walks out of Reim, TURN BOARDs, GET BOARDs the next task, and rests if mana isn't
+#        already full. If TURN BOARD says there is no finished task, no more trips for 20 minutes.
+#        A new run also visits the board first. `notask` skips all of it.
+#      - Mana: below 30 mana (`;vars set reim_rest_mana=N`) with the room quiet it first runs the
+#        attack script's refill (demon mana, sacrifice mana, Symbol of Mana); if mana is still under
+#        the floor it walks out and rests.
+#      - The rest is at the Thirsty Penguin Inn, Parlour (room 3428, a supernode; the resting_room_id
+#        of Picko's skel_troll.yaml; `;vars set reim_rest_room=N` changes it), 47 rooms from the
+#        approach. When mana is full it goes back in (a running quest is re-entered free: prep,
+#        chains, then the open gates). No rest trip is made with under 12 minutes of quest time left
+#        (a finished task is then handed in when the run ends). `;vars set reim_rest=off` = never.
+#
 # WHAT IT DOES NOT DO. The Throne Room fight (Emperor and Empress, unverified: the wiki says they
 # have an in-game ten-minute timer) is left to treim; once REIM INFO says the Treasury is open it
 # stops and tells you, and the vault, the exit and TURN BOARD are yours (;fizzreim turnin does the
 # last). Pitfall traps: the pit creature is fought by treim, then this script CLIMB ROPEs out
-# (unverified text). Quest energy (REIM BOOST) is not spent.
+# (unverified text). Quest energy (REIM BOOST) is not spent. The Emperor task's completion line is
+# assumed to read like the 35-kill one ("You have finished your task ...").
 #
 # SAFETY. Only moves between areas when nothing alive is in the room and the attack script is
 # not running. A new run is only started when no quest is running; once per invocation.
@@ -57,6 +83,29 @@ module FizzReim
   def self.tavern_room;    25173; end
   def self.throne_room;    25137; end
   def self.vault_entry;    25142; end
+
+  # Thirsty Penguin, Parlour (Icemule Trace), a supernode: the resting_room_id in Picko's skel_troll.yaml
+  def self.rest_room
+    v = UserVars.reim_rest_room
+    v.to_s =~ /\A\s*\d+\s*\z/ ? v.to_i : 3428
+  end
+  def self.min_trip_minutes; 12; end   # no rest trip with less quest time than this left
+
+  def self.uv_on?(name)
+    v = UserVars.send(name)
+    return true if v.nil?
+    return v if v == true || v == false
+    v.to_s !~ /\A\s*(?:0|false|off|no)\s*\z/i
+  end
+
+  def self.uv_int(name, default)
+    v = UserVars.send(name)
+    v.to_s =~ /\A\s*\d+\s*\z/ ? v.to_i : default
+  end
+
+  def self.arg?(word)
+    (Script.current.vars[1..-1] || []).any? { |a| a.to_s.downcase == word }
+  end
 
   # Room ids per area, from treim's lists (Treim::Geography), index = area number.
   def self.stage_rooms
@@ -104,6 +153,15 @@ module FizzReim
     @stage         = nil
     @was_busy      = false
     @started_here  = []             # helper scripts this run started (killed again at the end)
+    @task_done     = false          # the game said a Reim task is finished and not yet handed in
+    @task_prev     = nil            # REIM TASK state at the last poll
+    @last_task_poll = 0.0
+    @task_quiet_until = 0.0
+    @trip_blocked_until = 0.0
+    @refill_at     = 0.0
+    @boosted       = false          # a boost has been used for this full mind
+    @no_lte        = false          # out of longterm boosts
+    @no_absorb     = false          # out of absorb boosts
     @told          = {}
   end
 
@@ -254,15 +312,21 @@ module FizzReim
       if @entered
         return false                    # the run we started has ended
       elsif !info[:premium_ready]
-        if (Script.current.vars[1..-1] || []).any? { |a| a.to_s.downcase == "noorb" }
+        if arg?("noorb")
           echo "no quest running and the premium entry is on cooldown (#{info[:premium_wait]}); 'noorb' given -- not spending an orb charge."
           return false
         end
         echo "no quest running, premium entry on cooldown (#{info[:premium_wait]}): spending an orb charge."
+        unless hands_free_for_orb?
+          echo "both hands are full -- can't take the orb out of the boot. (Empty a hand and run ;fizzreim again.)"
+          return false
+        end
+        board_visit if tasks_on?
         return false unless go2(approach_room) || room_id == approach_room
         return false unless use_orb
       else
         echo "no quest running, premium entry ready: using it."
+        board_visit if tasks_on?
       end
     else
       echo "quest still running (#{info[:time_left]} left): going back in."
@@ -295,9 +359,249 @@ module FizzReim
     @started_here << "treim"
   end
 
-  def self.cleanup
+  def self.stop_helpers
     (@started_here || []).each { |n| Script.kill(n) if Script.running?(n) }
+    @started_here = []
     Script.kill(attack_name) if Script.running?(attack_name)
+  end
+
+  def self.cleanup
+    stop_helpers
+    DownstreamHook.remove("fizzreim") rescue nil
+  end
+
+  # --- full mind: boosts -----------------------------------------------------------------------------
+
+  def self.mind_full?
+    r = checkmind(7)          # must rest or saturated
+    r.nil? ? percentmind.to_i >= 90 : r
+  rescue StandardError
+    false
+  end
+
+  # Replies, from the August Duskruin logs (Warlock, Prime_Fizzleworth):
+  #   boost longterm: "[You have deducted 500 experience points from your field experience and have added
+  #                    250 experience points to your Long-Term experience pool!]"
+  #                   or "You do not have any Long-Term Experience Boosts to redeem."
+  #   boost absorb:   "[You have instantly absorbed 1000 experience points!]"
+  #                   or "You do not have any Instant Mind Clearers to redeem."
+  #   either, in roundtime: "...wait 2 seconds."
+  # (Fizzleworth-duskattack's "no boosts left" pattern, /Boosts to redeem/, never matches the absorb
+  # failure, so there an empty absorb looks like a success.)
+  def self.boost_try(cmd, ok, none)
+    3.times do
+      waitrt?
+      r = dothistimeout(cmd, 5, Regexp.union(ok, none, /\.\.\.wait \d+ seconds?/i)).to_s
+      return :ok   if r =~ ok
+      return :none if r =~ none
+      sleep 1.2
+    end
+    :unknown
+  end
+
+  # `boost longterm` first, then `boost absorb` once those run out, one boost per full mind (as
+  # Fizzleworth-duskattack does).
+  def self.boost_mind
+    return unless uv_on?(:reim_boost)
+    unless mind_full?
+      @boosted = false
+      return
+    end
+    return if @boosted
+    unless @no_lte
+      case boost_try("boost longterm", /added \d+ experience points to your Long-Term experience pool/i, /You do not have any Long-Term Experience Boosts to redeem/i)
+      when :ok
+        @boosted = true
+        echo "mind is full: boost longterm used."
+        return
+      when :none
+        @no_lte = true
+        echo "no longterm boosts left."
+      else
+        echo "boost longterm: no answer I know (not trying again for this full mind)."
+        @boosted = true
+        return
+      end
+    end
+    unless @no_absorb
+      case boost_try("boost absorb", /You have instantly absorbed \d+ experience points/i, /You do not have any Instant Mind Clearers to redeem/i)
+      when :ok
+        @boosted = true
+        echo "mind is full: boost absorb used."
+        return
+      when :none
+        @no_absorb = true
+        echo "no absorb boosts (instant mind clearers) left."
+      else
+        echo "boost absorb: no answer I know (not trying again for this full mind)."
+      end
+    end
+    @boosted = true           # nothing to use: don't ask again until the mind clears
+  end
+
+  # --- tasks and rest trips ----------------------------------------------------------------------------
+
+  def self.tasks_on?; !arg?("notask"); end
+
+  # From REIM TASK: {state: :finished/:active/:none/:unknown, line: the status line, finished:, none:}, or nil.
+  # Verified wording: "You have finished your task of slaying 35 creatures within Reim.",
+  # "You were tasked with: Hunting down the Emperor of Reim.", "You do not currently have a task from the
+  # Reim Base Camp." The Emperor task's FINISHED wording is not known yet, so anything that is neither
+  # active nor none is :unknown (and the poll treats active -> unknown as "done").
+  def self.task_state
+    waitrt?
+    lines = Lich::Util.issue_command("reim task", /\S/, /New Task Eligibility/, usexml: false, silent: true, quiet: true, timeout: 8)
+    lines = Array(lines).map { |l| l.to_s.strip }.reject(&:empty?)
+    return nil if lines.empty?
+    text  = lines.join("\n")
+    state = if text =~ /You have finished your task|You have completed your task/i then :finished
+            elsif text =~ /do not currently have a task/i then :none
+            elsif text =~ /You (?:were|are) tasked with|still (?:need|have) to slay/i then :active
+            else :unknown
+            end
+    header = /\A(?:REIM TASK|Reim tasks are|Completing tasks|You can (?:get|turn)|Current Task|New Task Eligibility|Total Bounties|\{|ABANDON)/i
+    line   = lines.reject { |l| l =~ header }.join(' | ')[0, 160]
+    { state: state, line: line, finished: state == :finished, none: state == :none }
+  rescue StandardError => e
+    echo "task_state: #{e.class} #{e.message}"
+    nil
+  end
+
+  # Every few minutes with the room quiet: REIM TASK again, as a backstop for a completion line the hook
+  # doesn't know (the Emperor's). Logs the status line whenever it changes, so the real wording ends up
+  # in the log.
+  def self.task_poll(now)
+    return unless tasks_on?
+    return if now - @last_task_poll < 180
+    @last_task_poll = now
+    ts = task_state
+    return unless ts
+    if ts[:state] != @task_prev
+      echo "REIM TASK is now #{ts[:state]}: #{ts[:line]}"
+    end
+    if ts[:state] == :finished || (@task_prev == :active && ts[:state] == :unknown)
+      @task_done = true unless now < @task_quiet_until
+    end
+    @task_prev = ts[:state]
+  end
+
+  def self.turn_board
+    r = dothistimeout("turn board", 6, /Good work|do not have a finished task/i).to_s
+    @task_done = false if r =~ /Good work|do not have a finished task/i
+    # "no finished task" after we thought there was one: the poll misread something. Don't let it
+    # send us out again for a while.
+    @task_quiet_until = Time.now.to_f + 20 * 60 if r =~ /do not have a finished task/i
+    echo "TURN BOARD: #{r.strip[0, 100]}"
+  end
+
+  def self.get_board
+    r = dothistimeout("get board", 6, /You were tasked with|already have a task|eligib|cannot|can't/i).to_s
+    echo "GET BOARD: #{r.strip[0, 120]}"
+  end
+
+  # at the tavern's bounty board: hand in a finished task (or one whose wording we don't know: TURN BOARD
+  # is the judge), then take the next one if there is none. force: go and try TURN BOARD whatever
+  # REIM TASK said (a task-triggered trip).
+  def self.board_visit(force: false)
+    ts = task_state
+    return unless ts || force
+    return unless force || ts[:state] != :active
+    go2(tavern_room) unless room_id == tavern_room
+    return unless room_id == tavern_room
+    turn_board if force || !ts[:none]
+    get_board
+  end
+
+  # the run is over: hand in a finished task, and nothing else
+  def self.hand_in_finished_task
+    return unless tasks_on?
+    ts = task_state
+    return unless ts && ts[:finished]
+    go2(tavern_room)
+    turn_board if room_id == tavern_room
+  end
+
+  def self.minutes_left(text)
+    t = text.to_s
+    t[/(\d+)\s*hours?/i, 1].to_i * 60 + t[/(\d+)\s*minutes?/i, 1].to_i
+  end
+
+  def self.mana_full?; Char.percent_mana >= 99; end
+  def self.low_mana?;  checkmana < uv_int(:reim_rest_mana, 30); end
+
+  # Called with the room quiet. true if a trip was made (the caller stops this step).
+  def self.trip_check(now)
+    return false unless uv_on?(:reim_rest)
+    return false if now < @trip_blocked_until
+    reason = (:turnin if @task_done && tasks_on?)
+    if reason.nil? && low_mana?
+      if now - @refill_at >= 60
+        @refill_at = now
+        Script.run("Fizzleworth-attack-reim", "refill") if Script.exists?("Fizzleworth-attack-reim")
+      end
+      reason = :mana if low_mana?
+    end
+    return false unless reason
+    info = reim_info
+    return false unless info && info[:time_left]
+    left = minutes_left(info[:time_left])
+    if left < min_trip_minutes
+      said_once(:short_trip, "#{left} min of quest time left: not worth a rest trip (#{reason}); a finished task is handed in when the run ends.")
+      @trip_blocked_until = now + 300
+      return false
+    end
+    trip(reason, left)
+    true
+  end
+
+  # out of Reim, optionally the board, then the inn until mana is full. The main loop takes it from
+  # there: not in Reim and the quest still running -> walk back, prep, climb, then the open gates.
+  def self.trip(reason, left)
+    echo "leaving Reim for a rest trip (#{reason == :turnin ? 'a task is finished' : 'out of mana'}; #{left} min of quest time left)."
+    3.times do
+      go2(approach_room)
+      break unless in_reim?
+    end
+    if in_reim?
+      echo "couldn't walk out of Reim -- no rest trip for 5 minutes."
+      @trip_blocked_until = Time.now.to_f + 300
+      return
+    end
+    stop_helpers
+    if reason == :turnin && tasks_on?
+      board_visit(force: true)
+      @task_done = false                  # whatever TURN BOARD said, the trip is the answer
+    end
+    @trip_blocked_until = Time.now.to_f + 180   # never two trips back to back
+    if mana_full?
+      echo "mana is already full: no rest needed."
+    else
+      rest_at_inn
+    end
+    @last_flag = 0.0
+  end
+
+  # the Thirsty Penguin parlour (a supernode) until mana is full
+  def self.rest_at_inn
+    room = rest_room
+    2.times do
+      go2(room)
+      break if room_id == room
+    end
+    echo(room_id == room ? "resting at the inn (room #{room}) until mana is full (now #{Char.percent_mana}%)." :
+                           "couldn't reach the inn (room #{room}); resting where I am (#{title}).")
+    started = Time.now.to_f
+    last_say = started
+    until mana_full?
+      break if checkdead
+      break if Time.now.to_f - started > 25 * 60
+      sleep 5
+      if Time.now.to_f - last_say >= 60
+        last_say = Time.now.to_f
+        echo "resting: mana #{Char.percent_mana}%."
+      end
+    end
+    echo "done resting after #{((Time.now.to_f - started) / 60.0).round(1)} min (mana #{Char.percent_mana}%)."
   end
 
   # --- one step inside Reim ---------------------------------------------------------
@@ -307,6 +611,7 @@ module FizzReim
     @entered = true          # we have been in Reim during this run: never start a second one
     start_treim
     %w[stand ecleanse].each { |n| start_helper(n) }
+    boost_mind
 
     if in_pit?
       climb_out_of_pit
@@ -322,6 +627,9 @@ module FizzReim
     # quiet. A fight just ended -> look at the flag now, else every flag_every seconds.
     due = @was_busy || now - @last_flag >= flag_every
     @was_busy = false
+
+    task_poll(now)
+    return if trip_check(now)
 
     if now - @last_waggle >= waggle_every
       @last_waggle = now
@@ -402,6 +710,8 @@ module FizzReim
     if info
       echo "time left: #{info[:time_left] || 'none (no quest running)'}; flagged to the #{info[:flag_text]} (area #{info[:flag].inspect})"
       echo "premium entry: #{info[:premium_ready] ? 'ready' : info[:premium_wait]}; #{info[:kills]} kills, #{info[:scrip]} scrip this run"
+      ts = tasks_on? ? task_state : nil
+      echo "task: #{ts ? "#{ts[:state]} (#{ts[:line]})" : (tasks_on? ? '?' : 'ignored (notask)')}; rest: #{uv_on?(:reim_rest) ? "inn #{rest_room} when mana < #{uv_int(:reim_rest_mana, 30)} or after a turn-in" : 'off'}; boosts: #{uv_on?(:reim_boost) ? 'on' : 'off'}; mind #{percentmind}%, mana #{Char.percent_mana}%"
       s = stage_of(room_id)
       if !in_reim?
         echo(info[:time_left] ? "would: go back in (free)." : (info[:premium_ready] ? "would: start a new run on the premium entry." : "would: start a new run with one orb charge."))
@@ -417,8 +727,7 @@ module FizzReim
 
   def self.turn_in
     go2(tavern_room)
-    r = dothistimeout("turn board", 6, /Good work|do not have a finished task|You reach for the board/i).to_s
-    echo "TURN BOARD: #{r.strip[0, 100]}"
+    turn_board if room_id == tavern_room
   end
 
   def self.run
@@ -428,7 +737,17 @@ module FizzReim
     return turn_in if mode == "turnin"
 
     before_dying { cleanup }
+    DownstreamHook.add("fizzreim", proc { |line|
+      @task_done = true if line =~ /You have (?:finished|completed) your task/i
+      line
+    })
     echo "fizzreim: starting (#{title})."
+    if tasks_on?
+      ts = task_state
+      @task_prev = ts[:state] if ts
+      @task_done = true if ts && ts[:finished]
+      board_visit if !in_reim? && @task_done      # outside already: hand it in before going in
+    end
 
     loop do
       break if @done
@@ -446,7 +765,8 @@ module FizzReim
         end
         unless enter(info)
           if @entered
-            echo "the run has ended (REIM INFO shows no quest time). #{info[:kills]} kills, #{info[:scrip]} scrip. ;fizzreim turnin hands in a finished task."
+            echo "the run has ended (REIM INFO shows no quest time). #{info[:kills]} kills, #{info[:scrip]} scrip."
+            hand_in_finished_task
           else
             echo "not entering Reim (the reason is above)."
           end
