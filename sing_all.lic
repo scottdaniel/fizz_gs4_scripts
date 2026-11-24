@@ -1,0 +1,564 @@
+# sing_all.lic
+=begin
+      author: Fizzlestiks
+        name: sing_all
+        game: gemstone
+        tags: bard, loresing, loresong, recall, unlock
+    requires: loresing.lic
+     version: 1.1.0
+        note: Written with assistance from Claude (Anthropic).
+
+  Runs ;loresing all <item> on everything in a container until RECALL says each item's
+  loresong is unlocked.
+
+  Usage:
+    ;sing_all mantle           a container you're wearing or holding
+    ;sing_all linen.mantle     adjective.noun, like the game
+
+  First it kills song-manager and STOPs every song, so no renewal comes due while the
+  loresinging is using the mana. song-manager stays off afterwards (Fizzlestiks-prep starts
+  it again, or ;song-manager).
+
+  Then, for each item in the container:
+    - RECALL it. Already unlocked? Its stats print and it goes back, no singing.
+    - ;loresing all <noun>, killed as soon as a verse fails.
+    - From there it carries on at the verse that failed, with two couplets that have no
+      keyword in them (loresing.lic's own "magic" one and another), taking turns. A song
+      with no keyword sings the verse after the last one that worked, and a failure doesn't
+      move the place, so nothing is sung twice. Singing the same thing twice running only
+      "resonates with what you previously learned", which is why they alternate.
+    - RECALL again once all four verses are in (or the song has come to its end). The stats
+      mean it's unlocked. "You must reveal the entire loresong" starts ;loresing all over.
+      Not in between: whether RECALL forgets the verses learned so far isn't on record.
+    - Back in the container, and on to the next. After max_verses verses it gives up on that
+      item and says so in the summary.
+
+  The item is sung to from the right hand, because LORESING goes by the right hand: on 11/08
+  with the mantle in the right hand every verse "failed to resonate" with the mantle. A
+  container in the right hand is swapped to the left, and anything else in the right hand is
+  put away and brought back at the end. playsongs is stopped (the drum takes both hands).
+
+  1.1.0: carries on at the failed verse instead of starting ;loresing all over.
+
+  Game text this relies on, all from Fizzlestiks' logs unless noted:
+    failed verse  "As you sing, you feel that the X has more to share, but your song simply
+                   wasn't powerful enough to glean more."  (no roundtime)
+    wrong noun    "As you sing, you feel a faint stirring in your X that fades, as if your
+                   song had somehow failed to resonate with it properly."
+    no mana       "Your song is weak, and without sufficient power to affect the X."
+                  (gswiki Loresinging; not in the logs. Harmless, but the verse is wasted.)
+    not a failure "Your music surrounds the X, but it simply resonates with what you
+                   previously learned." / "You feel that you have reached the end of the
+                   X's song."  (no harm done; the end means start over or it's unlocked)
+    verse worked  "As you sing, you feel a faint resonating vibration from the X in your
+                   hand..." and a "Roundtime: 7 sec."
+    still locked  "You must reveal the entire loresong of the X before you can unlock it."
+    unlocked      "As you recall your song, ..." / "As you recall Vonaq's song, ..." and at the
+                   end "It has a permanently unlocked loresong by you."
+                  ("temporarily unlocked loresong by a bard for 17 days" isn't enough: those
+                   are sung to. Only seen on other characters' items so far.)
+    STOP SINGING  "But you are not singing any spellsongs." / "You allow the lingering
+                   effects of your songs to fade."  (STOP SING just gets "Stop what?")
+=end
+
+module SingAll
+  VERSION = '1.1.0'
+
+  # ---- the knobs (methods, so an edit takes effect on the next run)
+  # The most verses to sing to one item, and the most times to start ;loresing all on it.
+  # 10/27-11/19 a verse worked about two times in three (121 of 183 sung).
+  def self.max_verses
+    60
+  end
+
+  def self.max_passes
+    8
+  end
+
+  # Two couplets with no keyword (value, weight, purpose, skill, enhance, spell, ability),
+  # rhymed by spelling. The first is loresing.lic's magic verse.
+  def self.plain_songs
+    ['it will be helpful for me to know,;What magic within will you now show?',
+     'that I hold in my hand,;Sing to me the finest song in the land']
+  end
+
+  # Don't sing a verse with less mana than this, and once it's that low (or the game says the
+  # song has no power) rest until half. What a verse costs isn't on record; the two long
+  # sessions (11/08, 11/16) work out to very roughly 2-4 mana each.
+  def self.mana_floor
+    20
+  end
+
+  def self.mana_resume
+    [maxmana.to_i / 2, mana_floor].max
+  end
+
+  # ---- game text (see the header)
+  WEAK       = /your song simply wasn't powerful enough to glean more/
+  NO_POWER   = /^Your song is weak, and without sufficient power/
+  WRONG_NOUN = /failed to resonate with it properly/
+  UNLOCKED   = /^Its loresong has been permanently unlocked by you/
+  VERSE_OK    = /^As you sing, you feel a faint resonating vibration from the /
+  PREVIOUSLY  = /simply resonates with what you previously learned/
+  END_OF_SONG = /^You feel that you have reached the end of the .+ song/
+  NOTHING_NEW = /^You learn nothing new about/ # gswiki; not in the logs
+  VERSE_DONE  = Regexp.union(WEAK, NO_POWER, WRONG_NOUN, PREVIOUSLY, NOTHING_NEW, /^Roundtime: \d+ sec/)
+  # which of loresing.lic's four verses the game just echoed
+  SUNG = {
+    value: /What might be your own value/, purpose: /your purpose is what I would most like/,
+    plain: /What magic within will you now show/, ability: /What special ability to you hold inside/
+  }
+
+  STILL_LOCKED = /^You must reveal the entire loresong/
+  RECALLED     = /^As you recall (?<who>.+?) song, you feel a faint resonating vibration/
+  RECALL_END   = /^It has a .*unlocked loresong by/
+  TEMPORARY    = /^It has a temporarily unlocked loresong/
+  NOT_HELD     = /^You must be holding .+ before you can unlock its loresong/
+  RECALL_DONE  = Regexp.union(STILL_LOCKED, RECALL_END, NOT_HELD, /^Recall what|^I could not find|^What were you referring to/)
+
+  STOP_DONE        = /^You stop singing|^But you are not singing|^You allow the lingering effects|^You are not singing|^Stop what/
+  SONG_STATUS_DONE = /Your current renewal cost is \d+ mana\.|You are not singing any songs\./
+  SONG_LINE        = /^\s+\((10\d\d)\) /
+
+  CLOSED    = /^(?:That|The .+) is closed/
+  LOOK_DONE = Regexp.union(/^Total items|^There is nothing in|^In the .+? you see|^I could not find|^What were you referring to/, CLOSED)
+  GET_DONE  = /^You (?:remove|get|grab|pull|take|pick up|retrieve|already have)|^Get what|^I could not find|^What were you referring to|^You need a free hand|^You can't/
+  PUT_DONE  = /^You (?:put|place|slip|tuck|add|drop)|^I could not find|^What were you referring to|won't fit|^That is closed|too (?:full|heavy|large)/
+  SWAP_DONE = /^You swap|^You have nothing to swap/
+
+  # ---------------------------------------------------------------- small stuff
+  def self.msg(text)
+    respond "[sing_all] #{text}"
+  end
+
+  def self.bold(text)
+    _respond "<pushBold/>[sing_all] #{text}<popBold/>"
+  end
+
+  def self.wait_for(seconds)
+    end_time = Time.now + seconds
+    until yield
+      return false if Time.now > end_time
+      sleep 0.2
+    end
+    true
+  end
+
+  # put, not fput (fput can take an unrelated line for the reply; see fizzpure). Reads until
+  # `done`, or, once a line matching `settle` has been seen, until a second goes by quietly.
+  def self.collect(action, done, timeout: 5, settle: nil)
+    lines = []
+    Script.current.clear
+    put action
+    end_time = Time.now + timeout
+    last_line = Time.now
+    loop do
+      line = get?
+      if line
+        lines << line
+        last_line = Time.now
+        if line =~ /^(?:\.\.\.w|W)ait ([0-9]+) sec/
+          sleep [Regexp.last_match(1).to_i - 0.5, 0.3].max
+          put action
+          end_time = Time.now + timeout
+          next
+        end
+        break if line =~ done
+      else
+        break if settle && Time.now - last_line > 1.0 && lines.any? { |l| l =~ settle }
+        sleep 0.1
+      end
+      break if Time.now > end_time
+    end
+    lines
+  end
+
+  def self.right_id
+    GameObj.right_hand.id&.to_s
+  end
+
+  def self.left_id
+    GameObj.left_hand.id&.to_s
+  end
+
+  # ---------------------------------------------------------------- the container
+  # "linen.mantle", "linen mantle", "my mantle", "mantle": the last word is the noun and every
+  # other word starts a word of the name (same as orb_check / fizzpure)
+  def self.matches?(obj, name)
+    words = name.to_s.strip.sub(/\Amy\s+/i, '').split(/[\s.]+/)
+    return false if words.empty? || obj.nil? || obj.id.nil?
+
+    obj.noun.to_s.casecmp?(words.last) && words[0..-2].all? { |word| obj.full_name.to_s =~ /\b#{Regexp.escape(word)}/i }
+  end
+
+  # hands first, then worn
+  def self.find_container(name)
+    [GameObj.right_hand, GameObj.left_hand, *Array(GameObj.inv)].find { |obj| matches?(obj, name) }
+  end
+
+  # a fresh LOOK IN, so the IDs are live. Opens it if it's closed.
+  def self.look_in(container)
+    waitrt?
+    lines = collect("look in ##{container.id}", LOOK_DONE)
+    if lines.any? { |line| line =~ CLOSED }
+      fput "open ##{container.id}"
+      collect("look in ##{container.id}", LOOK_DONE)
+    end
+    sleep 0.3
+    Array(container.contents)
+  end
+
+  # ---------------------------------------------------------------- songs and hands
+  def self.stop_script(name)
+    return false unless Script.running?(name)
+
+    Script.kill(name)
+    wait_for(10) { !Script.running?(name) }
+    true
+  end
+
+  def self.song_status
+    text = collect('song status', SONG_STATUS_DONE, timeout: 4).join("\n")
+    text.lines.map { |line| line[SONG_LINE, 1] }.compact.uniq
+  end
+
+  # song-manager first, or it sings them again
+  def self.quiet_songs
+    # a fizzpure_songs wait still pending would start song-manager again mid-run
+    $fizzpure_songs_token = $fizzpure_songs_token.to_i + 1
+    killed = stop_script('song-manager')
+    waitrt?
+    waitcastrt?
+    collect('stop singing', STOP_DONE, timeout: 3)
+    song_status.each { |num|
+      waitrt?
+      waitcastrt?
+      collect("stop #{num}", STOP_DONE, timeout: 3)
+    }
+    left = song_status
+    msg "#{killed ? 'Killed song-manager and stopped' : 'Stopped'} your songs." if left.empty?
+    bold "Still singing #{left.join(', ')}, so its renewal can still come due." unless left.empty?
+  end
+
+  # right hand free for the items; the container, if it's held, in the left
+  def self.free_right_hand
+    if right_id && right_id == @container.id.to_s
+      collect('swap', SWAP_DONE, timeout: 3)
+      wait_for(2) { left_id == @container.id.to_s }
+    end
+    return true if right_id.nil?
+
+    empty_right_hand
+    @emptied_right = true
+    wait_for(3) { right_id.nil? }
+  end
+
+  # ---------------------------------------------------------------- moving items
+  def self.hold(item)
+    waitrt?
+    collect("get ##{item.id}", GET_DONE, timeout: 4)
+    wait_for(2) { [right_id, left_id].include?(item.id.to_s) }
+    collect('swap', SWAP_DONE, timeout: 3) if left_id == item.id.to_s
+    wait_for(2) { right_id == item.id.to_s }
+  end
+
+  # whatever's in the right hand goes back in the container
+  def self.put_back
+    2.times do
+      return true if right_id.nil?
+
+      waitrt?
+      collect("put ##{right_id} in ##{@container.id}", PUT_DONE, timeout: 4)
+      return true if wait_for(2) { right_id.nil? }
+    end
+    false
+  end
+
+  # ---------------------------------------------------------------- RECALL
+  # :unlocked (for good), :locked, :not_held or :unknown. A bard's RECALL is also what unlocks
+  # it once every verse is known; it has no roundtime and costs nothing.
+  def self.recall(item)
+    waitrt?
+    lines = collect("recall ##{item.id}", RECALL_DONE, settle: RECALLED)
+    text = lines.join("\n")
+    if (who = text[RECALLED, :who])
+      @owner = who == 'your' ? 'by you' : "by #{who.sub(/'s\z/, '')}"
+      return text =~ TEMPORARY ? :locked : :unlocked
+    end
+    return :locked if text =~ STILL_LOCKED
+    return :not_held if text =~ NOT_HELD
+
+    msg "Didn't recognize the reply to RECALL. The game said:"
+    lines.last(4).each { |line| respond "    #{line}" }
+    :unknown
+  end
+
+  # ---------------------------------------------------------------- loresinging
+  def self.rest_for_mana(force = false)
+    return if checkmana >= mana_floor && !force
+    return if checkmana >= mana_resume
+
+    msg "Resting until #{mana_resume} mana (you have #{checkmana})."
+    sleep 2 until checkmana >= mana_resume || dead?
+  end
+
+  # loresing.lic speaks bard at the start and common at the end; killed early it leaves him
+  # in Guildspeak, which is where the next verse wants him. finish/cleanup put it right.
+  def self.kill_loresing
+    @guildspeak = true if stop_script('loresing')
+  end
+
+  def self.speak(language)
+    return if @guildspeak == (language == 'bard')
+
+    fput "speak #{language}"
+    @guildspeak = (language == 'bard')
+  end
+
+  # the verse after the last one that worked, for a song with no keyword
+  def self.learned(kind)
+    verse = { value: 1, purpose: 2, ability: 4 }[kind] || @place + 1
+    @known |= [verse] if verse <= 4
+    @place = [verse, 4].min
+  end
+
+  def self.all_known?
+    (@known & [1, 2, 3, 4]).size == 4
+  end
+
+  # One run of ;loresing all. Returns :weak, :no_power or :wrong_noun if it was killed for
+  # that, :unlocked if the game said so, :complete if that was the last verse needed, :done if
+  # it sang all the way through.
+  def self.loresing_pass(item)
+    waitrt?
+    waitcastrt?
+    Script.current.clear
+    @guildspeak = false # loresing.lic sees to the language itself, unless it's killed
+    unless Script.start('loresing', "all #{item.noun}")
+      @stop_reason = "couldn't start loresing.lic"
+      return :no_script
+    end
+
+    end_time = Time.now + 120
+    exited_at = nil
+    kind = nil
+    loop do
+      line = get?
+      result =
+        case line
+        when WEAK       then :weak
+        when NO_POWER   then :no_power
+        when WRONG_NOUN then :wrong_noun
+        when UNLOCKED   then :unlocked
+        when VERSE_OK   then :ok
+        end
+      kind = SUNG.key(SUNG.values.find { |words| line =~ words }) || kind if line
+      @verses += 1 if result && result != :unlocked
+      if result == :ok
+        learned(kind) if kind
+        # its last verse is ability, and then it's done by itself
+        result = all_known? && kind != :ability ? :complete : nil
+      end
+      if result
+        kill_loresing
+        return result
+      end
+      next if line
+
+      # the reply to the last verse can land after loresing.lic has already exited
+      exited_at ||= Time.now unless Script.running?('loresing')
+      return :done if exited_at && Time.now - exited_at > 1.5
+      if Time.now > end_time
+        kill_loresing
+        return :done
+      end
+      sleep 0.1
+    end
+  end
+
+  # One verse with no keyword: :ok, :weak, :no_power, :wrong_noun, :unlocked, :end, or
+  # :nothing (previously learned, or no reply)
+  def self.sing_verse(item, words)
+    waitrt?
+    waitcastrt?
+    lines = collect("loresing #{item.noun} #{words}", VERSE_DONE, timeout: 6, settle: Regexp.union(VERSE_OK, END_OF_SONG))
+    @verses += 1
+    text = lines.join("\n")
+    return :wrong_noun if text =~ WRONG_NOUN
+    return :no_power   if text =~ NO_POWER
+    return :weak       if text =~ WEAK
+    return :end        if text =~ END_OF_SONG || text =~ NOTHING_NEW
+    return :nothing    unless text =~ VERSE_OK
+
+    learned(:plain)
+    text =~ UNLOCKED ? :unlocked : :ok
+  end
+
+  # Carry on at the verse that failed, until all four are in or the song is at its end.
+  # Returns :complete, :end, :capped, :wrong_noun, or :gone (dead, or it left the hand).
+  def self.resume(item, result)
+    msg "#{item.name}: verse #{[@place + 1, 4].min} failed, carrying on from there."
+    # killed on its last verse, it may have got as far as "speak common"
+    @guildspeak = false
+    # loresing.lic may have just sung the first of the two, so start with the second
+    turn = 1
+    loop do
+      return :capped if @verses >= max_verses
+      return :gone unless ready?(item, result == :no_power)
+
+      speak 'bard'
+      result = sing_verse(item, plain_songs[turn % plain_songs.size])
+      turn += 1
+      case result
+      when :unlocked         then return :complete
+      when :end, :wrong_noun then return result
+      when :ok               then return :complete if all_known? || @place == 4
+      else sleep 1 # a failed verse has no roundtime
+      end
+    end
+  end
+
+  # mana, no song-manager (a prep script or go4invoker may have started it again), and the
+  # item still in hand
+  def self.ready?(item, out_of_power = false)
+    quiet_songs if Script.running?('song-manager')
+    rest_for_mana(out_of_power)
+    !dead? && right_id == item.id.to_s
+  end
+
+  # ---------------------------------------------------------------- one item
+  # returns false when the whole run should stop
+  def self.sing_to(item)
+    unless hold(item)
+      @skipped << "#{item.name} (couldn't pick it up)"
+      return true
+    end
+
+    case recall(item)
+    when :unlocked
+      @already << "#{item.name} (#{@owner})"
+      return finish(item)
+    when :not_held
+      @skipped << "#{item.name} (not in your hand)"
+      return finish(item)
+    end
+
+    @known  = []
+    @place  = 0
+    @verses = 0
+    mana = checkmana
+    passes = 0
+    while passes < max_passes && @verses < max_verses
+      passes += 1
+      result = ready?(item) ? loresing_pass(item) : :gone
+      result = resume(item, result) if %i[weak no_power].include?(result)
+      case result
+      when :no_script
+        finish(item)
+        return false
+      when :wrong_noun
+        @skipped << "#{item.name} (the song doesn't reach it as \"#{item.noun}\")"
+        return finish(item)
+      when :gone
+        return false if dead?
+
+        @skipped << "#{item.name} (it left your hand)"
+        return true
+      end
+
+      if recall(item) == :unlocked
+        msg "#{item.name}: UNLOCKED after #{count(@verses)}, mana #{mana} -> #{checkmana}."
+        @unlocked << "#{item.name} (#{count(@verses)})"
+        return finish(item)
+      end
+      msg "#{item.name}: still locked after #{count(@verses)}, mana #{mana} -> #{checkmana}."
+    end
+
+    @failed << "#{item.name} (#{count(@verses)})"
+    finish(item)
+  end
+
+  def self.count(verses)
+    "#{verses} #{verses == 1 ? 'verse' : 'verses'}"
+  end
+
+  def self.finish(item)
+    speak 'common'
+    return true if put_back
+
+    @stop_reason = "#{item.name} wouldn't go back in the #{@container.name}; it's in your hand"
+    false
+  end
+
+  # ---------------------------------------------------------------- the run
+  def self.main
+    # Lich keeps this module and its @variables between runs
+    instance_variables.each { |var| remove_instance_variable(var) }
+    @already  = []
+    @unlocked = []
+    @failed   = []
+    @skipped  = []
+    @guildspeak = false
+
+    name = Script.current.vars[0].to_s.strip
+    if name.empty? || name =~ /\A-*help\z/i
+      respond "[sing_all #{VERSION}] ;sing_all <container you're wearing or holding>, for example ;sing_all mantle"
+      return
+    end
+
+    @container = find_container(name)
+    unless @container
+      msg "You aren't wearing or holding a container called \"#{name}\"."
+      return
+    end
+
+    before_dying { SingAll.cleanup }
+    items = look_in(@container)
+    if items.empty?
+      msg "Nothing in the #{@container.name}."
+      return
+    end
+    msg "#{items.size} #{items.size == 1 ? 'item' : 'items'} in the #{@container.name}."
+
+    quiet_songs
+    msg 'Stopped playsongs: the singing needs your hands.' if stop_script('playsongs')
+    stop_script('loresing')
+    unless free_right_hand
+      msg "Couldn't empty your right hand."
+      return
+    end
+
+    items.each_with_index { |item, index|
+      @current = item
+      keep_going = sing_to(item)
+      @current = nil
+      next if keep_going
+
+      left = items.size - index - 1
+      bold "Stopping: #{@stop_reason || 'you died'}. #{left} #{left == 1 ? 'item' : 'items'} not reached."
+      break
+    }
+    summary
+  end
+
+  def self.summary
+    bold "Done with the #{@container.name}."
+    {
+      'Unlocked' => @unlocked, 'Already unlocked' => @already,
+      'NOT unlocked' => @failed, 'Skipped' => @skipped
+    }.each { |label, list| respond "    #{label}: #{list.join(', ')}" unless list.empty? }
+    respond '    song-manager is still off (;song-manager starts it; Fizzlestiks-prep does too).'
+  end
+
+  # every way out, ;k included: no loresing left running, item back in the container
+  def self.cleanup
+    kill_loresing
+    speak 'common'
+    put_back if @current && right_id == @current.id.to_s
+    fill_right_hand if @emptied_right && right_id.nil?
+  rescue StandardError => e
+    respond "[sing_all] cleanup: #{e.message}"
+  end
+end
+
+SingAll.main
