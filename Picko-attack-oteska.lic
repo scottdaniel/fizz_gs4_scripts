@@ -163,12 +163,18 @@ end
 # fail text, so the result is measured off live mana instead, and every cast is logged to
 # data/GSIV/Picko/mana_leech.log so the real text can be read afterwards.
 #
-# Only worth casting when there's room for the mana (not at a full bar) and enough mana to
-# cover its own cost (overexertion rule). A cast that nets less than LEECH_MIN_GAIN stops
-# leeching that hag (out of mana, or it resisted); three poor results in a row switch leeching
-# off for LEECH_BACKOFF_SECS, so a hag that simply has no mana costs at most a few casts.
+# Only worth casting when there's room for the mana (not at a full bar) and at least
+# leech_floor mana (32; never below its own cost + 1, the overexertion rule).
+# An empty hag ("failed to drain any mana") ends leeching on that hag; a
+# resist ("Warded off!", costs 16) is retried once. Three hags in a row empty on the first cast
+# switch leeching off for leech_backoff_secs.
 def leech_min_gain
   5
+end
+# Scott 11/24: only leech with at least this much mana, so a resist (costs 16) still leaves a
+# Major Shock's worth. Never below the spell's own cost + 1 (overexertion).
+def leech_floor
+  [32, spell_mana(516, 16) + 1].max
 end
 def leech_headroom
   25
@@ -181,13 +187,20 @@ def leech_log_path
 end
 
 def leech_wanted?(foe)
+  # v2 (11/24): clears the off-switch the v1 logic tripped on resists, once.
+  if $picko_leech_ver != 2
+    $picko_leech_ver = 2
+    $picko_leech_off_until = 0
+    $picko_leech_poor = 0
+  end
   return false unless hag_foe?(foe)
   return false unless Spell[516].known?
   return false if Time.now.to_f < $picko_leech_off_until.to_f
   $picko_leech_done = {} if !$picko_leech_done.is_a?(Hash) || $picko_leech_done.size > 200
+  $picko_leech_tries = {} if !$picko_leech_tries.is_a?(Hash) || $picko_leech_tries.size > 200
   return false if $picko_leech_done[foe.id.to_i]
   mana = checkmana
-  mana >= spell_mana(516, 16) + 1 && mana <= Char.max_mana - leech_headroom
+  mana >= leech_floor && mana <= Char.max_mana - leech_headroom
 end
 
 # One Mana Leech at foe (same target-settle guard as attack_spell). Marks the hag done and
@@ -197,7 +210,7 @@ def leech_foe(foe)
   fput "stance offensive" if stance != "offensive"
 
   cost = spell_mana(516, 16)
-  return fput("stance defensive") if checkmana < cost + 1
+  return fput("stance defensive") if checkmana < [leech_floor, cost + 1].max
 
   unless XMLData.current_target_id.to_i == foe.id.to_i
     sleep 0.3
@@ -220,14 +233,26 @@ def leech_foe(foe)
   gain = checkmana - before
   fput "stance defensive"
 
-  $picko_leech_done[foe.id.to_i] = true if gain < leech_min_gain
-  if gain < leech_min_gain
-    $picko_leech_poor = $picko_leech_poor.to_i + 1
-    if $picko_leech_poor >= 3
-      $picko_leech_off_until = Time.now.to_f + leech_backoff_secs
-      $picko_leech_poor = 0
-      echo "Mana Leech: 3 poor results in a row -- off for #{leech_backoff_secs / 60} min."
+  # Verified 11/24 text: success = "Warding failed! ... you absorb N mana!"; a resist = "Warded off!
+  # She seems unaffected!" (costs the full 16, says nothing about the hag's mana); an empty hag =
+  # "You failed to drain any mana from her!". So only EMPTY ends leeching on a hag; a resist is
+  # retried once. The off-switch counts hags that were empty on their very first leech.
+  $picko_leech_tries ||= {}
+  tries = ($picko_leech_tries[foe.id.to_i] = $picko_leech_tries[foe.id.to_i].to_i + 1)
+  empty = text =~ /failed to drain any mana/i
+  resisted = text =~ /Warded off!/i
+  if empty || (!resisted && gain < leech_min_gain)
+    $picko_leech_done[foe.id.to_i] = true
+    if tries == 1
+      $picko_leech_poor = $picko_leech_poor.to_i + 1
+      if $picko_leech_poor >= 3
+        $picko_leech_off_until = Time.now.to_f + leech_backoff_secs
+        $picko_leech_poor = 0
+        echo "Mana Leech: 3 hags in a row had no mana -- off for #{leech_backoff_secs / 60} min."
+      end
     end
+  elsif resisted
+    $picko_leech_done[foe.id.to_i] = true if tries >= 2
   else
     $picko_leech_poor = 0
   end
