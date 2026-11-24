@@ -59,8 +59,13 @@ def usage
   respond "date there keeps this script's categorization in sync automatically)."
 end
 
+# Settings use GS4's own adjective.noun shorthand ("buck.bag" = "juniper buckskin bag"),
+# with the adjectives often truncated, so match the way the game does: the last word
+# is the noun, and every earlier word is a prefix of some word in the full name.
 def find_container(noun)
-  words = noun.to_s.strip.downcase.split(/\s+/)
+  words = noun.to_s.strip.downcase.sub(/\Amy\s+/, '').split(/[\s.]+/).reject(&:empty?)
+  return nil if words.empty?
+
   pools = []
   pools.concat(Array(GameObj.inv))
   pools.concat(Array(GameObj.loot))
@@ -68,12 +73,11 @@ def find_container(noun)
   pools << GameObj.left_hand  if GameObj.left_hand&.id
   GameObj.containers.each_key { |cid| obj = GameObj[cid]; pools << obj if obj }
   pools.compact!
-  # Exact noun match first (the true GS4 noun is usually the last word, e.g.
-  # "leather case" -> "case" as in "leather scroll case"). Fall back to requiring
-  # every word show up somewhere in the full name, since names can have extra
-  # words in between (e.g. "leather case" vs. "leather scroll case").
-  pools.find { |o| o.noun.to_s.downcase == words.last } ||
-    pools.find { |o| words.all? { |w| o.name.to_s.downcase.include?(w) } }
+
+  pools.find do |o|
+    o.noun.to_s.downcase == words.last &&
+      words[0...-1].all? { |w| o.name.to_s =~ /\b#{Regexp.escape(w)}/i }
+  end
 end
 
 def refresh_container(noun)
