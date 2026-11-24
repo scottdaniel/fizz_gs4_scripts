@@ -1,0 +1,750 @@
+# scrolltender.lic
+=begin
+      author: Fizzleworth
+        name: scrolltender
+        game: gemstone
+        tags: sorcerer, scroll infusion, infuse, unlock, scroll, 714
+    requires: fizzfuse.lic 2.6 (and eherbs.lic, go2.lic)
+     version: 1.0.0
+        note: Written with assistance from Claude (Anthropic).
+
+  Runs ;fizzfuse over a whole container of scrolls, unattended.
+
+  Usage:
+    ;scrolltender                      your scrollsack (;vars set scrollsack=...): check every
+                                       scroll, infuse the ones that can take more charges, and
+                                       put each back in the scrollsack. Unlocks nothing.
+    ;scrolltender <source> <target>    unlock and infuse every scroll in <source>; the finished
+                                       ones go in <target>. For other characters' scrolls.
+                                       ;scrolltender cloak kit
+                                       ;scrolltender "leather case" suede.sack
+
+  With no arguments, for each scroll:
+    - ;fizzfuse check, back in the scrollsack.
+    - A spell with "the potential to add <anything but no>" is worth infusing, so
+      ;fizzfuse infuse. With "no charges" (vibrant: "no additional time") on every spell, or
+      no message at all (locked), it's left where it is.
+
+  With two, for each scroll:
+    - ;fizzfuse unlock, again and again until every spell is unlocked. Only then
+      ;fizzfuse infuse, because a scroll can't be unlocked any more once it has been infused
+      (a plain ;fizzfuse infuses after the first wave that fails).
+    - A wave that "shakes violently" is tried again, unlock_tries times in a row. One that
+      "shakes slightly" and a white aura on the stone are final: in the logs nothing unlocked
+      after either (12 of 12 waves).
+    - Whatever did unlock is infused and goes in <target>. A scroll with nothing unlocked
+      stays in <source>, and the summary says so. Scrolls that are already unlocked and full
+      go straight to <target>.
+
+  Unlocking can destroy the scroll and kill you. In all the logs (May to November 2026) the
+  stone exploded on 3 of 677 waves: one killed Fizzleworth from full health (11/13), the other
+  two left him stunned and bleeding. After an explosion this kills fizzfuse (which would go on
+  waving at nothing), runs ;eherbs, and carries on with the next scroll. Dead, or still hurt
+  after eherbs, it stops. That only happens unlocking, so the no-argument run doesn't risk it.
+
+  It also kills a fizzfuse that hasn't got anywhere for stall_limit seconds (waiting for mana
+  and walking to the shops don't count), puts the scroll back and goes on; two scrolls in a row
+  ending badly stop the run. fizzfuse makes its own runestones as usual (20,000 silvers in the
+  local bank). If it's running, go4invoker is paused until the end, so it doesn't walk you off
+  with a scroll in your hand.
+
+  Game text this relies on, all from Fizzleworth's logs:
+    check         "As the runestone passes over the scroll, you sense:" then
+                  "   (712) Cloak of Shadows with a few charges remaining and the potential to
+                   add many charges."  (locked: the line ends at "remaining.")
+    unlocked      "The smooth stone vibrates and begins to glow.  You sense that the scroll has
+                   somehow been altered."
+    failed        "The smooth stone shakes violently, but nothing happens."  / "shakes slightly"
+    ruined        "The smooth stone is momentarily surrounded by a dim (or bright) white aura."
+    explosion     "The smooth stone explodes in a flash of blue flame as it passes over the a
+                   scrap of luminous papyrus, destroying it."
+    infused       "...The scroll glows dimly for a moment."
+    locked for    "  The scroll is momentarily surrounded by a bright white aura." and "The
+    good          scroll glows dimly for a moment, and then grows cold."  The charges are kept.
+    full          "...The mana dissipates."
+=end
+
+module ScrollTender
+  VERSION = '1.0.0'
+
+  # ---- the knobs (methods, so an edit takes effect on the next run)
+  # How many ;fizzfuse unlocks in a row may unlock nothing (each one is a wave that shook
+  # violently) before the rest of the scroll's spells are given up on.
+  def self.unlock_tries
+    3
+  end
+
+  # The most times to run ;fizzfuse infuse on one scroll. One is enough unless the link
+  # slipped or infuse_safe is on and an infusion was a struggle.
+  def self.infuse_tries
+    3
+  end
+
+  # Seconds fizzfuse may go without the game saying anything that counts as getting somewhere.
+  def self.stall_limit
+    180
+  end
+
+  # With less mana than this, fizzfuse is taken to be waiting for mana.
+  def self.mana_wait
+    60
+  end
+
+  # Run eherbs before the next scroll when bleeding or below this percent health, and stop the
+  # run if you're still bleeding or below stop_below afterwards.
+  def self.heal_below
+    75
+  end
+
+  def self.stop_below
+    50
+  end
+
+  # ---- game text (see the header)
+  STATUS_START = /^As the .*stone passes over the .+, you sense:/
+  STATUS_SPELL = /^\s*\((?<num>\d+)\) (?<spell>.+?) with (?<left>.+?) remaining(?: and the potential to add (?<add>.+?))?\.?\s*$/
+  UNLOCKED     = /You sense that the .+ has somehow been altered/
+  SHOOK        = /shakes violently, but nothing happens/
+  SHOOK_LITTLE = /shakes slightly, but nothing happens/
+  STONE_AURA   = /^\s*The .*stone is momentarily surrounded by a \w+ white aura/
+  SCROLL_AURA  = /^\s*The .* is momentarily surrounded by a \w+ white aura/
+  EXPLODED     = /stone explodes in a flash of .+ as it passes over/
+  WENT_COLD    = /glows dimly for a moment, and then grows cold/
+  INFUSED      = /glows dimly for a moment\./
+  STRAINED     = /^.*You strain to harness the mana/
+  FULL         = /The mana dissipates\./
+  NO_MANA      = /^You don't have enough mana/ # gswiki; not in the logs
+  INJURED      = /^You can't make that dextrous of a move/
+  # fizzfuse waving or infusing with nothing in its hand
+  EMPTY_HANDED = /^You must have something in your left hand to wave|^You wave your .* around\.$|lose your focus/
+  # making a runestone
+  RUNE_WORK    = /^You rummage through|Sold for [\d,]+ silvers|you draw the .+ rune on|shatters into twinkling dust/
+  NO_SILVER    = /already spent what you're trying to withdraw|don't have that much|You have no account|insufficient/i
+  LINKED       = /form a link with it|^You feel your link to the .+ slip/
+
+  CLOSED    = /^(?:That|The .+) is closed/
+  LOOK_DONE = Regexp.union(/^Total items|^There is nothing in|^In the .+? you see|^I could not find|^What were you referring to/, CLOSED)
+  OPEN_DONE = /^You open|^You carefully|^You unfasten|^That is already open|^I could not find|^What were you referring to/
+  GET_DONE  = /^You (?:remove|get|grab|pull|take|pick up|retrieve|slip|already have)|^Get what|^I could not find|^What were you referring to|^You need a free hand|^You can't|^You are still stunned/
+  PUT_DONE  = /^You (?:put|place|slip|tuck|add|drop|carefully roll)|^I could not find|^What were you referring to|won't fit|^That is closed|too (?:full|heavy|large)|^You are still stunned/
+  SWAP_DONE = /^You swap|^You have nothing to swap/
+
+  # same scrolls as scrollinv and fizzfuse
+  NOUNS   = %w[scroll vellum parchment papyrus palimpsest paper].freeze
+  EXCLUDE = /\A(?:a |an |some )?(?:birth certificate parchment|amnesty parchment)\z/i
+
+  # ---------------------------------------------------------------- small stuff
+  def self.msg(text)
+    respond "[scrolltender] #{text}"
+  end
+
+  def self.bold(text)
+    _respond "<pushBold/>[scrolltender] #{text}<popBold/>"
+  end
+
+  def self.count(number, noun)
+    "#{number} #{noun}#{'s' unless number == 1}"
+  end
+
+  def self.wait_for(seconds)
+    end_time = Time.now + seconds
+    until yield
+      return false if Time.now > end_time
+      sleep 0.2
+    end
+    true
+  end
+
+  # put, not fput (fput can take an unrelated line for the reply; see fizzpure)
+  def self.collect(action, done, timeout: 5)
+    lines = []
+    Script.current.clear
+    put action
+    end_time = Time.now + timeout
+    loop do
+      line = get?
+      if line
+        lines << line
+        if line =~ /^(?:\.\.\.w|W)ait ([0-9]+) sec/
+          sleep [Regexp.last_match(1).to_i - 0.5, 0.3].max
+          put action
+          end_time = Time.now + timeout
+          next
+        end
+        break if line =~ done
+      else
+        sleep 0.1
+      end
+      break if Time.now > end_time
+    end
+    lines
+  end
+
+  def self.right_id
+    GameObj.right_hand.id&.to_s
+  end
+
+  def self.left_id
+    GameObj.left_hand.id&.to_s
+  end
+
+  def self.in_hand?(item)
+    right_id == item.id.to_s
+  end
+
+  # ---------------------------------------------------------------- containers
+  # "leather case", "leather.case", "my kit", "kit": the last word is the noun and every other
+  # word starts a word of the name (same as sing_all / orb_check / fizzpure)
+  def self.matches?(obj, name)
+    words = name.to_s.strip.sub(/\Amy\s+/i, '').split(/[\s.]+/)
+    return false if words.empty? || obj.nil? || obj.id.nil?
+
+    obj.noun.to_s.casecmp?(words.last) && words[0..-2].all? { |word| obj.full_name.to_s =~ /\b#{Regexp.escape(word)}/i }
+  end
+
+  # worn only: fizzfuse needs both hands
+  def self.find_container(name)
+    Array(GameObj.inv).find { |obj| matches?(obj, name) }
+  end
+
+  def self.open_up(container)
+    lines = collect("open ##{container.id}", OPEN_DONE, timeout: 3)
+    @opened |= [container] if lines.any? { |line| line =~ /^You (?:open|carefully|unfasten)/ }
+  end
+
+  # a fresh LOOK IN, so the IDs are live. Opens it if it's closed.
+  def self.look_in(container)
+    waitrt?
+    lines = collect("look in ##{container.id}", LOOK_DONE)
+    if lines.any? { |line| line =~ CLOSED }
+      open_up(container)
+      collect("look in ##{container.id}", LOOK_DONE)
+    end
+    sleep 0.3
+    Array(container.contents)
+  end
+
+  def self.scroll?(obj)
+    NOUNS.include?(obj.noun.to_s.downcase) && obj.name.to_s !~ EXCLUDE
+  end
+
+  # the name to give fizzfuse's --cont, quoted so a two-word name stays one argument
+  def self.cont(name)
+    %("--cont=#{name}")
+  end
+
+  # ---------------------------------------------------------------- moving scrolls
+  # into the right hand, left hand empty
+  def self.take(item)
+    3.times do
+      return false if dead?
+
+      wait_for(60) { !stunned? }
+      waitrt?
+      next unless clear_hands(except: item)
+
+      collect("get ##{item.id}", GET_DONE, timeout: 4) unless in_hand?(item) || left_id == item.id.to_s
+      wait_for(2) { [right_id, left_id].include?(item.id.to_s) }
+      if left_id == item.id.to_s
+        collect('swap', SWAP_DONE, timeout: 3)
+        wait_for(2) { in_hand?(item) }
+      end
+      return true if in_hand?(item)
+    end
+    false
+  end
+
+  def self.put_away(id, container)
+    2.times do
+      wait_for(60) { !stunned? }
+      waitrt?
+      lines = collect("put ##{id} in ##{container.id}", PUT_DONE, timeout: 4)
+      return true if wait_for(2) { ![right_id, left_id].include?(id.to_s) }
+
+      open_up(container) if lines.any? { |line| line =~ CLOSED }
+    end
+    false
+  end
+
+  # anything but the scroll itself is fizzfuse's (a runestone, the brush, ...): the infusesack
+  def self.clear_hands(except: nil)
+    [left_id, right_id].compact.each do |id|
+      next if except && id == except.id.to_s
+      return false unless put_away(id, @infusesack)
+    end
+    true
+  end
+
+  # Wherever a run that went wrong left it (hand, infusesack, source, target), back to source.
+  def self.bring_home(item)
+    return false if dead?
+
+    [left_id, right_id].compact.each { |id| put_away(id, id == item.id.to_s ? @source : @infusesack) }
+    return true if holds?(@source, item)
+
+    [@infusesack, @target].any? { |container| holds?(container, item) } && take(item) && put_away(item.id, @source)
+  end
+
+  def self.holds?(container, item)
+    look_in(container).any? { |obj| obj.id.to_s == item.id.to_s }
+  end
+
+  # ---------------------------------------------------------------- reading a check
+  # a check is { spell number => what can be added (nil = locked) }
+  def self.locked(check)
+    check.select { |_num, add| add.nil? }.keys
+  end
+
+  def self.unlocked(check)
+    check.reject { |_num, add| add.nil? }.keys
+  end
+
+  # the spells that can still be infused
+  def self.room_left(check)
+    check.select { |_num, add| add && add !~ /\Ano\b/i }.keys
+  end
+
+  def self.full?(check)
+    !check.empty? && locked(check).empty? && room_left(check).empty?
+  end
+
+  def self.label(item, check = nil)
+    spells = check.to_h.keys
+    spells.empty? ? item.name.to_s : "#{item.name} (#{spells.join(', ')})"
+  end
+
+  # ---------------------------------------------------------------- one run of fizzfuse
+  def self.kill_fizzfuse
+    return unless Script.running?('fizzfuse')
+
+    Script.kill('fizzfuse')
+    wait_for(10) { !Script.running?('fizzfuse') }
+    # it dies with go2 still walking if it was off making a rune
+    Script.kill('go2') if Script.running?('go2')
+  end
+
+  # What one line of the game's says about the run. Returns :progress, :bad or nil.
+  def self.note(run, line)
+    case line
+    when STATUS_START then run[:checks] << {}
+    when STATUS_SPELL
+      match = Regexp.last_match
+      return nil if run[:checks].empty?
+
+      run[:checks].last[match[:num].to_i] = match[:add]
+    when UNLOCKED     then run[:unlocked] += 1
+    when SHOOK        then run[:shook] = true
+    when SHOOK_LITTLE then run[:final] = true
+    when STONE_AURA   then run[:aura] = run[:final] = true
+    when SCROLL_AURA  then run[:ended] = 'a white aura locked it for good'
+    when EXPLODED     then run[:exploded] = true
+    when WENT_COLD
+      run[:infused] += 1
+      run[:ended] = 'it reached its limit and locked for good'
+    when INFUSED      then run[:infused] += 1
+    when FULL         then run[:full] = true
+    when INJURED      then run[:injured] = true
+    when NO_SILVER    then run[:no_silver] = true
+    when EMPTY_HANDED then return :bad
+    when NO_MANA      then return checkmana < maxmana.to_i * 0.9 ? :progress : :bad
+    when STRAINED, RUNE_WORK, LINKED then nil
+    else return nil
+    end
+    :progress
+  end
+
+  # Run ;fizzfuse to the end, or kill it when it's stuck, the stone blew up or you died.
+  # run[:broke] says why, when it didn't end by itself.
+  def self.fizzfuse(args)
+    run = { checks: [], unlocked: 0, infused: 0 }
+    waitrt?
+    waitcastrt?
+    Script.current.clear
+    started_in = Room.current&.id
+    unless Script.start('fizzfuse', args)
+      run[:broke] = "couldn't start fizzfuse"
+      @give_up = run[:broke]
+      return run
+    end
+
+    last = Time.now
+    bad = 0
+    exited = nil
+    loop do
+      line = get?
+      if line
+        case note(run, line)
+        when :progress
+          last = Time.now
+          bad = 0
+        when :bad
+          bad += 1
+        end
+        run[:broke] = 'the stone exploded' if run[:exploded]
+        run[:broke] = 'it was waving or infusing with nothing in hand' if bad >= 5
+      end
+      break if run[:broke]
+      next if line
+
+      # only once every line is read: the explosion's own line comes before the death's
+      if dead?
+        run[:broke] = 'you died'
+        break
+      end
+      # the last replies can land after it has exited
+      exited ||= Time.now unless Script.running?('fizzfuse')
+      break if exited && Time.now - exited > 1.0
+
+      last = Time.now if Script.running?('go2') || Script.paused?('fizzfuse') || checkmana < mana_wait
+      if !exited && Time.now - last > stall_limit
+        run[:broke] = "nothing happened for #{stall_limit} seconds"
+        break
+      end
+      sleep 0.1
+    end
+    kill_fizzfuse
+    return_to(started_in) unless dead?
+    run
+  end
+
+  # killed or bailed out halfway to a shop
+  def self.return_to(room)
+    return if room.nil? || wait_for(1) { Room.current&.id == room }
+
+    Script.run('go2', room.to_s)
+  end
+
+  # ---------------------------------------------------------------- health
+  # after an explosion (force), bleeding, or hurt. False when it's no use going on.
+  def self.recover(force: false)
+    wait_for(120) { !stunned? || dead? }
+    return false if dead?
+
+    waitrt?
+    return true unless force || checkbleeding || Char.percent_health < heal_below
+
+    room = Room.current&.id
+    msg "#{Char.percent_health}% health#{', bleeding' if checkbleeding}: running eherbs."
+    if Script.start('eherbs')
+      wait_for(600) { !Script.running?('eherbs') || dead? }
+      Script.kill('eherbs') if Script.running?('eherbs')
+    end
+    return false if dead?
+
+    return_to(room)
+    return true unless checkbleeding || Char.percent_health < stop_below
+
+    @give_up = "you're still hurt after eherbs (#{Char.percent_health}% health#{', bleeding' if checkbleeding})"
+    false
+  end
+
+  # ---------------------------------------------------------------- one scroll
+  # A run that ended badly: put things back, and stop everything after the second in a row.
+  def self.trouble(item, why)
+    @bad_in_a_row += 1
+    home = bring_home(item)
+    why = "#{why}; it's not in the #{@source.name}, look for it" unless home || dead?
+    msg "#{item.name}: #{why}."
+    @skipped << "#{item.name} (#{why})"
+    recover(force: @last_run.to_h[:injured]) unless dead?
+    @give_up ||= 'that was two scrolls in a row that went wrong' if @bad_in_a_row >= 2
+  end
+
+  def self.why(run)
+    return run[:broke] if run[:broke]
+    return 'you were too injured to cast Scroll Infusion' if run[:injured]
+    return "there wasn't enough silver in the bank for a runestone" if run[:no_silver]
+
+    "fizzfuse stopped before it was done"
+  end
+
+  # Nothing to read on it (some papers aren't scrolls): put it back and go on.
+  def self.unreadable(item)
+    @bad_in_a_row = 0
+    bring_home(item)
+    msg "#{item.name}: there's nothing on it to infuse, leaving it alone."
+    @skipped << "#{item.name} (nothing on it)"
+  end
+
+  def self.destroyed(item)
+    bold "#{item.name}: the stone exploded and destroyed it."
+    @destroyed << item.name.to_s
+    @bad_in_a_row = 0
+    sleep 2 # for the stun or the death to show
+    clear_hands if recover(force: true)
+  end
+
+  # ;fizzfuse check, which puts the scroll in `container`. Nil if it went wrong, {} if there's
+  # nothing on it.
+  def self.check(item, container, name)
+    2.times do
+      return nil unless take(item)
+
+      run = fizzfuse("check #{cont(name)}")
+      @last_run = run
+      return nil if run[:broke]
+
+      put_away(item.id, container) if in_hand?(item)
+      return run[:checks].last unless run[:checks].empty?
+
+      bring_home(item) # it never waved
+    end
+    nil
+  end
+
+  # ;fizzfuse infuse until nothing can take more, starting with it in the right hand. Leaves it
+  # in `container` and returns what happened, or nil if it went wrong.
+  def self.infuse(item, container, name)
+    total = 0
+    ended = nil
+    final = nil
+    infuse_tries.times do |try|
+      unless try.zero?
+        msg "#{label(item, final)}: #{room_left(final).join(', ')} can still take more, going again."
+        return nil unless take(item)
+      end
+      run = fizzfuse("infuse #{cont(name)}")
+      @last_run = run
+      total += run[:infused]
+      ended = run[:ended] || ended
+      return nil if run[:broke] || run[:checks].empty?
+
+      final = run[:checks].last
+      # it checks again when it's done, unless there was nothing to do
+      return nil if run[:checks].size < 2 && !full?(final)
+      return nil if in_hand?(item) && !put_away(item.id, container)
+      break if room_left(final).empty? || ended
+    end
+    { check: final, infused: total, ended: ended }
+  end
+
+  # --- with no arguments
+  def self.top_up(item)
+    found = check(item, @source, @source_name)
+    if found.nil?
+      return if dead?
+      return trouble(item, "it couldn't be checked: #{why(@last_run.to_h)}")
+    end
+    return unreadable(item) if found.empty?
+
+    if room_left(found).empty?
+      @bad_in_a_row = 0
+      if locked(found).size == found.size
+        @locked << label(item, found)
+        msg "#{label(item, found)}: locked, leaving it alone."
+      else
+        @already << label(item, found)
+        msg "#{label(item, found)}: nothing to add#{", #{locked(found).join(', ')} locked" unless locked(found).empty?}."
+      end
+      return
+    end
+
+    msg "#{label(item, found)}: infusing #{room_left(found).join(', ')}."
+    done = take(item) && infuse(item, @source, @source_name)
+    finish(item, done)
+  end
+
+  # --- with a source and a target
+  def self.tend(item)
+    return trouble(item, "it couldn't be picked up") unless take(item)
+
+    case unlock(item)
+    when :destroyed then return destroyed(item)
+    when :trouble   then return dead? ? nil : trouble(item, why(@last_run))
+    when :blank     then return unreadable(item)
+    when :stored
+      @bad_in_a_row = 0
+      put_away(item.id, @target) if in_hand?(item)
+      @already << label(item, @last_run[:checks].first)
+      return msg("#{label(item, @last_run[:checks].first)}: already unlocked and full, now in the #{@target.name}.")
+    when :nothing
+      @bad_in_a_row = 0
+      bring_home(item)
+      @stuck << label(item, @last_run[:checks].first)
+      return msg("#{label(item, @last_run[:checks].first)}: nothing on it would unlock, back in the #{@source.name}.")
+    when :partly
+      # an aura can lock the ones that were unlocked, so look before infusing
+      found = check(item, @source, @source_name)
+      if found.nil?
+        return if dead?
+        return trouble(item, "it couldn't be checked: #{why(@last_run.to_h)}")
+      end
+      if unlocked(found).empty?
+        @bad_in_a_row = 0
+        @stuck << label(item, found)
+        return msg("#{label(item, found)}: it's locked again, left in the #{@source.name}.")
+      end
+      msg "#{label(item, found)}: #{locked(found).join(', ')} wouldn't unlock, infusing the rest."
+      return trouble(item, "it couldn't be picked up") unless take(item)
+    end
+    finish(item, infuse(item, @target, @target_name))
+  end
+
+  # ;fizzfuse unlock until it's done. :clean (all of it), :partly (some, and the rest won't),
+  # :nothing, :stored (it was full already and fizzfuse put it in the target), :blank,
+  # :destroyed or :trouble. The scroll is in the right hand after the first three.
+  def self.unlock(item)
+    barren = 0
+    loop do
+      run = fizzfuse("unlock #{cont(@target_name)}")
+      @last_run = run
+      return :destroyed if run[:exploded]
+      return :trouble if run[:broke] || run[:checks].empty?
+
+      before = run[:checks].first
+      return :blank if before.empty?
+      return :stored if full?(before)
+      return :trouble unless in_hand?(item)
+
+      left = locked(before).size - run[:unlocked]
+      return :clean if left <= 0 && !run[:aura]
+      # it should have waved, and none of the replies came back
+      return :trouble unless run[:shook] || run[:final] || run[:unlocked].positive?
+
+      barren = run[:unlocked].positive? ? 0 : barren + 1
+      if run[:final] || barren >= unlock_tries
+        return unlocked(before).size + run[:unlocked] > 0 ? :partly : :nothing
+      end
+
+      msg "#{label(item, before)}: #{count(left, 'spell')} still locked, trying again."
+      return :trouble unless take(item)
+    end
+  end
+
+  def self.finish(item, done)
+    if done.nil? || done == false
+      return if dead?
+      return trouble(item, why(@last_run.to_h))
+    end
+
+    @bad_in_a_row = 0
+    notes = [count(done[:infused], 'infusion')]
+    notes << done[:ended] if done[:ended]
+    unless done[:ended]
+      notes << "#{room_left(done[:check]).join(', ')} not full" unless room_left(done[:check]).empty?
+      notes << "#{locked(done[:check]).join(', ')} locked" unless locked(done[:check]).empty?
+    end
+    text = "#{label(item, done[:check])}: #{notes.join('; ')}"
+    @done << text
+    msg "#{text}. Now in the #{@target.name}."
+  end
+
+  # ---------------------------------------------------------------- the run
+  def self.usage
+    respond "[scrolltender #{VERSION}]"
+    respond "    ;scrolltender                    check every scroll in your scrollsack (#{UserVars.scrollsack || 'not set'})"
+    respond "                                     and infuse the ones that can take more"
+    respond "    ;scrolltender <source> <target>  unlock and infuse every scroll in <source>,"
+    respond "                                     finished ones go in <target> (worn containers;"
+    respond "                                     put quotes around a two-word name)"
+  end
+
+  def self.worn(name, what)
+    container = find_container(name)
+    msg "You aren't wearing a container called \"#{name}\" (#{what})." unless container
+    container
+  end
+
+  def self.setup(names)
+    sack = UserVars.scrollsack.to_s.strip
+    pouch = UserVars.infusesack.to_s.strip
+    if sack.length < 3 || pouch.length < 3
+      msg 'fizzfuse needs both ;vars set scrollsack=<container> and ;vars set infusesack=<container>.'
+      return false
+    end
+    @source_name, @target_name = names.empty? ? [sack, sack] : names
+    @source     = worn(@source_name, 'the scrolls') or return false
+    @target     = worn(@target_name, 'where they go') or return false
+    @infusesack = worn(pouch, 'your infusesack') or return false
+    if Script.running?('fizzfuse')
+      msg 'fizzfuse is already running.'
+      return false
+    end
+    true
+  end
+
+  def self.main
+    # Lich keeps this module and its @variables between runs
+    instance_variables.each { |var| remove_instance_variable(var) }
+    @done      = []
+    @already   = []
+    @locked    = []
+    @stuck     = []
+    @destroyed = []
+    @skipped   = []
+    @opened    = []
+    @bad_in_a_row = 0
+
+    names = Array(Script.current.vars[1..-1]).map { |name| name.to_s.strip.sub(/\Amy\s+/i, '') }.reject(&:empty?)
+    return usage unless names.empty? || (names.size == 2 && names.none? { |name| name =~ /\A-/ })
+    return unless setup(names)
+
+    before_dying { ScrollTender.cleanup }
+    if Script.running?('go4invoker') && !Script.paused?('go4invoker')
+      Script.pause('go4invoker')
+      @paused_invoker = true
+      msg 'Paused go4invoker until this is done.'
+    end
+    if right_id || left_id
+      empty_hands
+      @emptied = true
+      return msg("Couldn't empty your hands.") unless wait_for(3) { right_id.nil? && left_id.nil? }
+    end
+
+    # fizzfuse closes whatever it had to open; opened here first, they stay open
+    look_in(@infusesack)
+    look_in(@target) unless names.empty?
+    scrolls = look_in(@source).select { |obj| scroll?(obj) }
+    return msg("No scrolls in the #{@source.name}.") if scrolls.empty?
+
+    @started = Time.now
+    msg "#{count(scrolls.size, 'scroll')} in the #{@source.name}#{", finished ones go in the #{@target.name}" unless names.empty?}."
+    scrolls.each_with_index do |item, index|
+      break if dead? || @give_up
+      break unless recover
+
+      msg "#{index + 1} of #{scrolls.size}: #{item.name}"
+      @current = item
+      names.empty? ? top_up(item) : tend(item)
+      @current = nil
+      @reached = index + 1
+    end
+    summary(scrolls.size)
+  end
+
+  def self.summary(total)
+    left = total - @reached.to_i
+    bold "Stopped: #{dead? ? 'you died' : @give_up}. #{count(left, 'scroll')} not reached." if dead? || @give_up
+    bold "Done with the #{@source.name} (#{((Time.now - @started) / 60).round} minutes)."
+    {
+      'Infused'                       => @done,
+      'Already full'                  => @already,
+      'Locked, left alone'            => @locked,
+      'Would not unlock, not moved'   => @stuck,
+      'DESTROYED by an explosion'     => @destroyed,
+      'SKIPPED, something went wrong' => @skipped
+    }.each do |heading, list|
+      next if list.empty?
+
+      respond "    #{heading} (#{list.size}):"
+      list.each { |text| respond "        #{text}" }
+    end
+  end
+
+  # every way out, ;k included: no fizzfuse left running, the scroll back where it came from,
+  # closed containers closed again, hands as they were
+  def self.cleanup
+    kill_fizzfuse
+    Script.unpause('go4invoker') if @paused_invoker && Script.paused?('go4invoker')
+    return if dead?
+
+    bring_home(@current) if @current
+    clear_hands if @reached || @current
+    @opened.each { |container| collect("close ##{container.id}", /^You (?:close|fasten)|^That is already closed/, timeout: 2) }
+    fill_hands if @emptied && right_id.nil? && left_id.nil?
+  rescue StandardError => e
+    respond "[scrolltender] cleanup: #{e.message}"
+  end
+end
+
+ScrollTender.main

@@ -4,7 +4,7 @@
         game: gemstone
         tags: scroll infusion, infuse, unlock, runestone, scroll
     requires: Lich > 5.4.0
-     version: 2.5
+     version: 2.6
         note: Written with assistance from Claude (Anthropic).
 
 
@@ -192,11 +192,17 @@ Infuse!
           general store there has no smooth stone): the catalog is now read in full
           and, if a runestone can't be bought or made, the script says so, deposits
           the withdrawn money and stops.
+        - Stops right away when every spell on the scroll already reads "the potential
+          to add no charges" (vibrant: "no additional time"): nothing to unlock or
+          infuse, so no runestone charges get burned. With --spells only the listed
+          spells count. The scroll is put away like a finished one (scrollsack,
+          vibrantscrollsack for vibrant, or --cont).
 
 =end
 
 # Globals
 $scroll_id = -1
+$spell_maxed = {}
 
 # Container override from --cont=<container>: where finished scrolls go instead
 # of scrollsack/vibrantscrollsack (nil = use the sacks).
@@ -551,11 +557,32 @@ def read_spell_status
 	lines = collect_lines("wave left at my #{GameObj.right_hand}", /Roundtime/, 5)
 	fput "put left in my #{UserVars.infusesack}"
 	status = {}
+	$spell_maxed = {}
+	$spell_vibrant = lines.any? { |line| line =~ /time remaining/ }
 	lines.each do |line|
 		m = line.match(/^\s*\((\d+)\)/)
-		status[m[1].to_i] = !!(line =~ /potential to add/) if m
+		next unless m
+		status[m[1].to_i] = !!(line =~ /potential to add/)
+		# "...and the potential to add no charges." (vibrant: "no additional time.")
+		# means nothing more can be infused into that spell.
+		$spell_maxed[m[1].to_i] = !!(line =~ /potential to add no (?:additional )?(?:charges|time)/)
 	end
 	status
+end
+
+# Stop right away if every spell we'd work on is already fully charged: there's
+# nothing to unlock or infuse, and carrying on would only burn runestone charges
+# (and the money for any runes it then made). Uses the spell numbers from the
+# last read_spell_status; `targets` limits it to the --spells ones. The scroll
+# goes back in its usual container (see store_scroll).
+def stop_if_fully_charged(status, targets = nil)
+	return if status.empty?
+	relevant = targets ? targets.select { |n| status.key?(n) } : status.keys
+	return if relevant.empty?
+	return unless relevant.all? { |n| $spell_maxed[n] }
+	echo "Every spell#{targets ? ' you listed' : ''} on this scroll (#{relevant.join(', ')}) is already fully charged - nothing to do."
+	store_scroll($spell_vibrant)
+	exit
 end
 
 # Is this wave response the game saying nothing more can be unlocked?
@@ -591,7 +618,9 @@ end
 def unlock_spells
 	return unlock_target_spells($target_spells) if $target_spells
 
-	locked = count_locked_spells
+	status = read_spell_status
+	stop_if_fully_charged(status)
+	locked = status.values.count(false)
 	if locked.zero?
 		echo "No locked spells found."
 		return
@@ -651,6 +680,7 @@ def unlock_target_spells(targets)
 		exit
 	end
 
+	stop_if_fully_charged(status, targets)
 	pending = targets.reject { |n| status[n] }
 	if pending.empty?
 		echo "Spell(s) #{targets.join(', ')} already unlocked."
@@ -810,8 +840,12 @@ def check_charge
 	fput "put left in my #{UserVars.infusesack}"
 	find_rune("odeir'cos")
 	charge_line = dothistimeout "wave left at my #{GameObj.right_hand}", 5, /time remaining|charges remaining/
-	is_vibrant = charge_line =~ /time remaining/ ? true : false
+	store_scroll(charge_line =~ /time remaining/ ? true : false)
+end
 
+# Put the scroll in your right hand away: the --cont container if given,
+# else vibrantscrollsack for a vibrant scroll (when set), else scrollsack.
+def store_scroll(is_vibrant)
 	if $cont_override
 		echo "Storing in #{$cont_override} (--cont override)."
 		open_container($cont_override)
@@ -921,6 +955,7 @@ elsif args[0] == 'unlock'
 
 elsif args[0] == 'infuse'
 	check_for_scroll
+	stop_if_fully_charged(read_spell_status, $target_spells)
 	infuse
 	check_charge
 
