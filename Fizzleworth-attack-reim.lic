@@ -23,7 +23,8 @@
 #
 # BOSSES GET A CURSE, THEN PAIN AND MANA DISRUPTION. A rare spawn (Patrol Leader, Guard Captain, ... the
 # Emperor: any creature whose noun is in treim's boss list) is opened the way the Duskruin champions are in
-# Fizzleworth-duskattack: Curse (715, 15 mana) once, to push its TD down, then Pain (711, 11 mana) and Mana
+# Fizzleworth-duskattack: Curse (715) once, from GUARDED stance (that is the Hex, -24 TD; from defensive
+# the same spell is a Pox that only hurts), to push its TD down, then Pain (711, 11 mana) and Mana
 # Disruption (702, 2 mana) alternately, which keeps the mana bill down (by hand on 11/21 the Guard Captain
 # went down to about seven Pains with crits of 105 and 200, and the Foreign Dignitary to 8 Pains). The loop
 # casts at the rare one spell after another until it is dead, REIM_PAIN_MAX casts (the Curse counts) have gone
@@ -111,6 +112,22 @@ module FizzReimAttack
 
   # ultima's recover_mana, for the moment a rare turns up with too little in the pool for a Pain burst.
   # true if it did something that should have brought mana back.
+  # REIM BOOST MANA: 50 mana for 250 quest energy. Success is judged by the mana that came back (the
+  # replies haven't been seen); after a miss (no energy, say) it isn't tried again for five minutes.
+  def self.boost_mana
+    return false unless uv_on?(:reim_qboost)
+    return false if Time.now.to_f < @boost_fail_until.to_f
+    before = checkmana
+    waitrt?
+    waitcastrt?
+    r = dothistimeout("reim boost mana", 4, /energy|restor|mana|boost|cannot|can't|not enough/i).to_s
+    sleep 1
+    gained = checkmana - before
+    echo "reim boost mana: #{gained >= 15 ? "+#{gained}" : 'nothing'} (#{r.strip[0, 100]})"
+    @boost_fail_until = Time.now.to_f + 300 if gained < 15
+    gained >= 15
+  end
+
   def self.refill_mana
     unless $demonmana_taken
       $demonmana_taken = true
@@ -118,6 +135,7 @@ module FizzReimAttack
       Script.run("demonmana", "get") if Script.exists?("demonmana")
       return true if checkmana > before
     end
+    return true if boost_mana
     essence  = (Resources.shadow_essence.to_i rescue 0)
     cooldown = (Effects::Cooldowns.to_h.keys.any? { |k| k.to_s =~ /sacrifice\s*\(\s*mana\s*\)/i } rescue false)
     if essence.positive? && !cooldown
@@ -133,6 +151,21 @@ module FizzReimAttack
       return true
     end
     false
+  end
+
+  # Curse (715) picks its curse from the caster's STANCE (gswiki Curse_(715)): guarded = Hex (brackish blue
+  # thread, "looks very vulnerable", -24/25 TD, no warding check); defensive = Pox (sickly green, "looks
+  # extremely ill", health loss only). Ultima casts from defensive, and the first Reim Curse (11/24, the
+  # Bartender) was a Pox that left TD at +307. So the stance is set to guarded first; ultima's next pass
+  # puts it back to defensive on its own.
+  def self.go_guarded
+    return if checkstance == "guarded"
+    waitrt?
+    fput "stance guarded"
+    20.times do
+      break if checkstance == "guarded"
+      sleep 0.1
+    end
   end
 
   def self.alive?(t)
@@ -187,9 +220,14 @@ module FizzReimAttack
 
       waitrt?
       waitcastrt?
+      go_guarded if spell == 715
       fput "target ##{id}" unless XMLData.current_target_id.to_i == id
       text = cast_collect("incant #{spell}")
       st[:casts] += 1
+      if spell == 715
+        echo(text =~ /very vulnerable/i ? "Curse: Hex landed on #{boss.name.to_s.sub(/\A(?:an?|the) /i, '')} (-24 TD)." :
+                                           "Curse: not the Hex (#{text[/looks [a-z ]+|loses [a-z ]+|stumbles|shakes/i] || 'no curse message'}); stance was #{checkstance}.")
+      end
       if text =~ WOUNDED
         Script.run("eherbs", "--spellcast")
         st[:casts] = cap

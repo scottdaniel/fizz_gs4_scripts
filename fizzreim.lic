@@ -36,13 +36,19 @@
 #    entry"). The orb has 25 charges. Rubbing it clears any quest progress, which is why it is only
 #    rubbed when no quest is running. At most ONE new run per ;fizzreim; `noorb` never rubs.
 #  * Before a (re-)entry it runs ;Fizzleworth-prep here, then every 20 minutes while idle ;ewaggle.
-#    ;stand and ;ecleanse run alongside (a chain trap drops you for 10 s; ;stand gets you up).
+#    ;stand, ;ecleanse and ;symbolz run alongside, as in a bigshot hunt (a chain trap drops you for
+#    10 s; ;stand gets you up). `;vars set reim_helpers=stand, ecleanse, symbolz` changes the list.
 #
 #  * Full mind. When the mind is full (must rest or saturated) it tries `boost longterm`, then
 #    `boost absorb` once the longterm boosts run out, one boost per full mind (the same dance
 #    Fizzleworth-duskattack does, but with the replies from the August Duskruin logs: an empty
 #    absorb answers "You do not have any Instant Mind Clearers to redeem."). `;vars set
 #    reim_boost=off` turns it off.
+#  * Quest energy. REIM BOOST HEAL (50 health) when health is under 60% and REIM BOOST MANA (50 mana)
+#    when mana is under 40, 250 energy each, while the energy (read from REIM INFO, "Total Quest
+#    Energy: N/500") is at least 250. Attack and defense boosts are not used. The attack script's mana
+#    refill tries REIM BOOST MANA too, ahead of the sacrifice and Symbol of Mana. `;vars set
+#    reim_qboost=off`, `reim_heal_below=N`, `reim_boost_mana_below=N`.
 #  * Resting is kept to a minimum, because the quest is a two-hour clock. It only rests (a) after a
 #    Reim task has been handed in and (b) when it is out of mana, and then only until mana is full:
 #      - Tasks: the Base Camp bounty board gives "slay 35 creatures" / "hunt the Emperor". The line
@@ -90,6 +96,13 @@ module FizzReim
   def self.rest_room
     v = UserVars.reim_rest_room
     v.to_s =~ /\A\s*\d+\s*\z/ ? v.to_i : 3428
+  end
+  # The scripts a bigshot hunt would have running (hunting_scripts: stand, ecleanse ...) plus symbolz for the
+  # Voln symbols. Started when it enters Reim, killed again when it leaves for a rest trip or ends; one you
+  # were already running yourself is left alone. `;vars set reim_helpers=stand, ecleanse, symbolz` to change.
+  def self.helper_list
+    v = UserVars.reim_helpers.to_s.strip
+    v.empty? ? %w[stand ecleanse symbolz] : v.split(/[,\s]+/).reject(&:empty?)
   end
   def self.min_trip_minutes; 12; end   # no rest trip with less quest time than this left
 
@@ -156,6 +169,8 @@ module FizzReim
     @was_busy      = false
     @started_here  = []             # helper scripts this run started (killed again at the end)
     @task_done     = false          # the game said a Reim task is finished and not yet handed in
+    @energy        = nil            # quest energy at the last REIM INFO (REIM BOOST costs 250 a time)
+    @last_qboost   = 0.0
     @task_prev     = nil            # REIM TASK state at the last poll
     @last_task_poll = 0.0
     @task_quiet_until = 0.0
@@ -207,6 +222,8 @@ module FizzReim
     text = Array(lines).join("\n")
     return nil if text.empty?
     flag_text = text[/flagged for entry for up to the ([^.\n]*)/i, 1]
+    energy = text[/Total Quest Energy:\s*(\d+)\s*\/\s*\d+/i, 1]
+    @energy = energy.to_i if energy          # "Total Quest Energy: 102/500": what REIM BOOST spends
     {
       flag:          flag_index(flag_text),
       flag_text:     flag_text,
@@ -215,6 +232,7 @@ module FizzReim
       time_left:     text[/Current quest status:\s+You have (\d[^.\n]*?) remaining/i, 1],
       premium_ready: !!(text =~ /Time until next premium entry:[ \t]+You are ready to quest again/i),
       premium_wait:  text[/Time until next premium entry:[ \t]+([^\n]*?)\.?[ \t]*$/i, 1],
+      energy:        energy&.to_i,
       kills:         text[/slain a total of (\d+)/i, 1].to_i,
       scrip:         text[/Total Ethereal Scrip for this run:\s*(\d+)/i, 1].to_i,
     }
@@ -482,6 +500,48 @@ module FizzReim
     @boosted = true           # nothing to use: don't ask again until the mind clears
   end
 
+  # --- REIM BOOST: quest energy for health and mana -------------------------------------------------
+  # `REIM BOOST HEAL` = 50 health, `REIM BOOST MANA` = 50 mana, 250 quest energy each (the pool is 500;
+  # kills fill it, about 4-5 a kill, so at the cap the energy is going to waste anyway). ATTACK and
+  # DEFENSE (120 s for 250) aren't used. The verb can't be used in roundtime. The replies haven't been
+  # seen yet, so success is judged by what came back (+15 or more) and the reply line is echoed.
+  #   ;vars set reim_qboost=off          never
+  #   ;vars set reim_heal_below=60       heal under this health %
+  #   ;vars set reim_boost_mana_below=40 mana boost under this much mana
+  def self.quest_boosts(now)
+    return unless uv_on?(:reim_qboost)
+    return if now - @last_qboost < 8
+    return if @energy && @energy < 250
+    kind = if (Char.percent_health.to_i rescue 100) < uv_int(:reim_heal_below, 60) then :heal
+           elsif checkmana < uv_int(:reim_boost_mana_below, 40) then :mana
+           end
+    return unless kind
+    reim_info if @energy.nil?              # learn the quest energy first (reim_info keeps it)
+    return if @energy && @energy < 250
+    @last_qboost = now
+    qboost(kind)
+  end
+
+  def self.qboost(kind)
+    read   = -> { kind == :heal ? checkhealth.to_i : checkmana.to_i }
+    before = read.call
+    waitrt?
+    waitcastrt?
+    r = dothistimeout("reim boost #{kind}", 4, /energy|restor|health|mana|stamina|boost|cannot|can't|not enough/i).to_s
+    sleep 1
+    gained = read.call - before
+    if gained >= 15
+      @qboost_fails = 0
+      @energy -= 250 if @energy
+      echo "REIM BOOST #{kind.to_s.upcase}: +#{gained} (quest energy left about #{@energy.inspect}): #{r.strip[0, 100]}"
+    else
+      @qboost_fails = @qboost_fails.to_i + 1
+      wait = [60 * 2**(@qboost_fails - 1), 900].min     # a minute, then two, four ... up to 15
+      echo "REIM BOOST #{kind.to_s.upcase} gave nothing (#{r.strip[0, 100].inspect}); not trying again for #{wait / 60} min."
+      @last_qboost = Time.now.to_f + wait - 8
+    end
+  end
+
   # --- tasks and rest trips ----------------------------------------------------------------------------
 
   def self.tasks_on?; !arg?("notask"); end
@@ -653,8 +713,9 @@ module FizzReim
     now = Time.now.to_f
     @entered = true          # we have been in Reim during this run: never start a second one
     start_treim
-    %w[stand ecleanse].each { |n| start_helper(n) }
+    helper_list.each { |n| start_helper(n) }
     boost_mind
+    quest_boosts(now)
 
     if in_pit?
       climb_out_of_pit
@@ -752,7 +813,7 @@ module FizzReim
     echo "room #{room_id} (#{title}); area: #{(s = stage_of(room_id)) ? stage_names[s] : '-'}"
     if info
       echo "time left: #{info[:time_left] || 'none (no quest running)'}; flagged to the #{info[:flag_text]} (area #{info[:flag].inspect})"
-      echo "free daily entry: #{premium_state(info)} (#{info[:premium_wait].inspect}); #{info[:kills]} kills, #{info[:scrip]} scrip this run"
+      echo "free daily entry: #{premium_state(info)} (#{info[:premium_wait].inspect}); #{info[:kills]} kills, #{info[:scrip]} scrip this run, quest energy #{info[:energy].inspect}"
       ts = tasks_on? ? task_state : nil
       echo "task: #{ts ? "#{ts[:state]} (#{ts[:line]})" : (tasks_on? ? '?' : 'ignored (notask)')}; rest: #{uv_on?(:reim_rest) ? "inn #{rest_room} when mana < #{uv_int(:reim_rest_mana, 30)} or after a turn-in" : 'off'}; boosts: #{uv_on?(:reim_boost) ? 'on' : 'off'}; mind #{percentmind}%, mana #{Char.percent_mana}%"
       s = stage_of(room_id)
