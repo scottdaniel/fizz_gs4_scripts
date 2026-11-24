@@ -4,8 +4,8 @@
         name: scrolltender
         game: gemstone
         tags: sorcerer, scroll infusion, infuse, unlock, scroll, 714
-    requires: fizzfuse.lic 2.6 (and eherbs.lic, go2.lic)
-     version: 1.0.0
+    requires: fizzfuse.lic 2.7 (and eherbs.lic, go2.lic)
+     version: 1.1.0
         note: Written with assistance from Claude (Anthropic).
 
   Runs ;fizzfuse over a whole container of scrolls, unattended.
@@ -20,21 +20,29 @@
                                        ;scrolltender "leather case" suede.sack
 
   With no arguments, for each scroll:
-    - ;fizzfuse check, back in the scrollsack.
+    - READ it, then ;fizzfuse check, back in the scrollsack.
     - A spell with "the potential to add <anything but no>" is worth infusing, so
       ;fizzfuse infuse. With "no charges" (vibrant: "no additional time") on every spell, or
       no message at all (locked), it's left where it is.
 
   With two, for each scroll:
-    - ;fizzfuse unlock, again and again until every spell is unlocked. Only then
+    - READ it, and look at the check ;fizzfuse unlock starts with. READ leaves out the spells
+      with no charges left (18 of 18 in the logs), and a locked spell that's used up means the
+      scroll was invoked and can't be unlocked any more (3 of 3 waves on those shook slightly).
+      So it's not waved at: fizzfuse is killed right there. If nothing else on it is unlocked
+      it's dead and goes back in <source>, and the summary lists it with the MARK REMOVE to type
+      for selling it. This never marks or sells anything.
+    - Otherwise ;fizzfuse unlock, again and again until every spell is unlocked. Only then
       ;fizzfuse infuse, because a scroll can't be unlocked any more once it has been infused
       (a plain ;fizzfuse infuses after the first wave that fails).
     - A wave that "shakes violently" is tried again, unlock_tries times in a row. One that
       "shakes slightly" and a white aura on the stone are final: in the logs nothing unlocked
       after either (12 of 12 waves).
-    - Whatever did unlock is infused and goes in <target>. A scroll with nothing unlocked
-      stays in <source>, and the summary says so. Scrolls that are already unlocked and full
-      go straight to <target>.
+    - Whatever did unlock is infused and goes in <target>. A scroll with nothing unlocked goes
+      back in <source>, and the summary says so. Scrolls with nothing more to add go straight
+      to <target>.
+    - A scroll it never got to finish (no silver for a runestone, too injured, fizzfuse stuck)
+      goes back in <source> too, so it can be done another time.
 
   Unlocking can destroy the scroll and kill you. In all the logs (May to November 2026) the
   stone exploded on 3 of 677 waves: one killed Fizzleworth from full health (11/13), the other
@@ -48,10 +56,15 @@
   local bank). If it's running, go4invoker is paused until the end, so it doesn't walk you off
   with a scroll in your hand.
 
+  1.1.0: READs each scroll first and leaves dead ones alone. Infusing doesn't check the scroll all
+  over again. A spell that's on a scroll twice (about 1 check in 10) counts twice.
+
   Game text this relies on, all from Fizzleworth's logs:
     check         "As the runestone passes over the scroll, you sense:" then
                   "   (712) Cloak of Shadows with a few charges remaining and the potential to
                    add many charges."  (locked: the line ends at "remaining.")
+    read          "It takes you a moment to focus on the silvery scroll." "On the silvery scroll
+                   you see" "    (106) Spirit Fog"
     unlocked      "The smooth stone vibrates and begins to glow.  You sense that the scroll has
                    somehow been altered."
     failed        "The smooth stone shakes violently, but nothing happens."  / "shakes slightly"
@@ -65,7 +78,7 @@
 =end
 
 module ScrollTender
-  VERSION = '1.0.0'
+  VERSION = '1.1.0'
 
   # ---- the knobs (methods, so an edit takes effect on the next run)
   # How many ;fizzfuse unlocks in a row may unlock nothing (each one is a wave that shook
@@ -122,6 +135,10 @@ module ScrollTender
   NO_SILVER    = /already spent what you're trying to withdraw|don't have that much|You have no account|insufficient/i
   LINKED       = /form a link with it|^You feel your link to the .+ slip/
 
+  READ_START = /^On the .+ you see/
+  READ_SPELL = /^\s+\((\d+)\) /
+  NEVER      = /(?!)/
+
   CLOSED    = /^(?:That|The .+) is closed/
   LOOK_DONE = Regexp.union(/^Total items|^There is nothing in|^In the .+? you see|^I could not find|^What were you referring to/, CLOSED)
   OPEN_DONE = /^You open|^You carefully|^You unfasten|^That is already open|^I could not find|^What were you referring to/
@@ -155,16 +172,19 @@ module ScrollTender
     true
   end
 
-  # put, not fput (fput can take an unrelated line for the reply; see fizzpure)
-  def self.collect(action, done, timeout: 5)
+  # put, not fput (fput can take an unrelated line for the reply; see fizzpure). Reads until
+  # `done`, or, once a line matching `settle` has been seen, until a second goes by quietly.
+  def self.collect(action, done, timeout: 5, settle: nil)
     lines = []
     Script.current.clear
     put action
     end_time = Time.now + timeout
+    last_line = Time.now
     loop do
       line = get?
       if line
         lines << line
+        last_line = Time.now
         if line =~ /^(?:\.\.\.w|W)ait ([0-9]+) sec/
           sleep [Regexp.last_match(1).to_i - 0.5, 0.3].max
           put action
@@ -173,6 +193,7 @@ module ScrollTender
         end
         break if line =~ done
       else
+        break if settle && Time.now - last_line > 1.0 && lines.any? { |l| l =~ settle }
         sleep 0.1
       end
       break if Time.now > end_time
@@ -290,18 +311,35 @@ module ScrollTender
   end
 
   # ---------------------------------------------------------------- reading a check
-  # a check is { spell number => what can be added (nil = locked) }
+  # READ, in hand or in a container: the spells with charges left (or nil if it didn't answer).
+  def self.read(item)
+    waitrt?
+    lines = collect("read ##{item.id}", NEVER, timeout: 4, settle: READ_START)
+    start = lines.index { |line| line =~ READ_START }
+    start && lines[start..].map { |line| line[READ_SPELL, 1] }.compact.map(&:to_i)
+  end
+
+  # a check is a list of [spell number, what can be added (nil = locked), charges left]. The same
+  # spell can be on a scroll twice.
   def self.locked(check)
-    check.select { |_num, add| add.nil? }.keys
+    check.select { |_num, add| add.nil? }.map(&:first)
   end
 
   def self.unlocked(check)
-    check.reject { |_num, add| add.nil? }.keys
+    check.reject { |_num, add| add.nil? }.map(&:first)
+  end
+
+  # locked and used up, which is for good. READ has to agree, unless it's on there again with
+  # charges left.
+  def self.gone(check, read)
+    check.select { |num, add, left|
+      add.nil? && left =~ /\Ano\b/i && !(read.to_a.include?(num) && check.none? { |n, _add, l| n == num && l !~ /\Ano\b/i })
+    }.map(&:first)
   end
 
   # the spells that can still be infused
   def self.room_left(check)
-    check.select { |_num, add| add && add !~ /\Ano\b/i }.keys
+    check.select { |_num, add| add && add !~ /\Ano\b/i }.map(&:first)
   end
 
   def self.full?(check)
@@ -309,7 +347,7 @@ module ScrollTender
   end
 
   def self.label(item, check = nil)
-    spells = check.to_h.keys
+    spells = check.to_a.map(&:first)
     spells.empty? ? item.name.to_s : "#{item.name} (#{spells.join(', ')})"
   end
 
@@ -326,35 +364,42 @@ module ScrollTender
   # What one line of the game's says about the run. Returns :progress, :bad or nil.
   def self.note(run, line)
     case line
-    when STATUS_START then run[:checks] << {}
+    when STATUS_START then run[:checks] << []
     when STATUS_SPELL
       match = Regexp.last_match
       return nil if run[:checks].empty?
 
-      run[:checks].last[match[:num].to_i] = match[:add]
+      run[:checks].last << [match[:num].to_i, match[:add], match[:left]]
     when UNLOCKED     then run[:unlocked] += 1
     when SHOOK        then run[:shook] = true
     when SHOOK_LITTLE then run[:final] = true
     when STONE_AURA   then run[:aura] = run[:final] = true
-    when SCROLL_AURA  then run[:ended] = 'a white aura locked it for good'
+    when SCROLL_AURA
+      run[:tried] = true
+      run[:ended] = 'a white aura locked it for good'
     when EXPLODED     then run[:exploded] = true
     when WENT_COLD
+      run[:tried] = true
       run[:infused] += 1
       run[:ended] = 'it reached its limit and locked for good'
-    when INFUSED      then run[:infused] += 1
-    when FULL         then run[:full] = true
+    when INFUSED
+      run[:tried] = true
+      run[:infused] += 1
+    when FULL, STRAINED then run[:tried] = true
     when INJURED      then run[:injured] = true
     when NO_SILVER    then run[:no_silver] = true
     when EMPTY_HANDED then return :bad
     when NO_MANA      then return checkmana < maxmana.to_i * 0.9 ? :progress : :bad
-    when STRAINED, RUNE_WORK, LINKED then nil
+    when RUNE_WORK, LINKED then nil
     else return nil
     end
     :progress
   end
 
   # Run ;fizzfuse to the end, or kill it when it's stuck, the stone blew up or you died.
-  # run[:broke] says why, when it didn't end by itself.
+  # run[:broke] says why, when it didn't end by itself. With a block, the block gets the check
+  # when it's all in, and true kills fizzfuse there (run[:called_off]); its next wave or cast is
+  # 3 seconds of roundtime away.
   def self.fizzfuse(args)
     run = { checks: [], unlocked: 0, infused: 0 }
     waitrt?
@@ -370,6 +415,7 @@ module ScrollTender
     last = Time.now
     bad = 0
     exited = nil
+    judged = false
     loop do
       line = get?
       if line
@@ -380,10 +426,14 @@ module ScrollTender
         when :bad
           bad += 1
         end
+        if block_given? && !judged && line =~ /Roundtime/ && !run[:checks].empty?
+          judged = true
+          run[:called_off] = yield(run[:checks].first)
+        end
         run[:broke] = 'the stone exploded' if run[:exploded]
         run[:broke] = 'it was waving or infusing with nothing in hand' if bad >= 5
       end
-      break if run[:broke]
+      break if run[:broke] || run[:called_off]
       next if line
 
       # only once every line is read: the explosion's own line comes before the death's
@@ -403,6 +453,7 @@ module ScrollTender
       sleep 0.1
     end
     kill_fizzfuse
+    sleep 1 if run[:called_off] # for the replies to what it had already sent
     return_to(started_in) unless dead?
     run
   end
@@ -474,7 +525,7 @@ module ScrollTender
     clear_hands if recover(force: true)
   end
 
-  # ;fizzfuse check, which puts the scroll in `container`. Nil if it went wrong, {} if there's
+  # ;fizzfuse check, which puts the scroll in `container`. Nil if it went wrong, [] if there's
   # nothing on it.
   def self.check(item, container, name)
     2.times do
@@ -492,8 +543,8 @@ module ScrollTender
     nil
   end
 
-  # ;fizzfuse infuse until nothing can take more, starting with it in the right hand. Leaves it
-  # in `container` and returns what happened, or nil if it went wrong.
+  # ;fizzfuse infuse until nothing can take more, starting with it in the right hand and just
+  # checked. Leaves it in `container` and returns what happened, or nil if it went wrong.
   def self.infuse(item, container, name)
     total = 0
     ended = nil
@@ -503,15 +554,14 @@ module ScrollTender
         msg "#{label(item, final)}: #{room_left(final).join(', ')} can still take more, going again."
         return nil unless take(item)
       end
-      run = fizzfuse("infuse #{cont(name)}")
+      run = fizzfuse("infuse --nocheck #{cont(name)}")
       @last_run = run
       total += run[:infused]
       ended = run[:ended] || ended
-      return nil if run[:broke] || run[:checks].empty?
+      # it checks once, when it's done
+      return nil if run[:broke] || run[:checks].empty? || !run[:tried]
 
       final = run[:checks].last
-      # it checks again when it's done, unless there was nothing to do
-      return nil if run[:checks].size < 2 && !full?(final)
       return nil if in_hand?(item) && !put_away(item.id, container)
       break if room_left(final).empty? || ended
     end
@@ -520,6 +570,7 @@ module ScrollTender
 
   # --- with no arguments
   def self.top_up(item)
+    spells = read(item)
     found = check(item, @source, @source_name)
     if found.nil?
       return if dead?
@@ -529,6 +580,8 @@ module ScrollTender
 
     if room_left(found).empty?
       @bad_in_a_row = 0
+      return used_up(item, found, spells) if unlocked(found).empty? && !gone(found, spells).empty?
+
       if locked(found).size == found.size
         @locked << label(item, found)
         msg "#{label(item, found)}: locked, leaving it alone."
@@ -548,47 +601,90 @@ module ScrollTender
   def self.tend(item)
     return trouble(item, "it couldn't be picked up") unless take(item)
 
-    case unlock(item)
+    spells = read(item)
+    case unlock(item, spells)
     when :destroyed then return destroyed(item)
     when :trouble   then return dead? ? nil : trouble(item, why(@last_run))
     when :blank     then return unreadable(item)
     when :stored
-      @bad_in_a_row = 0
       put_away(item.id, @target) if in_hand?(item)
-      @already << label(item, @last_run[:checks].first)
-      return msg("#{label(item, @last_run[:checks].first)}: already unlocked and full, now in the #{@target.name}.")
+      return no_room(item, @last_run[:checks].first)
+    when :gone
+      found = @last_run[:checks].first
+      # it may have fizzfuse's stone in the other hand, or be in the infusesack
+      return trouble(item, "it couldn't be picked up") unless take(item)
+      return put_back(item) { used_up(item, found, spells) } if unlocked(found).empty?
+      return put_over(item) { no_room(item, found) } if room_left(found).empty?
+
+      msg "#{label(item, found)}: #{gone(found, spells).join(', ')} used up, so it can't be unlocked any more. Infusing the rest."
     when :nothing
-      @bad_in_a_row = 0
-      bring_home(item)
-      @stuck << label(item, @last_run[:checks].first)
-      return msg("#{label(item, @last_run[:checks].first)}: nothing on it would unlock, back in the #{@source.name}.")
-    when :partly
+      found = @last_run[:checks].first
+      return put_back(item) { wont_unlock(item, found) } if unlocked(found).empty?
+      return put_over(item) { no_room(item, found) }
+    when :aura
       # an aura can lock the ones that were unlocked, so look before infusing
       found = check(item, @source, @source_name)
       if found.nil?
         return if dead?
         return trouble(item, "it couldn't be checked: #{why(@last_run.to_h)}")
       end
-      if unlocked(found).empty?
-        @bad_in_a_row = 0
-        @stuck << label(item, found)
-        return msg("#{label(item, found)}: it's locked again, left in the #{@source.name}.")
-      end
-      msg "#{label(item, found)}: #{locked(found).join(', ')} wouldn't unlock, infusing the rest."
+      return wont_unlock(item, found) if unlocked(found).empty?
       return trouble(item, "it couldn't be picked up") unless take(item)
+      return put_over(item) { no_room(item, found) } if room_left(found).empty?
+    when :partly
+      msg "#{label(item, @last_run[:checks].first)}: the rest won't unlock, infusing what did."
     end
     finish(item, infuse(item, @target, @target_name))
   end
 
+  # from the right hand to the source or the target, and then the block; trouble if it won't go
+  def self.put_back(item)
+    return trouble(item, "it wouldn't go back in the #{@source.name}") unless put_away(item.id, @source)
+
+    yield
+  end
+
+  def self.put_over(item)
+    return trouble(item, "it wouldn't go in the #{@target.name}") unless put_away(item.id, @target)
+
+    yield
+  end
+
+  # in the source by now
+  def self.wont_unlock(item, check)
+    @bad_in_a_row = 0
+    @stuck << label(item, check)
+    msg "#{label(item, check)}: nothing on it would unlock, left in the #{@source.name}."
+  end
+
+  # in the source by now. Says what to type to sell it; doesn't do it.
+  def self.used_up(item, check, read)
+    @bad_in_a_row = 0
+    left = check.select { |_num, add, charges| add.nil? && charges !~ /\Ano\b/i }.map(&:first)
+    text = "#{item.name}: #{gone(check, read).join(', ')} used up, #{left.empty? ? 'nothing' : left.join(', ')} left, locked for good"
+    @dead << "#{text}   (mark ##{item.id} remove)"
+    msg "#{text}. Left in the #{@source.name}."
+  end
+
+  # in the target by now
+  def self.no_room(item, check)
+    @bad_in_a_row = 0
+    text = "#{label(item, check)}#{", #{locked(check).join(', ')} locked" unless locked(check).empty?}"
+    @already << text
+    msg "#{text}: nothing more to add. Now in the #{@target.name}."
+  end
+
   # ;fizzfuse unlock until it's done. :clean (all of it), :partly (some, and the rest won't),
-  # :nothing, :stored (it was full already and fizzfuse put it in the target), :blank,
-  # :destroyed or :trouble. The scroll is in the right hand after the first three.
-  def self.unlock(item)
+  # :aura (stopped by one), :nothing (nothing to infuse), :gone (not waved at, see gone),
+  # :stored (it was full already and fizzfuse put it in the target), :blank, :destroyed or
+  # :trouble. The scroll is in the right hand after the first four.
+  def self.unlock(item, spells)
     barren = 0
     loop do
-      run = fizzfuse("unlock #{cont(@target_name)}")
+      run = fizzfuse("unlock #{cont(@target_name)}") { |check| !gone(check, spells).empty? }
       @last_run = run
       return :destroyed if run[:exploded]
+      return :gone if run[:called_off]
       return :trouble if run[:broke] || run[:checks].empty?
 
       before = run[:checks].first
@@ -603,7 +699,8 @@ module ScrollTender
 
       barren = run[:unlocked].positive? ? 0 : barren + 1
       if run[:final] || barren >= unlock_tries
-        return unlocked(before).size + run[:unlocked] > 0 ? :partly : :nothing
+        return :nothing if room_left(before).empty? && run[:unlocked].zero?
+        return run[:aura] ? :aura : :partly
       end
 
       msg "#{label(item, before)}: #{count(left, 'spell')} still locked, trying again."
@@ -670,6 +767,7 @@ module ScrollTender
     @already   = []
     @locked    = []
     @stuck     = []
+    @dead      = []
     @destroyed = []
     @skipped   = []
     @opened    = []
@@ -721,6 +819,7 @@ module ScrollTender
       'Already full'                  => @already,
       'Locked, left alone'            => @locked,
       'Would not unlock, not moved'   => @stuck,
+      'DEAD, not moved'               => @dead,
       'DESTROYED by an explosion'     => @destroyed,
       'SKIPPED, something went wrong' => @skipped
     }.each do |heading, list|
