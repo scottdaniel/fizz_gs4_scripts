@@ -18,6 +18,12 @@
     - go4invoker.lic: takes bigshot to the invoker on Four Winds Isle for a spell-up
       about every 4 hours. A character with no FWI trinket set in go2 just gets a
       message and the script exits.
+    Logging out stops them but leaves afk_now on (11/25 Salvi logged back in at 10:24 and
+    missed the 14:00 invoker, bigshot running the whole time). So deadexit runs ;afk resume
+    once per login, when bigshot is running and afk_now was set ON (unset doesn't count):
+    it starts them in a mode that only acts while bigshot runs, in case you're at the
+    keyboard and afk_now is just left over. ;afk on makes it the full thing. Voicemail's
+    AFK reply and relay are not touched by that.
 
   An unset afk_now counts as ON (away) everywhere, so a character that never had
   it set gets no music and an armed deadexit.
@@ -28,6 +34,7 @@
                         voicemail AFK reply + relay on, go4invoker started
           ;afk          show the current setting (and voicemail's and go4invoker's) for
                         this character
+          ;afk resume   what deadexit runs after a login (see above)
 
   Also accepted: here/back/no/false/0 for "off", away/yes/true/1 for "on".
 =end
@@ -87,6 +94,20 @@ module Afk
     end
   end
 
+  # Run by deadexit, once per login: bigshot is running and afk_now was left ON by the last
+  # session. "bigshot" tells the script to act only while bigshot runs. Not on TEST, where the
+  # settings were copied from live.
+  def self.resume
+    return if XMLData.game.to_s == "GST" || UserVars.afk_now.nil? || !afk_now?
+
+    afk_scripts.each do |name|
+      next if Script.running?(name) || !Script.exists?(name)
+
+      echo "afk_now is still ON from before this login -- starting #{name} (;afk off if you're at the keyboard)."
+      Script.start(name, "bigshot")
+    end
+  end
+
   def self.stop_afk_scripts
     afk_scripts.each do |name|
       next unless Script.running?(name)
@@ -101,6 +122,7 @@ module Afk
     afk_scripts.each do |name|
       running = Script.running?(name)
       detail = name == "go4invoker" && running && $go4invoker_status ? " -- #{$go4invoker_status}" : ""
+      detail += " (only while bigshot runs)" if name == "go4invoker" && running && $go4invoker_bigshot_only
       echo "  #{name}: #{running ? 'running' : 'not running'}#{detail}"
     end
   end
@@ -143,9 +165,13 @@ module Afk
     set_voicemail(false)
     stop_afk_scripts
     show
+  when /\Aresume\z/i
+    resume
   when AWAY
     UserVars.afk_now = true
     set_voicemail(true)
+    $afk_resumed = true             # nothing left for deadexit to resume this login
+    $go4invoker_bigshot_only = false # a copy deadexit started becomes the full one
     start_afk_scripts
     show
   else

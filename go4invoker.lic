@@ -38,6 +38,10 @@
 
   Usage:
     ;go4invoker            watch and go when due (;afk on starts this, ;afk off stops it)
+    ;go4invoker bigshot    the same, but only acts while bigshot is running. deadexit starts this
+                           one after a login that finds afk_now still on (see afk.lic), because
+                           logging out stops the one ;afk on started; ;afk on turns it into the
+                           full one. 11/25 Salvi missed the 14:00 visit that way.
     ;go4invoker now        go right now and come back (she must be there or arriving within
                            15 minutes). Pauses bigshot for the trip if it's running.
     ;go4invoker status     last spell-up, next visit, whether that visit is due
@@ -633,7 +637,7 @@ module Go4Invoker
     return :outside if r < window_open || r > last_leave
     return :not_due unless due_for?(visit)
     return :handled if @handled_visit == visit
-    return solo_tick(visit, r) unless bigshot?
+    return $go4invoker_bigshot_only ? :no_bigshot : solo_tick(visit, r) unless bigshot?
     return :bigshot_paused if Script.paused?("bigshot") # someone else (deader, disarmguard) paused it
     return :no_resting_room if resting_room.nil?
 
@@ -660,7 +664,7 @@ module Go4Invoker
       return
     end
     save_from_timers
-    say "watching. #{status_line}."
+    say "watching#{' (only while bigshot runs)' if $go4invoker_bigshot_only}. #{status_line}."
     loop do
       exit if checkdead
       begin
@@ -704,8 +708,10 @@ module Go4Invoker
     @solo_why = nil
     $go4invoker_paid_at = nil
     $go4invoker_trip = nil
-    case arg.to_s.strip.downcase
-    when ""
+    arg = arg.to_s.strip.downcase
+    $go4invoker_bigshot_only = arg == "bigshot"
+    case arg
+    when "", "bigshot"
       install_hook
       watch
     when "now"
@@ -721,7 +727,7 @@ module Go4Invoker
       record_spellup
       say "recorded a spell-up now. #{status_line}."
     else
-      say "Unknown option '#{arg}'. Use ;go4invoker, ;go4invoker now, ;go4invoker status or ;go4invoker done."
+      say "Unknown option '#{arg}'. Use ;go4invoker, ;go4invoker bigshot, ;go4invoker now, ;go4invoker status or ;go4invoker done."
     end
   end
 end
@@ -732,6 +738,7 @@ before_dying do
   Go4Invoker.save_paid
   $go4invoker_trip = nil
   $go4invoker_status = nil
+  $go4invoker_bigshot_only = nil
 end
 
 Go4Invoker.run(Script.current.vars[1])
