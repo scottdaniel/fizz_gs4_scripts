@@ -46,8 +46,14 @@
   While the watcher runs, Lich won't start a second copy, so `status`, `now` and `done` are for
   when it isn't running; `;afk` shows the watcher's status.
 
-  The last spell-up time is UserVars.go4invoker_last. Any "You hand over your payment to ...
-  invoker" line seen while this runs counts, including a trip you make by hand.
+  The last spell-up time is UserVars.go4invoker_last. These all count:
+    - any "You hand over your payment to ... invoker" line seen while this runs, including a
+      trip you make by hand;
+    - eating a spell-up pill while this runs. If it was holding bigshot for a visit, it lets go;
+    - a spell-up from before this was started, read off your spell timers. A pill lasts
+      exactly as long as the invoker's spells (4:10), so if the spells in marker_spells are all
+      up, the shortest one says when you got them. 11/24 Salvi ate a pill at 21:32, and the
+      go4invoker started at 21:48 held bigshot for the 22:00 visit ("last spell-up 133h47m ago").
 
   Settings:
     ;vars set go4invoker_hours=3.5   how old the last spell-up must be (when she arrives)
@@ -69,6 +75,8 @@ module Go4Invoker
   PAID   = /You hand over your payment to .*invoker/i
   POOR   = /You do not have enough for my services/i
   ABSENT = /Who are you trying to ask\?/i
+  # Your own pill only: other people's read "Voxy places her dark emerald pill in her mouth".
+  PILL   = /You place .*\bpill\b.* in your mouth.*cloud of mana coalesces around you/i
   WITHDRAW_RESULT = /hands you [\d,]+ silvers|already spent what you're trying to withdraw|don't have that much|promissory note|You have no account|insufficient/i
 
   # Tunables are methods so an edit applies on the next start (constants survive in Lich).
@@ -81,6 +89,15 @@ module Go4Invoker
   def give_up_at;    14; end   # stop waiting for her / asking
   def poll_seconds;   5; end
   def go_limit;     180; end   # one go2 run (bank, invoker, home) is stopped after this many seconds
+
+  # How long a spell-up lasts, invoker or pill. Logs: invoker 11/13 Davu, 4:10:00 to the second;
+  # pill 9/1 and 10/22 Salvi, the same (10/22 minus 27:47 logged off, when timers stop).
+  def spellup_minutes; 250; end
+
+  # Spells both give, that nobody here keeps up as a set by hand. All of them have to be up
+  # before the timers count as a spell-up: Foresight and Mindward come from no spell circle of
+  # ours. Mantle of Faith and Spirit Shield aren't here because they only last 2 hours.
+  def marker_spells; ["Elemental Defense I", "Resist Elements", "Mobility", "Foresight", "Mindward"]; end
 
   # Scripts that may be running in the resting room but never need waiting for.
   def never_wait_for; %w[playsongs rested timequit go4invoker]; end
@@ -169,12 +186,41 @@ module Go4Invoker
       "next trip at the #{clock(nxt)} visit (every #{(refresh_seconds / 3600.0).round(2)} h)"
   end
 
+  # When the spells you have on now were cast, going by their timers (epoch seconds), or nil if
+  # any of them isn't up. Read from the game's Active Spells dialog, which also works for a
+  # pill eaten while this wasn't running.
+  def spellup_from_timers
+    now = Time.now.to_f
+    ends = marker_spells.map { |name| Effects::Spells.expiration(name).to_f }
+    return nil unless ends.all? { |t| t > now }
+
+    ([ends.min, now + spellup_minutes * 60].min - spellup_minutes * 60).to_i
+  rescue StandardError
+    nil
+  end
+
+  # Takes over a spell-up the timers show and the record doesn't. Saved rather than looked up
+  # each time because the game resends the dialog, and it reads empty for a moment when it does.
+  def save_from_timers
+    at = spellup_from_timers
+    return if at.nil? || (last_spellup && at <= last_spellup + 60)
+
+    record_spellup(at)
+    say "your spell timers say you were spelled up at #{clock(at)} (pill or otherwise) -- counting that. #{status_line}."
+  end
+
+  # Everything that can tell us about a spell-up we didn't buy ourselves.
+  def update_spellups
+    save_paid
+    save_from_timers
+  end
+
   # Any spell-up counts, a manual one included. The hook only sets a global; the main loop saves it.
   def install_hook
     DownstreamHook.remove(HOOK) rescue nil
     DownstreamHook.add(HOOK, proc { |line|
       begin
-        $go4invoker_paid_at = Time.now.to_i if line =~ PAID
+        $go4invoker_paid_at = Time.now.to_i if line =~ PAID || line =~ PILL
       rescue StandardError
         nil
       end
@@ -510,12 +556,23 @@ module Go4Invoker
     end
   end
 
+  # A pill (or another spell-up) while bigshot is being held for the visit.
+  def spelled_up_meanwhile?(visit)
+    update_spellups
+    return false if due_for?(visit)
+
+    say "you've been spelled up since -- not going to the invoker. #{status_line}."
+    true
+  end
+
   # bigshot is resting at home inside the window: hold it, let the chores finish, go.
   def run_visit(visit)
     pause_bigshot
     say "holding bigshot for the invoker's #{clock(visit)} visit."
     said = false
     until (busy = busy_chores).empty?
+      return :spelled_up if spelled_up_meanwhile?(visit)
+
       if rel_minutes > last_leave
         say "rest chores (#{busy.join(', ')}) still running at #{last_leave} past -- skipping this visit."
         notice("invoker trip skipped: bigshot's rest chores (#{busy.join(', ')}) ran past #{clock(visit + last_leave * 60)}.")
@@ -525,7 +582,13 @@ module Go4Invoker
       said = true
       sleep 1
     end
-    sleep 1 while rel_minutes < leave_at
+    while rel_minutes < leave_at
+      return :spelled_up if spelled_up_meanwhile?(visit)
+
+      sleep 1
+    end
+    return :spelled_up if spelled_up_meanwhile?(visit)
+
     result = trip
     report(result, visit)
     result
@@ -558,7 +621,7 @@ module Go4Invoker
 
   # One poll of the watcher. Returns a symbol saying what it did (for tests).
   def tick(now = Time.now)
-    save_paid
+    update_spellups
     visit = visit_epoch(now)
     r = rel_minutes(now)
     if r > last_leave && @solo_blocked == visit && @handled_visit != visit && due_for?(visit)
@@ -596,6 +659,7 @@ module Go4Invoker
           "Set one with ;go2 --fwi-trinket=<name> and start this again. Exiting."
       return
     end
+    save_from_timers
     say "watching. #{status_line}."
     loop do
       exit if checkdead
@@ -649,6 +713,7 @@ module Go4Invoker
       now_command
       save_paid
     when "status"
+      save_from_timers
       say status_line
       say "bigshot #{bigshot? ? 'running' : 'not running'}; resting room #{resting_room.inspect}; " \
           "FWI trinket #{UserVars['mapdb_fwi_trinket'].inspect}"
