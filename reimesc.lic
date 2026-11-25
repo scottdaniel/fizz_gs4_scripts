@@ -1,0 +1,187 @@
+# reimesc.lic -- get out of the Vault Entry (the Emperor and Empress), and by default run all the way back out
+# of Reim.
+#
+#   ;reimesc          1. Vault Entry -> `go rhimar door` (standing) or stand first (down). Verified 11/24: 5 s.
+#                     2. Then walks out of Reim the SAFE way, area by area through the gates, never through the
+#                        vault's golden door (go2 loves that shortcut and it is shut until the Empress is dead:
+#                        "rebuking your advance"; that detour cost 45 s and some blood on 11/24).
+#                        At every stop it fights what's in the room (Fizzleworth-attack-reim), and heals first if
+#                        health is under 75% (REIM BOOST HEAL, then eherbs). Ends at the Cavernous Approach.
+#   ;reimesc stay     only step 1: out of the vault, then you decide.
+#   ;reimesc camp     tries REIM CAMP first. NOTE 11/24: from the Throne Room and the Vault Entry the game says
+#                     "You cannot transport to the Reim Base Camp from here." -- it does not work inside the castle.
+#
+# It kills ;fizzreim and ;treim first, or they would walk you straight back in. Stunned = waits and fires the moment
+# you can act. Gives up on the vault after 2 minutes. The quest timer keeps running outside and a running quest is
+# re-entered free (;fizzreim does it, or climb the chains).
+#
+# Why not just `;go2 reim`? 11/24 19:09-19:10: from the Throne Room go2 first tried the vault shortcut (blocked),
+# then walked 48 rooms at 60% health with two bleeding wounds, and a village ambush on the Road did the rest.
+
+module ReimEsc
+  VAULT     = 25142
+  APPROACH  = 24876
+  GIVE_UP   = 120
+  # where each area starts and the command back through its gate (the mirror of fizzreim's gates table)
+  HOP = {
+    royal:     [25130, "go door"],
+    visitor:   [25120, "go door"],
+    servant:   [25109, "go gate"],
+    courtyard: [25065, "go gate"],
+    road:      [24977, "go gate"],
+  }.freeze
+
+  def self.in_reim?; XMLData.room_title.to_s =~ /Reim (?:Settlement|Castle)|Pitfall Trap/i ? true : false; end
+  def self.room_id;  (Room.current&.id).to_i; end
+  def self.say(msg); echo "reimesc: #{msg}"; end
+  def self.hp;       (Char.percent_health.to_i rescue 100); end
+
+  def self.stage(id)
+    case id
+    when 25142..25143 then :vault
+    when 25130..25141 then :royal
+    when 25120..25129 then :visitor
+    when 25109..25119 then :servant
+    when 25065..25108 then :courtyard
+    when 24977..25064 then :road
+    else :village
+    end
+  end
+
+  def self.hostiles
+    GameObj.targets.select { |t| t && t.status.to_s !~ /dead|gone/ && t.name.to_s !~ /animated|verlok|minor demon|raven/i }
+  rescue StandardError
+    []
+  end
+
+  def self.go2(id)
+    Script.run("go2", "#{id} --disable-confirm", { quiet: true })
+    room_id == id.to_i
+  end
+
+  # REIM CAMP: refused inside the castle (11/24), kept for `;reimesc camp` outdoors
+  def self.camp
+    waitrt?
+    r = dothistimeout("reim camp confirm", 5, /Do you wish to transport|Wisps of ethereal energy|You cannot transport|not enough|cannot|wait \d+|still stunned/i).to_s
+    if r =~ /Do you wish to transport/i
+      r = dothistimeout("reim camp confirm", 5, /Wisps of ethereal energy|You cannot transport|not enough|cannot|wait \d+|still stunned/i).to_s
+    end
+    ok = r =~ /Wisps of ethereal energy/i ? true : false
+    say "REIM CAMP: #{r.strip[0, 100].inspect}"
+    sleep 2 if ok
+    ok
+  end
+
+  # step 1. true once we are out of the vault
+  def self.leave_vault
+    started = Time.now.to_f
+    say "getting out of #{XMLData.room_title.to_s.strip} (health #{hp}%)."
+    loop do
+      return false if checkdead
+      return true  unless stage(room_id) == :vault
+      if Time.now.to_f - started > GIVE_UP
+        say "STILL IN THE VAULT after #{GIVE_UP} s. Health #{hp}%. By hand: STAND, GO RHIMAR DOOR."
+        return false
+      end
+      if checkstunned
+        sleep 0.3
+        next
+      end
+      waitrt?
+      if checkstanding
+        r = dothistimeout("go rhimar door", 5, /You step through|You must be standing|still stunned|can't go|cannot|Roundtime/i).to_s
+        say "go rhimar door: #{r.strip[0, 80].inspect}" unless r =~ /You step through/i
+        sleep 0.3
+      else
+        dothistimeout("stand", 5, /You stand|already|still stunned|Roundtime/i)
+      end
+    end
+  end
+
+  # fight whatever is in the room (the attack script runs ultima until it's clear, bosses get the Curse/Pain opener)
+  def self.clear_room
+    return if hostiles.empty?
+    say "#{hostiles.size} hostile(s) here (#{hostiles.map { |t| t.name }.first(3).join(', ')}): fighting first."
+    Script.run("Fizzleworth-attack-reim")
+  end
+
+  # under 75%: REIM BOOST HEAL once, then eherbs for the bleeding
+  def self.patch_up
+    return if hp >= 75
+    say "health #{hp}%: patching up before moving on."
+    unless @no_heal_boost
+      before = checkhealth.to_i
+      waitrt?
+      waitcastrt?
+      r = dothistimeout("reim boost heal", 4, /rejuvinat|rejuvenat|energy|cannot|can't|not enough|wait \d+/i).to_s
+      sleep 1
+      gained = checkhealth.to_i - before
+      say "REIM BOOST HEAL: #{gained >= 15 ? "+#{gained}" : 'nothing'} (#{r.strip[0, 80]})"
+      @no_heal_boost = true if gained < 15
+    end
+    if hp < 75 && Script.exists?("eherbs") && !@herbed
+      @herbed = true
+      Script.run("eherbs")
+    end
+  end
+
+  # step 2. one area at a time, back toward the chains
+  def self.walk_out
+    hops = 0
+    loop do
+      return false if checkdead
+      unless in_reim?
+        say "out of Reim: #{XMLData.room_title.to_s.strip} (health #{hp}%). The quest timer is still running; going back in is free (;fizzreim)."
+        return true
+      end
+      hops += 1
+      return say("giving up after #{hops} hops at #{room_id} (health #{hp}%). Walk it by hand.") && false if hops > 40
+
+      clear_room
+      patch_up
+      st = stage(room_id)
+      case st
+      when :vault
+        return false unless leave_vault
+      when :village
+        say "village: to the chains (#{APPROACH})."
+        3.times { go2(APPROACH); break unless in_reim? }
+        return say("couldn't get out of the village from #{room_id}.") && false if in_reim?
+      else
+        entry, cmd = HOP.fetch(st)
+        say "#{st}: to #{entry}, #{cmd}."
+        go2(entry) unless room_id == entry
+        next unless room_id == entry
+        next unless hostiles.empty?
+        r = dothistimeout(cmd, 8, /You step through|rebuking|can't go|cannot|still stunned/i).to_s
+        sleep 1
+        say "#{cmd}: #{r.strip[0, 80].inspect}" unless r =~ /You step through/i
+      end
+    end
+  end
+
+  def self.run
+    mode = Script.current.vars[1].to_s.downcase
+    unless in_reim?
+      say "you're not in Reim (#{XMLData.room_title.to_s.strip}). Nothing to do."
+      return
+    end
+    %w[fizzreim treim fizzleworth-attack-reim].each { |n| Script.kill(n) if Script.running?(n) }
+    @no_heal_boost = false
+    @herbed = false
+    if mode == "camp" && !camp
+      say "the camp won't take you from here: walking out instead."
+    end
+    return unless in_reim?
+    if stage(room_id) == :vault
+      return unless leave_vault
+    end
+    if mode == "stay"
+      say "out of the vault: #{XMLData.room_title.to_s.strip} (health #{hp}%). Staying (`;reimesc` with no argument walks all the way out)."
+      return
+    end
+    walk_out
+  end
+end
+
+ReimEsc.run

@@ -47,6 +47,16 @@
 # fight this runs ;eloot once, the same call you made by hand after every kill. Neither treim nor
 # ultima loots. `;vars set reim_loot=off` turns it off.
 #
+# THE SPHERE (`;Fizzleworth-attack-reim sphere`, started by ;fizzreim). Once every rare is dead and REIM INFO
+# says "throne room", the Emperor and Empress are not waves: in the Vault Entry (25142, through the
+# Throne Room's rhimar door) `touch sphere` summons both ("Two figures ripple into existence in front of
+# you"), and you are driven to your knees (5 s roundtime). Scott killed the Emperor in 48 s on 11/24 and
+# was then nearly killed by the berserk Empress (she stuns for 6 rounds, shakes the ground every 10 s so
+# you fall over, throws boulders), so this mode kills the EMPRESS FIRST, with a Hex and then Pain (200 a
+# hit), heals with REIM BOOST HEAL, and BAILS OUT when health drops under reim_sphere_bail (default 50%):
+# stand and `go rhimar door` (the one exit; REIM CAMP is refused inside the castle). The result goes in
+# $reim_sphere_result: :won, :door, :stuck, :dead, :nosphere, :nopair, :left. Knobs: reim_sphere_bail (50), reim_sphere_heal (70, % health for REIM BOOST HEAL).
+#
 # SAFETY. One launch never runs longer than MAX_SECONDS (treim starts a fresh one on the next
 # wave), stops if you die or leave Reim, and backs off when ultima returns at once without
 # casting anything (so it can never spin hot).
@@ -173,7 +183,7 @@ module FizzReimAttack
   end
 
   # Cast `cmd` and read every line through the cast's own terminal line.
-  def self.cast_collect(cmd, timeout = 6)
+  def self.cast_collect(cmd, timeout = 6, done = CAST_DONE)
     lines = []
     nil while get?
     put cmd
@@ -184,7 +194,7 @@ module FizzReimAttack
         sleep 0.1
       else
         lines << line
-        break if line =~ CAST_DONE
+        break if line =~ done
       end
       break if Time.now.to_f >= deadline
     end
@@ -237,6 +247,160 @@ module FizzReimAttack
       waitcastrt?
       waitrt?
     end
+  end
+
+  # --- the Emperor and the Empress ------------------------------------------------------------------------------
+
+  SPHERE_MAX  = 420
+  SPHERE_DONE = Regexp.union(CAST_DONE, /still stunned|You must be standing/i)
+  VAULT_ENTRY = 25142
+
+  def self.hp_pct;  (Char.percent_health.to_i rescue 100); end
+  def self.in_vault?; (Room.current&.id).to_i == VAULT_ENTRY; end
+
+  def self.sphere_pair
+    hostiles.select { |t| t.noun.to_s =~ /\A(?:Emperor|Empress)\z/ || t.name.to_s =~ /Emperor|Empress/ }
+  end
+
+  # the Empress first (she is the one that stuns and knocks you down), then the Emperor, then whatever else
+  def self.sphere_target
+    list = hostiles
+    list.find { |t| t.noun.to_s == "Empress" || t.name.to_s =~ /Empress/ } ||
+      list.find { |t| t.noun.to_s == "Emperor" || t.name.to_s =~ /Emperor/ } || list.first
+  end
+
+  # true if the sphere answered with the pair
+  def self.touch_sphere
+    r = dothistimeout("touch sphere", 6, /Two figures ripple|You dare seek|What were you referring to|You can't|cannot/i).to_s
+    echo "touch sphere: #{r.strip[0, 100]}"
+    r =~ /Two figures ripple|You dare seek/i ? true : false
+  end
+
+  # REIM BOOST HEAL (50 health for 250 quest energy). 11/24: his `reim boost heal` at 70% health was followed
+  # by full health and "You feel rejuvinated." One miss (no energy, refused) and it is not tried again in this fight.
+  def self.sphere_heal
+    return false if @sphere_no_heal || !uv_on?(:reim_qboost)
+    return false if hp_pct >= uv_int(:reim_sphere_heal, 70)
+    return false if Time.now.to_f < @sphere_heal_at.to_f + 4
+    @sphere_heal_at = Time.now.to_f
+    before = checkhealth.to_i
+    waitrt?
+    waitcastrt?
+    r = dothistimeout("reim boost heal", 4, /rejuvinat|rejuvenat|energy|cannot|can't|not enough|wait \d+/i).to_s
+    sleep 1
+    gained = checkhealth.to_i - before
+    echo "REIM BOOST HEAL: #{gained >= 15 ? "+#{gained}" : 'nothing'} (#{r.strip[0, 80]})"
+    @sphere_no_heal = true if gained < 15 && r !~ /wait \d+/i
+    true
+  end
+
+  # Out of the Vault Entry: `go rhimar door` when standing, STAND first when down (the Empress shakes the ground
+  # every 10 s). REIM CAMP is NOT an option: inside the castle the game answers "You cannot transport to the Reim
+  # Base Camp from here." (11/24 19:09, from the Throne Room and from this very room). Returns :door, :stuck or :dead.
+  def self.bail_out(why)
+    echo "BAIL OUT (#{why}): health #{hp_pct}%, mana #{checkmana}. Leaving by the rhimar door."
+    started = Time.now.to_f
+    loop do
+      return :dead if checkdead
+      return :door unless in_vault?
+      return :stuck if Time.now.to_f - started > 60
+      if checkstunned
+        sleep 0.3
+        next
+      end
+      waitrt?
+      if checkstanding
+        dothistimeout("go rhimar door", 5, /You step through|You must be standing|still stunned|can't go|cannot|Roundtime/i)
+        sleep 0.3
+      else
+        dothistimeout("stand", 5, /You stand|already|still stunned|Roundtime/i)
+      end
+    end
+  end
+
+  def self.sphere_result(r)
+    $reim_sphere_result = r
+    echo "sphere: #{r}."
+    r
+  end
+
+  def self.sphere_bail(why)
+    sphere_result(bail_out(why))
+  end
+
+  # The fight. Empress first: Curse once (as the Hex, if the mana allows), then Pain until she is dead; then the
+  # Emperor the same way. Bails out under reim_sphere_bail % health, when it can't cast (head wounds) or can't
+  # find the mana for another Pain, or after SPHERE_MAX seconds.
+  def self.sphere
+    $reim_sphere_result = nil
+    @camp_refused = false
+    @sphere_no_heal = false
+    @sphere_heal_at = 0.0
+    @sphere_cursed  = {}
+    @sphere_refill  = 0.0
+    bail    = uv_int(:reim_sphere_bail, 50)
+    started = Time.now.to_f
+    seen    = {}
+    looted  = {}
+
+    unless sphere_pair.any?
+      return sphere_result(:nosphere) unless in_vault? && touch_sphere
+      waited = Time.now.to_f
+      sleep 0.3 until sphere_pair.any? || Time.now.to_f - waited > 8
+    end
+    return sphere_result(:nopair) if sphere_pair.empty?
+    echo "the Emperor and Empress are here: Empress first, bailing out under #{bail}% health."
+
+    loop do
+      return sphere_result(:left) unless in_reim?
+      return sphere_result(:dead) if checkdead
+      return sphere_bail("health #{hp_pct}% is under #{bail}%") if hp_pct < bail
+      return sphere_bail("#{SPHERE_MAX} s and not finished") if Time.now.to_f - started > SPHERE_MAX
+      sphere_pair.each { |t| seen[t.id.to_i] = t.name }
+      seen.each_key do |id|
+        next if looted[id] || GameObj.targets.any? { |x| x.id.to_i == id && x.status.to_s !~ /dead|gone/ }
+        looted[id] = true
+        loot if hp_pct >= 75 && !hostiles.empty?     # the corpse is pulled away within seconds
+      end
+      break if hostiles.empty? || (sphere_pair.empty? && !seen.empty?)
+      if checkstunned
+        sleep 0.3
+        next
+      end
+      next if sphere_heal
+      tgt = sphere_target
+      next if tgt.nil?
+
+      spell = 711
+      if uv_on?(:reim_curse) && !@sphere_cursed[tgt.id.to_i] && tgt.noun.to_s =~ /Emperor|Empress/ &&
+         checkmana >= curse_cost + 3 * pain_cost + uv_int(:reim_pain_reserve, 21)
+        spell = 715
+        @sphere_cursed[tgt.id.to_i] = true
+      end
+      if checkmana < cost_of(spell)
+        if Time.now.to_f - @sphere_refill > 15
+          @sphere_refill = Time.now.to_f
+          refill_mana
+        end
+        return sphere_bail("out of mana (#{checkmana})") if checkmana < pain_cost
+        next
+      end
+
+      waitrt?
+      waitcastrt?
+      go_guarded if spell == 715
+      fput "target ##{tgt.id}" unless XMLData.current_target_id.to_i == tgt.id.to_i
+      text = cast_collect("incant #{spell}", 6, SPHERE_DONE)
+      if spell == 715
+        echo(text =~ /very vulnerable/i ? "Curse: Hex landed on #{tgt.name.to_s.sub(/\A(?:an?|the) /i, '')} (-24 TD)." : "Curse: not the Hex (stance was #{checkstance}).")
+        fput "stance defensive"
+      end
+      return sphere_bail("can't think clearly enough to cast") if text =~ WOUNDED
+      sleep 0.5 if text =~ /still stunned/i
+    end
+
+    loot if hp_pct >= 60
+    sphere_result(:won)
   end
 
   # ;eloot the corpses the fight left (it searches them and gathers the silver)
@@ -302,8 +466,8 @@ module FizzReimAttack
 end
 
 # `;Fizzleworth-attack-reim refill`: just the mana refill, then exit (fizzreim calls this when mana is low)
-if Script.current.vars[1].to_s.downcase == "refill"
-  FizzReimAttack.refill_mana
-else
-  FizzReimAttack.run
+case Script.current.vars[1].to_s.downcase
+when "refill" then FizzReimAttack.refill_mana
+when "sphere" then FizzReimAttack.sphere
+else FizzReimAttack.run
 end

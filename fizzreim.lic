@@ -68,13 +68,27 @@
 #        chains, then the open gates). No rest trip is made with under 12 minutes of quest time left
 #        (a finished task is then handed in when the run ends). `;vars set reim_rest=off` = never.
 #
-# WHAT IT DOES NOT DO. The Throne Room fight (Emperor and Empress, unverified: the wiki says they
-# have an in-game ten-minute timer) is left to treim; once REIM INFO says the Treasury is open it
-# stops and tells you, and the vault, the exit and TURN BOARD are yours (;fizzreim turnin does the
-# last). Pitfall traps: the pit creature is fought by treim, then this script CLIMB ROPEs out
-# (unverified text). Quest energy (REIM BOOST) is not spent. The Emperor task's completion line is
-# assumed to read like the 35-kill one ("You have finished your task ...").
+# THE SPHERE (the Emperor and Empress). Once REIM INFO says "throne room" they are not waves: they are
+# summoned by touching the ethereal sphere in the Vault Entry (25142), through the Throne Room's rhimar door.
+# When this script stands in the Throne Room, flagged to it, with the room quiet, 8+ quest minutes left, health
+# 90%+ and mana 85%+ (it refills first, and takes a rest trip to the inn for the mana if there is time), it
+# does `go door`, then ;Fizzleworth-attack-reim sphere, which touches the sphere and kills the EMPRESS FIRST
+# (the berserk one nearly killed Scott on 11/24 by stunning him and shaking the ground until he fell over)
+# and then the Emperor. It BAILS OUT under 50% health: stand and `go rhimar door` (REIM CAMP is refused
+# inside the castle). Two tries (the second needs 5 more minutes of rest), then it leaves the sphere
+# alone. A win ends the run: REIM INFO shows the Treasury and the vault, the exit and TURN BOARD are yours.
+#   ;vars set reim_sphere=off          never touch it (or run `;fizzreim nosphere`)
+#   ;vars set reim_sphere_bail=50      bail out under this health % (default 50)
+#   ;vars set reim_sphere_mana=85      mana % wanted before touching (default 85)
+#   ;vars set reim_sphere_tries=2      attempts per run (default 2)
+#   ;vars set reim_sphere_min_minutes=8
+# Anywhere in the Vault Entry or the Treasure Vault that you walk into yourself, it leaves you alone.
 #
+# WHAT IT DOES NOT DO. Pitfall traps: the pit creature is fought by treim, then this script CLIMB ROPEs out
+# (unverified text). Quest energy (REIM BOOST) is spent only on health and mana. The Emperor task finishes
+# with "You have succeeded in your task of killing the Emperor within the Castle of Reim!" (11/24 log); turn
+# it in with ;fizzreim turnin.
+
 # SAFETY. Only moves between areas when nothing alive is in the room and the attack script is
 # not running. A new run is only started when no quest is running; once per invocation.
 # `;kill fizzreim` stops treim, the attack script and the helpers it started.
@@ -179,6 +193,9 @@ module FizzReim
     @boosted       = false          # a boost has been used for this full mind
     @no_lte        = false          # out of longterm boosts
     @no_absorb     = false          # out of absorb boosts
+    @sphere_tries  = 0              # attempts at the Emperor and Empress this run
+    @sphere_block_until = 0.0
+    @sphere_refill_at   = 0.0
     @told          = {}
   end
 
@@ -195,6 +212,15 @@ module FizzReim
   def self.in_pit?;  title =~ /Pitfall Trap/i ? true : false; end
   def self.at_camp?; title =~ /Reim Base Camp/i ? true : false; end
   def self.room_id;  (Room.current&.id).to_i; end
+  def self.vault_room?; [vault_entry, 25143].include?(room_id); end
+
+  # a name for where we stand: the Throne Room (25137) is on treim's royal list but is its own flag step
+  def self.area_label(id = room_id)
+    return "throne room" if id == throne_room
+    return "vault" if [vault_entry, 25143].include?(id)
+    s = stage_of(id)
+    s ? stage_names[s] : "room #{id}"
+  end
 
   def self.stage_of(id)
     stage_rooms.each { |n, rooms| return n if rooms.include?(id) }
@@ -660,7 +686,8 @@ module FizzReim
   # out of Reim, optionally the board, then the inn until mana is full. The main loop takes it from
   # there: not in Reim and the quest still running -> walk back, prep, climb, then the open gates.
   def self.trip(reason, left)
-    echo "leaving Reim for a rest trip (#{reason == :turnin ? 'a task is finished' : 'out of mana'}; #{left} min of quest time left)."
+    why = { turnin: "a task is finished", sphere_mana: "mana for the Emperor and Empress" }[reason] || "out of mana"
+    echo "leaving Reim for a rest trip (#{why}; #{left} min of quest time left)."
     3.times do
       go2(approach_room)
       break unless in_reim?
@@ -722,6 +749,13 @@ module FizzReim
       return
     end
 
+    # The Vault Entry (behind the Throne Room's rhimar door) and the Treasure Vault are yours: treim itself
+    # idles in 25142, and nothing here knows what is wanted in there, so never walk anyone out of them.
+    if vault_room?
+      said_once(:vault, "in #{title} (room #{room_id}): leaving you alone here, treim idles in this room. `go rhimar door` goes back to the Throne Room; waves are handled again once you are out.")
+      return
+    end
+
     busy = busy?
     if busy
       @was_busy = true
@@ -749,7 +783,7 @@ module FizzReim
 
     if now - @last_report >= report_every
       @last_report = now
-      echo "Reim: #{info[:time_left] || 'no timer'} left, flagged to the #{info[:flag_text]}, #{info[:kills]} kills, #{info[:scrip]} scrip this run; standing in #{here ? stage_names[here] : 'room ' + room_id.to_s}."
+      echo "Reim: #{info[:time_left] || 'no timer'} left, flagged to the #{info[:flag_text]}, #{info[:kills]} kills, #{info[:scrip]} scrip this run; standing in #{area_label}."
     end
 
     if info[:time_left].nil?
@@ -779,6 +813,7 @@ module FizzReim
     end
 
     advance(here, flag)
+    sphere_step(info, now)
 
     if flag == here && now - @last_stuck >= stuck_every
       @last_stuck = now
@@ -802,7 +837,97 @@ module FizzReim
     elsif here == 5 && flag >= 6 && room_id != throne_room
       echo "the Throne Room is open: to #{throne_room}."
       go2(throne_room)
-      said_once(:throne, "in the Throne Room. treim fights what spawns (unverified: the Emperor and Empress, ten in-game minutes). I stop when REIM INFO shows the Treasury open.")
+      said_once(:throne, "in the Throne Room. treim fights the waves; once health and mana are up I touch the sphere (Vault Entry) and take the Empress first, then the Emperor (`;vars set reim_sphere=off` to leave that to you).")
+    end
+  end
+
+
+  # --- the sphere: the Emperor and the Empress -----------------------------------------------------------------
+
+  def self.sphere_on?; uv_on?(:reim_sphere) && !arg?("nosphere"); end
+
+  def self.say_every(key, secs, msg)
+    now = Time.now.to_f
+    return if now - @told[key].to_f < secs
+    @told[key] = now
+    echo msg
+  end
+
+  # Called from reim_step with the room quiet, REIM INFO fresh.
+  def self.sphere_step(info, now)
+    return unless sphere_on?
+    return unless info[:flag] == 6 && room_id == throne_room && info[:time_left]
+    tries = uv_int(:reim_sphere_tries, 2)
+    return said_once(:sphere_giveup, "the sphere has had its #{tries} tries this run: leaving the Emperor and Empress to you.") if @sphere_tries >= tries
+    return if now < @sphere_block_until
+    left = minutes_left(info[:time_left])
+    if left < uv_int(:reim_sphere_min_minutes, 8)
+      return said_once(:sphere_time, "#{left} min of quest time left: too little for the Emperor and Empress (needs #{uv_int(:reim_sphere_min_minutes, 8)}).")
+    end
+    hp = Char.percent_health.to_i
+    return say_every(:sphere_hp, 120, "waiting for health (#{hp}%, need 90%) before the sphere.") if hp < 90
+    need = uv_int(:reim_sphere_mana, 85)
+    if Char.percent_mana < need
+      if now - @sphere_refill_at >= 120
+        @sphere_refill_at = now
+        Script.run("Fizzleworth-attack-reim", "refill") if Script.exists?("Fizzleworth-attack-reim")
+      end
+      if Char.percent_mana < need
+        if uv_on?(:reim_rest) && left >= min_trip_minutes + 15
+          return trip(:sphere_mana, left)
+        end
+        return say_every(:sphere_mana, 180, "mana is #{Char.percent_mana}% (need #{need}%) before the sphere, and there isn't time for a rest trip: waiting.")
+      end
+    end
+    sphere_fight
+  end
+
+  def self.sphere_fight
+    @sphere_tries += 1
+    echo "the sphere, try #{@sphere_tries} of #{uv_int(:reim_sphere_tries, 2)}: door, touch it, Empress first; bailing out under #{uv_int(:reim_sphere_bail, 50)}% health (health #{Char.percent_health}%, mana #{checkmana})."
+    r = dothistimeout("go door", 8, /You step through|You must be standing|rebuking|can't go|cannot/i).to_s
+    sleep 1
+    waitrt?
+    unless room_id == vault_entry
+      echo "couldn't get through the rhimar door (#{r.strip[0, 80].inspect}); trying again in 5 minutes."
+      @sphere_block_until = Time.now.to_f + 300
+      return
+    end
+    $reim_sphere_result = nil
+    Script.run(attack_name, "sphere")
+    result = $reim_sphere_result || :unknown
+    echo "sphere result: #{result} (health #{Char.percent_health}%, mana #{checkmana}, room #{room_id})."
+    if result == :won
+      sphere_won
+      return
+    end
+    @sphere_block_until = Time.now.to_f + 300
+    @last_flag = 0.0
+    case result
+    when :stuck
+      echo "STILL IN THE VAULT ENTRY and couldn't get out in a minute: it's yours."
+    when :dead
+      echo "dead."
+    else
+      if room_id == vault_entry && !checkdead
+        dothistimeout("go door", 8, /You step through|You must be standing|still stunned/i)   # back out to the waves
+        sleep 1
+      end
+      echo "out of the vault (#{result}); resting before another try: 5 minutes at least, health and mana back up first."
+    end
+  end
+
+  def self.sphere_won
+    echo "the Emperor and the Empress are dead."
+    info = reim_info
+    if info && info[:flag] && info[:flag] >= 7
+      echo "REIM INFO: the Treasury is open (#{info[:flag_text]}). The vault, the exit and TURN BOARD are yours -- stopping here."
+      echo "the Emperor task is finished (\";fizzreim turnin\" hands it in at the Base Camp)." if @task_done
+      @done = true
+    else
+      echo "REIM INFO still says: flagged to the #{info && info[:flag_text]}. Not stopping; the sphere is not tried again."
+      @sphere_tries = 99
+      dothistimeout("go door", 8, /You step through/i) if vault_room? && room_id == vault_entry
     end
   end
 
@@ -810,7 +935,7 @@ module FizzReim
 
   def self.status
     info = reim_info
-    echo "room #{room_id} (#{title}); area: #{(s = stage_of(room_id)) ? stage_names[s] : '-'}"
+    echo "room #{room_id} (#{title}); area: #{stage_of(room_id) || vault_room? ? area_label : '-'}"
     if info
       echo "time left: #{info[:time_left] || 'none (no quest running)'}; flagged to the #{info[:flag_text]} (area #{info[:flag].inspect})"
       echo "free daily entry: #{premium_state(info)} (#{info[:premium_wait].inspect}); #{info[:kills]} kills, #{info[:scrip]} scrip this run, quest energy #{info[:energy].inspect}"
@@ -842,7 +967,7 @@ module FizzReim
 
     before_dying { cleanup }
     DownstreamHook.add("fizzreim", proc { |line|
-      @task_done = true if line =~ /You have (?:finished|completed) your task/i
+      @task_done = true if line =~ /You have (?:finished|completed|succeeded in) your task/i
       line
     })
     echo "fizzreim: starting (#{title})."
