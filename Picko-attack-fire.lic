@@ -412,6 +412,15 @@ foe ||= GameObj.targets.find { |t| t.status.to_s !~ /dead|gone/ && t.name !~ /an
 # nothing (live) to hit -- hand control straight back to bigshot, which loots
 exit if target_dead?(foe)
 
+# Swamp hags are immune to fire AND steam (Scott 11/24), which is everything this routine casts
+# and most of what it waves. Hand the pass to Picko-attack-oteska, which picks shock/cold for
+# hags (Major Shock, shock/cold wands, never coral or fire). ecleanse: add Picko-attack-oteska
+# to the pause list, it runs as a child of this script.
+if foe.name.to_s =~ /swamp hag/i
+  Script.run("Picko-attack-oteska")
+  exit
+end
+
 fput "target ##{foe.id}" unless XMLData.current_target_id.to_i == foe.id.to_i
 
 waitrt?
