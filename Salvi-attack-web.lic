@@ -362,15 +362,96 @@ def rest_out_of_wands
   $rest_reason = "Out of mana, no wands"
 end
 
+# --- swamp hag wands ------------------------------------------------------------------
+# Swamp hags are IMMUNE to fire and to steam (gswiki Swamp_hag; Scott confirmed 11/24 that coral
+# wands = Minor Steam do nothing to them -- Salvi waved a green coral wand at hags 17 times in a row
+# that night, because the profile's wand type is just "wand" and "get wand" hands back whatever is
+# first in the container). So against a hag only the wands below are drawn, by name, never a plain
+# "get wand"; a wrong one in hand goes back to the fresh container. Same lists as
+# Picko-attack-oteska.lic: shock/cold first, then the rest of the damage wands minus every fire
+# (golden, drake, electrum, ebony) and steam (green coral) wand. These are methods, not constants,
+# so an edit applies without a Lich restart.
+def hag_foe?(foe)
+  foe.name.to_s =~ /swamp hag/i ? true : false
+end
+
+def hag_wand_tiers
+  [
+    ["shock/cold", /\b(?:an?|the)\s+(?:copper|slender mithril|metal|silver|iron|slender blue)\s+wand\b/i,
+     ["copper wand", "mithril wand", "metal wand", "silver wand", "iron wand", "blue wand"]],
+    ["other", /\b(?:an?|the)\s+(?:crystal|mithril|bronze|faceted topaz|smooth crystalline|nacre-inlaid alabaster|whorled quartz|white starstone|black walnut|fluted black stone|lapis lazuli)\s+wand\b/i,
+     ["crystal wand", "mithril wand", "bronze wand", "topaz wand", "crystalline wand", "starstone wand", "alabaster wand", "quartz wand", "walnut wand", "black wand", "lazuli wand"]],
+  ]
+end
+
+def hag_wand_ok?(obj)
+  n = "a #{obj.name}"
+  hag_wand_tiers.any? do |_, pattern, nouns|
+    n =~ pattern || nouns.any? { |noun| obj.name.to_s =~ /\b#{Regexp.escape(noun)}\b/i }
+  end
+end
+
+# A held wand that is wrong for a hag (coral, fire) goes back to the fresh container.
+def put_away_wrong_hag_wands
+  [GameObj.right_hand, GameObj.left_hand].compact.each do |o|
+    next unless o.name.to_s =~ /\bwand\b/i
+    next if hag_wand_ok?(o)
+    echo "#{o.name} does nothing to a swamp hag -- putting it back."
+    fput "put ##{o.id} in my #{FRESH_WAND_CONTAINER}"
+    deadline = Time.now.to_f + 2
+    sleep 0.1 while [GameObj.right_hand, GameObj.left_hand].compact.any? { |h| h.id == o.id } && Time.now.to_f < deadline
+  end
+end
+
+# Draws one wand a hag can be hurt by: the first tier showing in the container, GET nouns in
+# order; whatever GET hands back is vetted against the tier pattern. @return [Boolean]
+def draw_hag_wand
+  fput "open my #{FRESH_WAND_CONTAINER}"
+  lines = []
+  put "look in my #{FRESH_WAND_CONTAINER}"
+  deadline = Time.now.to_f + 3
+  until Time.now.to_f >= deadline
+    line = get?
+    if line.nil?
+      sleep 0.05
+      next
+    end
+    lines << line
+    break if line =~ /^Total items:|^In .+ you see |There (?:is|are) nothing|is closed|can't look/i
+  end
+  text = lines.join(' ')
+  hag_wand_tiers.each do |label, pattern, nouns|
+    next unless text =~ pattern
+    nouns.each do |noun|
+      r = dothistimeout("get #{noun} from my #{FRESH_WAND_CONTAINER}", 3,
+                        /You (?:remove|slip|slide|get|pull)|Get what\?|What were you referring to|I could not find/i).to_s
+      next unless r =~ /You (?:remove|slip|slide|get|pull)/i
+      drawn = r[/You (?:remove|slip|slide|get|pull) ((?:an?|the|some) .+?) (?:from|out of)\b/i, 1].to_s
+      return true if drawn =~ pattern
+      echo "'#{noun}' pulled #{drawn.empty? ? 'something unexpected' : drawn} -- putting it back."
+      fput "put my wand in my #{FRESH_WAND_CONTAINER}"
+    end
+  end
+  false
+end
+
 # One wand wave at foe. If neither hand holds a wand, confirms the fresh
 # container has one (full multi-line LOOK IN, not a blind GET) and draws it with
 # a plain "get <WAND_GET>"; a spent wand (no roll/roundtime on the wave) is
 # retired to the dead container. Nothing to wave, nothing to draw -> flag
 # bigshot to rest.
 def wave_wand(foe)
+  hag = hag_foe?(foe)
+  put_away_wrong_hag_wands if hag
   in_hand = [GameObj.right_hand, GameObj.left_hand].compact.find { |o| o.name.to_s =~ /\bwand\b/i }
 
-  unless in_hand
+  if hag && !in_hand
+    unless draw_hag_wand
+      echo "no wand a swamp hag can be hurt by in #{FRESH_WAND_CONTAINER} (not coral, not fire)."
+      rest_out_of_wands
+      return
+    end
+  elsif !in_hand
     unless fresh_wand_present?
       rest_out_of_wands
       return
