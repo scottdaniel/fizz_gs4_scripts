@@ -5,8 +5,9 @@
   even hour, game time (US Eastern), and leaves about 15 minutes later. From the logs: she
   thinks "...arriving ... in approximately 15 minutes" at :45, "...currently at Honeysuckle and
   Rose Avenue" at :00, was still answering at :08, and at :15 ASK got "Who are you trying to
-  ask?". A spell-up costs 10,000 silver and lasts about 4 hours, so this goes at every other
-  visit: when the last spell-up is at least 3.5 hours old by the time she arrives.
+  ask?". A spell-up costs 10,000 silver and lasts 4:10, so this goes at every other visit: at
+  the last visit before your spells run out, the one where they wouldn't last to her next
+  visit two hours later.
 
   Without bigshot running (resting by hand), a minute before she arrives it goes from wherever
   you are and comes back to that room, unless go2 or a rest chore (eherbs, eloot...) is moving
@@ -50,18 +51,18 @@
   While the watcher runs, Lich won't start a second copy, so `status`, `now` and `done` are for
   when it isn't running; `;afk` shows the watcher's status.
 
-  The last spell-up time is UserVars.go4invoker_last. These all count:
-    - any "You hand over your payment to ... invoker" line seen while this runs, including a
-      trip you make by hand;
-    - eating a spell-up pill while this runs. If it was holding bigshot for a visit, it lets go;
-    - a spell-up from before this was started, read off your spell timers. A pill lasts
-      exactly as long as the invoker's spells (4:10), so if the spells in marker_spells are all
-      up, the shortest one says when you got them. 11/24 Salvi ate a pill at 21:32, and the
-      go4invoker started at 21:48 held bigshot for the 22:00 visit ("last spell-up 133h47m ago").
-
-  Settings:
-    ;vars set go4invoker_hours=3.5   how old the last spell-up must be (when she arrives)
-                                     before going again
+  When your spells run out is the later of these two:
+    - the last spell-up + 4:10. The time is UserVars.go4invoker_last, set by any "You hand over
+      your payment to ... invoker" line seen while this runs (a trip you make by hand too), or by
+      eating a spell-up pill while this runs (if it was holding bigshot for a visit, it lets go);
+    - your spell timers, when the spells in marker_spells are all up: the shortest one is when
+      they run out. A pill lasts exactly as long as the invoker's spells (4:10). This covers a
+      pill eaten while this wasn't running (11/24 Salvi ate one at 21:32, and the go4invoker
+      started at 21:48 held bigshot for the 22:00 visit, "last spell-up 133h47m ago"), and
+      time logged off, because the timers stop while you're out. 11/26 Fizzlestiks paid at
+      16:00, was kicked at 17:36 and back at 18:11, so his spells ran until 20:45, not 20:10.
+      The old rule (go once the spell-up is 3.5 h old) counted that as a 16:35 spell-up and
+      skipped the 20:00 visit, which would have left him without spells from 20:45 to 22:00.
 
   Needs go2's FWI trinket setting (;go2 --fwi-trinket=<name>); without one the watcher says so
   and exits. On 11/12 Brayis, Htrowelzzif and Eepo had none set.
@@ -155,11 +156,10 @@ module Go4Invoker
 
   # ---- the 4-hour clock ---------------------------------------------------------
 
-  def refresh_seconds
-    h = UserVars['go4invoker_hours'].to_s.strip.to_f
-    h = 3.5 unless h.positive?
-    (h * 3600).to_i
-  end
+  # She comes every 2 hours, and the spell-up at a visit lands about a minute after she
+  # arrives (she shows at :00:50, payment goes through at :00:51). A visit is due when the
+  # spells wouldn't last until her next visit plus this many minutes.
+  def end_margin; 5; end
 
   def last_spellup
     v = UserVars['go4invoker_last']
@@ -170,9 +170,16 @@ module Go4Invoker
     UserVars['go4invoker_last'] = at.to_i
   end
 
-  def due_for?(visit)
+  # When your spells run out (epoch seconds), or nil when there's no spell-up on record and the
+  # timers can't be read.
+  def spells_end
     last = last_spellup
-    last.nil? || visit - last >= refresh_seconds
+    [last && last + spellup_minutes * 60, @timers_end].compact.max
+  end
+
+  def due_for?(visit)
+    e = spells_end
+    e.nil? || e < visit + 7200 + end_margin * 60
   end
 
   # The first visit (this one if it's still on, else the next) that is due.
@@ -185,32 +192,47 @@ module Go4Invoker
 
   def status_line
     last = last_spellup
-    nxt = next_due_visit
-    "last spell-up #{last ? "#{ago(Time.now.to_i - last)} (#{clock(last)})" : 'unknown'}; " \
-      "next trip at the #{clock(nxt)} visit (every #{(refresh_seconds / 3600.0).round(2)} h)"
+    e = spells_end
+    out = e && e > Time.now.to_i ? "spells run out at #{clock(e)}" : "spells #{e ? "ran out at #{clock(e)}" : 'unknown'}"
+    "last spell-up #{last ? "#{ago(Time.now.to_i - last)} (#{clock(last)})" : 'unknown'}; #{out}; " \
+      "next trip at the #{clock(next_due_visit)} visit"
   end
 
-  # When the spells you have on now were cast, going by their timers (epoch seconds), or nil if
-  # any of them isn't up. Read from the game's Active Spells dialog, which also works for a
-  # pill eaten while this wasn't running.
-  def spellup_from_timers
+  # When the spells you have on now run out, going by their timers (epoch seconds), or nil if
+  # any of them isn't up. Read from the game's Active Spells dialog. A timer can be no more than
+  # 4:10 from now; anything longer is something else with the same name.
+  def timers_end
     now = Time.now.to_f
     ends = marker_spells.map { |name| Effects::Spells.expiration(name).to_f }
     return nil unless ends.all? { |t| t > now }
 
-    ([ends.min, now + spellup_minutes * 60].min - spellup_minutes * 60).to_i
+    [ends.min, now + spellup_minutes * 60].min.to_i
   rescue StandardError
     nil
   end
 
-  # Takes over a spell-up the timers show and the record doesn't. Saved rather than looked up
-  # each time because the game resends the dialog, and it reads empty for a moment when it does.
+  # Kept rather than looked up each time because the game resends the dialog, and it reads
+  # empty for a moment when it does. When the timers outlast the record, says so once, and
+  # records a spell-up only if the recorded one's spells would be gone by now even counting
+  # nothing logged off: then it's a spell-up this didn't see (a pill while it wasn't running).
+  # Otherwise it's time logged off, and the spell-up time on record stays as it was.
   def save_from_timers
-    at = spellup_from_timers
-    return if at.nil? || (last_spellup && at <= last_spellup + 60)
+    e = timers_end
+    return if e.nil?
 
-    record_spellup(at)
-    say "your spell timers say you were spelled up at #{clock(at)} (pill or otherwise) -- counting that. #{status_line}."
+    before = spells_end
+    @timers_end = e
+    return if before && e <= before + 60
+
+    last = last_spellup
+    now = Time.now.to_i
+    if last.nil? || last + spellup_minutes * 60 <= now
+      record_spellup(e - spellup_minutes * 60)
+      say "your spell timers show a spell-up at #{clock(last_spellup)} (pill or otherwise) -- counting that. #{status_line}."
+    else
+      say "your spell timers run out at #{clock(e)}, later than the #{clock(last)} spell-up's #{clock(last + spellup_minutes * 60)} " \
+          "(timers stop while you're logged off) -- going by the timers. #{status_line}."
+    end
   end
 
   # Everything that can tell us about a spell-up we didn't buy ourselves.
@@ -706,6 +728,7 @@ module Go4Invoker
     @forced_visit = nil
     @solo_blocked = nil
     @solo_why = nil
+    @timers_end = nil
     $go4invoker_paid_at = nil
     $go4invoker_trip = nil
     arg = arg.to_s.strip.downcase
