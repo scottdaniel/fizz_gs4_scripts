@@ -5,7 +5,7 @@
         game: gemstone
         tags: bard, loresing, loresong, recall, unlock
     requires: loresing.lic
-     version: 1.1.0
+     version: 1.1.1
         note: Written with assistance from Claude (Anthropic).
 
   Runs ;loresing all <item> on everything in a container until RECALL says each item's
@@ -36,9 +36,11 @@
   The item is sung to from the right hand, because LORESING goes by the right hand: on 11/08
   with the mantle in the right hand every verse "failed to resonate" with the mantle. A
   container in the right hand is swapped to the left, and anything else in the right hand is
-  put away and brought back at the end. playsongs is stopped (the drum takes both hands).
+  put away and brought back at the end, when the container goes back to the right. playsongs
+  is stopped (the drum takes both hands).
 
   1.1.0: carries on at the failed verse instead of starting ;loresing all over.
+  1.1.1: a container taken from the right hand goes back to the right hand at the end.
 
   Game text this relies on, all from Fizzlestiks' logs unless noted:
     failed verse  "As you sing, you feel that the X has more to share, but your song simply
@@ -62,7 +64,7 @@
 =end
 
 module SingAll
-  VERSION = '1.1.0'
+  VERSION = '1.1.1'
 
   # ---- the knobs (methods, so an edit takes effect on the next run)
   # The most verses to sing to one item, and the most times to start ;loresing all on it.
@@ -244,7 +246,7 @@ module SingAll
   def self.free_right_hand
     if right_id && right_id == @container.id.to_s
       collect('swap', SWAP_DONE, timeout: 3)
-      wait_for(2) { left_id == @container.id.to_s }
+      @swapped = wait_for(2) { left_id == @container.id.to_s }
     end
     return true if right_id.nil?
 
@@ -550,12 +552,23 @@ module SingAll
     respond '    song-manager is still off (;song-manager starts it; Fizzlestiks-prep does too).'
   end
 
+  # the container goes back to the right hand it came from; whatever was in the left hand
+  # (brought back by fill_right_hand) goes back to the left
+  def self.swap_back
+    return unless @swapped && left_id == @container.id.to_s
+
+    waitrt?
+    collect('swap', SWAP_DONE, timeout: 3)
+    wait_for(2) { right_id == @container.id.to_s }
+  end
+
   # every way out, ;k included: no loresing left running, item back in the container
   def self.cleanup
     kill_loresing
     speak 'common'
     put_back if @current && right_id == @current.id.to_s
     fill_right_hand if @emptied_right && right_id.nil?
+    swap_back
   rescue StandardError => e
     respond "[sing_all] cleanup: #{e.message}"
   end
