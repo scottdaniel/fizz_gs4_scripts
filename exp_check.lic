@@ -4,8 +4,9 @@
   webhook when:
     1) Lumnis starts
     2) a Lumnis tier ends and the next one begins (3x -> 2x)
-    3) the last Lumnis tier ends (and Fash'lo'nae's Tutelage starts)
-    4) Fash'lo'nae's Tutelage ends
+    3) the last Lumnis tier ends (and Fash'lo'nae's Tutelage starts, or if it
+       doesn't, when the next Lumnis cycle begins)
+    4) Fash'lo'nae's Tutelage ends (and when the next Lumnis cycle begins)
     5) the character levels up (with the stats that went up)
     6) the session ends (disconnect or logout)
   Every message starts with the character's name, so one webhook can serve all
@@ -150,12 +151,22 @@ module ExpCheck
     elsif tier?(cur)
       notify('tier_end', "#{ended} #{label(cur)} started, #{info[:points]} points.")
     elsif tier?(prev)
-      notify('lumnis_end', cur == :fash ? "#{ended} #{label(cur)} started." : ended)
+      notify('lumnis_end', cur == :fash ? "#{ended} #{label(cur)} started." : "#{ended}#{next_cycle(info)}")
     elsif cur == :fash
       notify('lumnis_end', "#{label(cur)} started.")
     else
-      notify('fash_end', "#{ended}#{info[:refresh] ? " Gift of Lumnis refreshes in #{info[:refresh]}." : ''}")
+      notify('fash_end', "#{ended}#{next_cycle(info)}")
     end
+  end
+
+  # " Next Lumnis cycle starts in 6 days, 11 hours and 38 minutes (Thu Dec 3, 6:03 AM)."
+  # from LUMNIS INFO's "scheduled to refresh in ..." (pieces vary: "2 hours and
+  # 19 minutes", "5 days, 1 hour", "6 minutes"), or '' if it didn't say.
+  def self.next_cycle(info)
+    return '' unless info[:refresh]
+    secs = info[:refresh].scan(/(\d+)\s+(day|hour|minute)/).sum { |n, unit| n.to_i * { 'day' => 86_400, 'hour' => 3600, 'minute' => 60 }[unit] }
+    at   = secs > 0 ? " (#{(Time.now + secs).strftime('%a %b %-d, %-I:%M %p')})" : ''
+    " Next Lumnis cycle starts in #{info[:refresh]}#{at}."
   end
 
   # ---- level-ups ----
