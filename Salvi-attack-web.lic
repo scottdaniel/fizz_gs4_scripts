@@ -526,7 +526,14 @@ if !$salvi_censure_done && living_targets >= CENSURE_MIN_TARGETS
   exit if cast_censure
 end
 
-if checkmana >= SPELL_WEB_MANA
+# The sequence is Web (only if this target isn't webbed yet) and then Condemn, so the gate has to
+# cover what it will actually cast. It used to be just SPELL_WEB_MANA (5): with the target already
+# webbed and 5-8 mana, attack_sequence returned without casting anything, the pass ended doing
+# nothing, and bigshot relaunched it at once -- 11 spins on 11/25 (446 relaunches, ~5 minutes of
+# standing there, 12:13 for 34 s) until mana drifted past 9. Short of the full cost it now falls
+# through to Symbol of Mana / a wand like any other out-of-mana pass.
+need_mana = $salvi_webbed_id == foe.id.to_i ? SPELL_309_MANA : SPELL_WEB_MANA + SPELL_309_MANA
+if checkmana >= need_mana
   attack_sequence(foe)
 elsif Spell[9813].known? && !Effects::Cooldowns.active?("Symbol of Mana")
   # Off-cooldown check only -- never touches deeds (same check bigshot.lic and
