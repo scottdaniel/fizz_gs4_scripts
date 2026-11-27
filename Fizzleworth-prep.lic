@@ -11,6 +11,9 @@ module FizzleworthPrep
 mode   = Script.current.vars[1].to_s.downcase
 sever  = (mode == "sever")
 here   = %w[here arena sever].include?(mode)
+# `;Fizzleworth-prep here scrolls`: the scroll spell-up runs whatever `prep_scrollbuff` says (fizzreim asks for it
+# before the Emperor and Empress). Assigned every run: module ivars outlive a script run.
+@force_scrolls = Script.current.vars[2].to_s.downcase == "scrolls"
 
 # Arrangement: scepter (weapon) lives in the sling, runestaff (secondary
 # weapon) is stowed in the cloak. IMPORTANT (10.12): `store weapon` and
@@ -82,7 +85,7 @@ end
 def self.scroll_spells(spells, sever)
   if sever
     spells.select { |n| n.to_i.between?(1700, 1799) } | %w[1720]
-  elsif UserVars.prep_scrollbuff.to_s =~ /\A\s*(?:1|true|on|yes)\s*\z/i
+  elsif @force_scrolls || UserVars.prep_scrollbuff.to_s =~ /\A\s*(?:1|true|on|yes)\s*\z/i
     spells
   else
     []

@@ -70,9 +70,12 @@
 #
 # THE SPHERE (the Emperor and Empress). Once REIM INFO says "throne room" they are not waves: they are
 # summoned by touching the ethereal sphere in the Vault Entry (25142), through the Throne Room's rhimar door.
-# When this script stands in the Throne Room, flagged to it, with the room quiet, 8+ quest minutes left, health
-# 90%+ and mana 85%+ (it refills first, and takes a rest trip to the inn for the mana if there is time), it
-# does `go door`, then ;Fizzleworth-attack-reim sphere, which touches the sphere and kills the EMPRESS FIRST
+# When this script stands in the Throne Room, flagged to it, with the room quiet and 14+ quest minutes left, it
+# first goes to the SAFE ROOM below (3 rooms away) and: MANA SPELLUP (free, a few a day), then ;ewaggle for whatever
+# that missed, rests there until mana AND health are FULL, then ;Fizzleworth-prep here scrolls (the scroll spell-up --
+# which prep skips unless prep_scrollbuff=on, so `scrolls` forces it -- and the rubs) and walks back. Then, with 8+ quest minutes left, health 90%+ and
+# mana 85%+ (it refills first, and takes a rest trip to the inn for the mana if there is time and no safe room
+# could be used), it does `go door`, then ;Fizzleworth-attack-reim sphere, which touches the sphere and kills the EMPRESS FIRST
 # (the berserk one nearly killed Scott on 11/24 by stunning him and shaking the ground until he fell over)
 # and then the Emperor. It BAILS OUT under 50% health: stand and `go rhimar door` (REIM CAMP is refused
 # inside the castle). Two tries (the second needs 5 more minutes of rest), then it leaves the sphere
@@ -83,6 +86,22 @@
 #   ;vars set reim_sphere_tries=2      attempts per run (default 2)
 #   ;vars set reim_sphere_min_minutes=8
 # Anywhere in the Vault Entry or the Treasure Vault that you walk into yourself, it leaves you alone.
+#
+# SAFE ROOMS (the green squares of the Reim map = the rooms with a vortex; gswiki: "Rooms with a vortex are
+# generally safe rooms"). Room ids from Lich's map: Village 24895 Wind Tunnel (the mist room, `go mist` from the arrival
+# room 24888), Road 25063 Wind Tunnel (east of the gate room 25062), Courtyard 25094 Barbican, Royal 25141 Narrow Ledge
+# (Throne Room 25137 -> 25138 -> 25140 -> `go window`); the Treasure Vault 25143 is the fifth. The servant and visitor
+# wings have none. UNVERIFIED: that no wave spawns in them (the wiki says "generally"; nothing in the logs shows Scott
+# standing in one). It never types `go vortex` (in 24895 that asks "Are you sure you wish to leave the Settlement of
+# Reim?"). It uses them three ways, always a quiet room first and back to the same room afterwards:
+#   * before the sphere: mana spellup + ewaggle, rest to FULL mana and health, scrolls and rubs (above);
+#   * after a bail-out of the sphere: rest there until health and mana are FULL, then the 5 minutes run out;
+#   * out of mana (the 30-mana floor): rest there until mana is full, instead of the walk out to the inn, when the
+#     area has one.
+# Any ;eherbs it starts here gets `--buy=off`: his saved eherbs settings have buy_missing ON, which would withdraw silver
+# and walk to the herbalist (out of Reim) for a herb he has run out of.
+# If a wave reaches it TWICE in one rest, that room is written off for this run (said in the log) and everything falls
+# back to what it did before: the inn trip, waiting. `;vars set reim_saferest=off` = never use them.
 #
 # WHAT IT DOES NOT DO. Pitfall traps: the pit creature is fought by treim, then this script CLIMB ROPEs out
 # (unverified text). Quest energy (REIM BOOST) is spent only on health and mana. The Emperor task finishes
@@ -196,6 +215,8 @@ module FizzReim
     @sphere_tries  = 0              # attempts at the Emperor and Empress this run
     @sphere_block_until = 0.0
     @sphere_refill_at   = 0.0
+    @sphere_prep_at     = 0.0           # when the last safe-room spell-up and rest for the sphere finished
+    @safe_bad           = {}            # safe room => true once a wave reached it twice in one rest
     @told          = {}
   end
 
@@ -346,8 +367,9 @@ module FizzReim
     !stage_of(room_id).nil?
   end
 
-  def self.prepare
-    Script.run("Fizzleworth-prep", "here")
+  # scrolls: also the scroll spell-up (Fizzleworth-prep skips it unless prep_scrollbuff=on; `here scrolls` forces it)
+  def self.prepare(scrolls: false)
+    Script.run("Fizzleworth-prep", scrolls ? "here scrolls" : "here")
   rescue StandardError => e
     echo "prep: #{e.class} #{e.message}"
   end
@@ -674,6 +696,10 @@ module FizzReim
     info = reim_info
     return false unless info && info[:time_left]
     left = minutes_left(info[:time_left])
+    # out of mana: the area's safe room (a vortex room) beats the walk out to the inn
+    if reason == :mana && safe_rest(:mana, left)
+      return true
+    end
     if left < min_trip_minutes
       said_once(:short_trip, "#{left} min of quest time left: not worth a rest trip (#{reason}); a finished task is handed in when the run ends.")
       @trip_blocked_until = now + 300
@@ -732,6 +758,121 @@ module FizzReim
       end
     end
     echo "done resting after #{((Time.now.to_f - started) / 60.0).round(1)} min (mana #{Char.percent_mana}%)."
+  end
+
+  # --- the safe rooms (the vortex rooms) -------------------------------------------------------------------------
+  # area number => room. See the SAFE ROOMS paragraph at the top. The servant and visitor wings (3, 4) have none.
+  def self.safe_rooms; { 0 => 24895, 1 => 25063, 2 => 25094, 5 => 25141 }; end
+
+  # MANA SPELLUP: "Instantly cast all of your defensive spells", free, a few uses a day (Scott: 6 for Fizzleworth).
+  # Verified from his logs (11/24 19:19): the answer starts "With your advanced understanding of spiritual and elemental
+  # mana, you transcend the normal limitations of magic and release upon yourself a flurry of abjurations..." and ends
+  # "Cast Roundtime 3 Seconds." The answer once the day's uses are gone has never been seen, so anything else is echoed
+  # (it lands in the log) and counts as "not available". true if it was cast.
+  def self.mana_spellup
+    2.times do
+      waitrt?
+      waitcastrt?
+      r = dothistimeout("mana spellup", 6, /flurry of abjurations|transcend the normal limitations|spellup|no more|none left|unable|cannot|can't|not able|already|used|Wait \d+ sec/i).to_s
+      next if r =~ /\AWait \d+ sec/i                  # still in roundtime: once more
+      if r =~ /flurry of abjurations|transcend the normal limitations/i
+        sleep 1
+        waitcastrt?
+        echo "MANA SPELLUP cast."
+        return true
+      end
+      echo "MANA SPELLUP did nothing (#{r.strip.empty? ? 'no answer in 6 s' : r.strip[0, 120].inspect}); ewaggle will have to do it all."
+      return false
+    end
+    false
+  end
+
+  def self.full_mana?;   checkmana >= maxmana; end
+  def self.full_health?; checkhealth >= maxhealth; end
+
+  # Rest in the safe room of the area we stand in, then walk back to the room we left.
+  #   :sphere  MANA SPELLUP (free), then ewaggle for what that missed, rest until mana AND health are FULL, then
+  #            ;Fizzleworth-prep here scrolls (the scroll spell-up, which prep normally skips, and the rubs)
+  #   :heal    rest until mana and health are full (after a bail-out)
+  #   :mana    rest until mana is full
+  # `left` = quest minutes left: the rest never eats the time the sphere needs (8 min + 5 for the spell-up), or the last 2 minutes.
+  # true = it rested and is back; false = nothing was done or the room proved unsafe, so the caller falls back.
+  def self.safe_rest(purpose, left)
+    return false unless uv_on?(:reim_saferest)
+    from = room_id
+    room = safe_rooms.values.include?(from) ? from : safe_rooms[stage_of(from)]
+    return false if room.nil? || @safe_bad[room]
+    budget = purpose == :sphere ? left - uv_int(:reim_sphere_min_minutes, 8) - 5 : [left - 2, 25].min
+    return false if budget < 1
+    unless room_id == room
+      2.times do
+        go2(room)
+        break if room_id == room
+      end
+      unless room_id == room
+        echo "couldn't reach the safe room #{room} (stopped in #{title}, room #{room_id}); no safe rest."
+        go2(from) unless room_id == from
+        return false
+      end
+    end
+    echo "safe room #{room} (#{title}): #{purpose == :sphere ? 'spelling up, then resting' : 'resting'} here for up to #{budget} min " \
+         "(mana #{Char.percent_mana}%, health #{Char.percent_health}%)."
+    t0       = Time.now.to_f
+    deadline = t0 + budget * 60
+    last_say = t0
+    waves    = 0
+    was_busy = false
+    waggled  = purpose != :sphere
+    herbed   = false
+    loop do
+      break if checkdead
+      now = Time.now.to_f
+      if busy?
+        waves += 1 unless was_busy
+        was_busy = true
+        if waves >= 2
+          @safe_bad[room] = true
+          echo "a wave reached safe room #{room} twice: not safe after all -- not using it again this run."
+          break
+        end
+        sleep 2
+        next
+      end
+      was_busy = false
+      unless waggled
+        waggled = true
+        mana_spellup                                       # free, so first: ewaggle then only casts what it missed
+        Script.run("ewaggle") if Script.exists?("ewaggle")
+        next
+      end
+      hp = Char.percent_health.to_i
+      if hp < 90 && !herbed && purpose != :mana && Script.exists?("eherbs")
+        herbed = true
+        # --buy=off: his saved eherbs settings have buy_missing ON, which would withdraw silver and walk to the
+        # herbalist (out of Reim) for a herb he is out of
+        Script.run("eherbs", "--buy=off")
+        next
+      end
+      quest_boosts(now)
+      break if full_mana? && (purpose == :mana || full_health?)
+      break if now >= deadline
+      sleep 5
+      if now - last_say >= 60
+        last_say = now
+        echo "resting in the safe room: mana #{Char.percent_mana}%, health #{Char.percent_health}%."
+      end
+    end
+    unless @safe_bad[room] || checkdead
+      echo "done resting after #{((Time.now.to_f - t0) / 60.0).round(1)} min (mana #{Char.percent_mana}%, health #{Char.percent_health}%)."
+      if purpose == :sphere
+        sleep 2 until hostiles.empty? || Time.now.to_f > deadline + 120
+        prepare(scrolls: true)
+        @sphere_prep_at = Time.now.to_f
+      end
+    end
+    go2(from) unless room_id == from || checkdead
+    @last_flag = 0.0
+    !@safe_bad[room]
   end
 
   # --- one step inside Reim ---------------------------------------------------------
@@ -864,6 +1005,10 @@ module FizzReim
     if left < uv_int(:reim_sphere_min_minutes, 8)
       return said_once(:sphere_time, "#{left} min of quest time left: too little for the Emperor and Empress (needs #{uv_int(:reim_sphere_min_minutes, 8)}).")
     end
+    # spell up and rest in the safe room first (once per try; the spell-up is good for 10 minutes)
+    if uv_on?(:reim_saferest) && now - @sphere_prep_at > 600 && safe_rest(:sphere, left)
+      return                                  # back in the Throne Room; the next step re-reads REIM INFO and goes in
+    end
     hp = Char.percent_health.to_i
     return say_every(:sphere_hp, 120, "waiting for health (#{hp}%, need 90%) before the sphere.") if hp < 90
     need = uv_int(:reim_sphere_mana, 85)
@@ -914,6 +1059,9 @@ module FizzReim
         sleep 1
       end
       echo "out of the vault (#{result}); resting before another try: 5 minutes at least, health and mana back up first."
+      @sphere_prep_at = 0.0                   # the next try spells up again
+      i = reim_info
+      safe_rest(:heal, minutes_left(i[:time_left])) if i && i[:time_left] && !checkdead
     end
   end
 
@@ -940,6 +1088,7 @@ module FizzReim
       echo "time left: #{info[:time_left] || 'none (no quest running)'}; flagged to the #{info[:flag_text]} (area #{info[:flag].inspect})"
       echo "free daily entry: #{premium_state(info)} (#{info[:premium_wait].inspect}); #{info[:kills]} kills, #{info[:scrip]} scrip this run, quest energy #{info[:energy].inspect}"
       ts = tasks_on? ? task_state : nil
+      echo "safe rooms (vortex): #{uv_on?(:reim_saferest) ? safe_rooms.map { |a, r| "#{stage_names[a]} #{r}" }.join(', ') : 'off'}"
       echo "task: #{ts ? "#{ts[:state]} (#{ts[:line]})" : (tasks_on? ? '?' : 'ignored (notask)')}; rest: #{uv_on?(:reim_rest) ? "inn #{rest_room} when mana < #{uv_int(:reim_rest_mana, 30)} or after a turn-in" : 'off'}; boosts: #{uv_on?(:reim_boost) ? 'on' : 'off'}; mind #{percentmind}%, mana #{Char.percent_mana}%"
       s = stage_of(room_id)
       if !in_reim?
