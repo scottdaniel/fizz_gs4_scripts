@@ -16,6 +16,21 @@
     * Puts the crate in your stow container, or your disk if STOW fails, and
       gets it back out at the Merchant's Guild before RAISE.
 
+  0.2 (2026-11-27), after the first live run killed Fizzleworth at the ambush
+  (five highwaymen and marauders; bigshot opened with a Voln symbol, he never
+  cast, and was dead 10 s later):
+    * Opens every fight with 2+ standing foes with Grasp of the Grave (709)
+      the moment the ambush or boss shows, before bigshot starts. That is what
+      Scott typed by hand (`quak`) in the July and 11-20 ambushes.
+    * Voln symbols (bigshot's Signs) are cast before each search instead, and
+      blanked in bigshot for the run.
+    * Before each search: health 95%+, no bleeding, no wound worse than minor
+      (eherbs --buy=off, twice at most), mana for 709 plus follow-ups, no
+      roundtime, not stunned. Waits up to 10 min, then stops; run it again to
+      carry on.
+    * Stops the moment you are dead (it used to keep running bigshot, search
+      and walk while dead).
+
   Usage:
     ;fizzlocksmehr            run or resume the quest
     ;fizzlocksmehr complete   also send QUEST COMPLETE at the end
@@ -23,12 +38,15 @@
   Game text verified from Fizzleworth's 2026-07-10 run and the 2026-11-20
   locksmehrquest run: dock and cabin QUEST CONTINUE text, trail search results,
   the bandit ambush and the boss, "You've found the missing cargo!", and the
-  RAISE turn-in in the Merchant's Guild foyer.
+  RAISE turn-in in the Merchant's Guild foyer. 0.2: Grasp of the Grave success
+  text and the cast refusals ("...wait N seconds.", "Wait N sec.", "You are
+  still stunned.", "can't think clearly enough", entangled in a web), and the
+  Symbol of Courage/Protection replies, all from Fizzleworth's saga logs.
 
      author: Fizzleworth (fork of Drafix's locksmehrquest)
        game: Gemstone
        tags: quests
-    version: 0.1
+    version: 0.2
 =end
 
 module FizzLocksmehr
@@ -82,13 +100,19 @@ module FizzLocksmehr
     saved = {
       'hunting_prep_commands' => UserVars.op['hunting_prep_commands'],
       'quick_commands'        => UserVars.op['quick_commands'],
-      'quickhunt_targets'     => UserVars.op['quickhunt_targets']
+      'quickhunt_targets'     => UserVars.op['quickhunt_targets'],
+      'signs'                 => UserVars.op['signs']
     }
     UserVars.fizzlocksmehr_saved = saved
+    @signs = saved['signs'].to_s
     UserVars.op['hunting_prep_commands'] = ''
     UserVars.op['quickhunt_targets'] = ''
+    # bigshot casts its Signs first in every fight; 11-27 that was the opening
+    # it needed for a Grasp. They go up before each search instead.
+    UserVars.op['signs'] = ''
     UserVars.op['quick_commands'] = FALLBACK_QUICK if UserVars.op['quick_commands'].to_s.strip.empty?
-    msg "Bigshot for this run: no hunting prep, quick commands: #{UserVars.op['quick_commands']}"
+    msg "Bigshot for this run: no hunting prep, no Signs (#{@signs.empty? ? 'none set' : "#{@signs} cast before each search"}), " \
+        "quick commands: #{UserVars.op['quick_commands']}"
   end
 
   def self.restore_bigshot_settings
@@ -104,15 +128,112 @@ module FizzLocksmehr
     GameObj.targets.to_a.any?
   end
 
-  # Bigshot quick until nothing hostile is left. Bandits hide, so look again
-  # after a short pause before calling it clear.
+  def self.dead_stop!
+    return unless checkdead
+
+    msg 'You are dead: stopping.'
+    exit
+  end
+
+  def self.wait_for_foes(seconds)
+    deadline = Time.now + seconds
+    sleep 0.1 until foes? || Time.now > deadline
+    foes?
+  end
+
+  # ---- Grasp of the Grave (709) -------------------------------------------
+
+  def self.grasp_known?
+    Spell[709].known?
+  rescue StandardError
+    false
+  end
+
+  def self.grasp_cost
+    cost = Spell[709].mana_cost.to_i
+    cost.positive? ? cost : 9
+  rescue StandardError
+    9
+  end
+
+  def self.standing_foes
+    GameObj.targets.to_a.reject { |t| t.status.to_s =~ /lying|prone|sitting|kneeling|dead|gone/i }
+  end
+
+  # The cast's own end line, or a refusal (all seen in Fizzleworth's logs).
+  def self.cast_done?(line)
+    line =~ /Cast Roundtime \d+ Sec|Roundtime: \d+ sec|^\.\.\.wait \d+ sec|^Wait \d+ sec|You are still stunned|can't think clearly enough to prepare|You can't do that while entangled|don't have a spell prepared|You can't cast|You have no/i
+  end
+
+  def self.cast_collect(cmd, timeout = 6)
+    lines = []
+    clear
+    put cmd
+    deadline = Time.now + timeout
+    while Time.now < deadline
+      line = get?
+      unless line
+        sleep 0.05
+        next
+      end
+      lines << line
+      break if cast_done?(line)
+    end
+    lines.join("\n")
+  end
+
+  # Drags the whole room down. Cast when 2+ foes are standing, at most every
+  # 6 s. Returns true if it went off.
+  def self.grasp_if_crowd
+    return false unless grasp_known?
+    return false if standing_foes.size < 2
+    return false if @last_grasp && Time.now - @last_grasp < 6
+
+    4.times do
+      dead_stop!
+      if Char.mana.to_i < grasp_cost
+        msg "Only #{Char.mana} mana: no Grasp of the Grave."
+        return false
+      end
+      waitrt?
+      waitcastrt?
+      sleep 0.2 while checkstunned && !checkdead
+      dead_stop!
+      fput 'release' if checkprep != 'None'
+      text = cast_collect('incant 709')
+      if text =~ /arms grab at whatever they can/
+        @last_grasp = Time.now
+        msg "Grasp of the Grave: #{text.scan(/The arms snatch viciously at .+? and drag/).size} dragged down."
+        return true
+      elsif text =~ /^(?:\.\.\.wait|Wait) (\d+) sec/i
+        sleep Regexp.last_match(1).to_i + 0.2
+      elsif text =~ /You are still stunned|You can't do that while entangled/
+        sleep 0.5
+      elsif text =~ /can't think clearly enough to prepare/
+        Script.run('eherbs', '--spellcast --buy=off')
+      else
+        @last_grasp = Time.now
+        msg "Grasp of the Grave did not go off: #{text.lines.last.to_s.strip}"
+        return false
+      end
+    end
+    false
+  end
+
+  # Grasp first whenever 2+ are standing, then bigshot quick until nothing
+  # hostile is left. Bandits hide, so look again after a short pause before
+  # calling it clear.
   def self.fight
     runs = 0
     loop do
+      dead_stop!
       unless foes?
         sleep 2
+        dead_stop!
         break unless foes?
       end
+      grasp_if_crowd
+      dead_stop!
       runs += 1
       if runs > 8
         msg 'Still hostiles after 8 bigshot runs; carrying on.'
@@ -122,6 +243,78 @@ module FizzLocksmehr
       Script.run('bigshot', 'quick')
       sleep 0.5
     end
+  end
+
+  # ---- before each search -------------------------------------------------
+
+  def self.min_mana
+    grasp_cost + 50
+  end
+
+  def self.wounded?
+    XMLData.injuries.to_h.any? { |_, v| v.is_a?(Hash) && v['wound'].to_i > 1 }
+  rescue StandardError
+    false
+  end
+
+  def self.hurt?
+    Char.percent_health.to_i < 95 || checkbleeding || wounded?
+  end
+
+  def self.status_line
+    "health #{Char.percent_health}%#{', bleeding' if checkbleeding}#{', wounded' if wounded?}, mana #{Char.mana} (need #{min_mana})"
+  end
+
+  # bigshot's Signs (Voln symbols for Fizzleworth), plain spell numbers only.
+  def self.cast_symbols
+    @signs.to_s.split(',').map(&:strip).grep(/\A\d+\z/).each do |num|
+      sign = Spell[num.to_i]
+      next unless sign && sign.known? && !sign.active? && sign.affordable?
+
+      dead_stop!
+      waitrt?
+      waitcastrt?
+      sign.cast
+    end
+  rescue StandardError => e
+    msg "Signs: #{e.message}"
+  end
+
+  def self.ready_to_search
+    herbed = 0
+    fights = 0
+    deadline = Time.now + 600
+    noted = Time.at(0)
+    loop do
+      dead_stop!
+      if foes? && fights < 2
+        fights += 1
+        fight
+        next
+      end
+      break if !hurt? && Char.mana.to_i >= min_mana
+
+      if hurt? && herbed < 2 && Script.exists?('eherbs')
+        herbed += 1
+        msg "Healing before the next search (#{status_line})."
+        Script.run('eherbs', '--buy=off')
+        next
+      end
+      if Time.now > deadline
+        msg "Not ready to search after 10 min (#{status_line}). Stopping; run ;fizzlocksmehr again to carry on from here."
+        exit
+      end
+      if Time.now - noted > 60
+        msg "Waiting before the next search: #{status_line}."
+        noted = Time.now
+      end
+      sleep 2
+    end
+    cast_symbols
+    waitrt?
+    waitcastrt?
+    sleep 0.2 while checkstunned && !checkdead
+    dead_stop!
   end
 
   # ---- quest state ------------------------------------------------------
@@ -153,6 +346,7 @@ module FizzLocksmehr
 
   def self.quest_continue(times)
     times.times do
+      dead_stop!
       waitrt?
       fput 'quest continue'
       sleep 0.5
@@ -194,6 +388,7 @@ module FizzLocksmehr
 
   # Takes one step toward dest. Returns true if it moved.
   def self.step_toward(dest)
+    dead_stop!
     here = Room.current
     path = here&.path_to(dest)
     return false if path.nil? || path.empty?
@@ -248,19 +443,26 @@ module FizzLocksmehr
     end
   end
 
+  # Ready check, SEARCH, and if that springs an ambush or the boss, fight at
+  # once (Grasp first) and search the room again. Three searches at most.
   def self.search_here
-    result = search
-    msg "#{Room.current.id}: search -> #{result} (#{elapsed})"
-    return :crate if result == :crate
-
-    sleep 1
-    if foes?
-      fight
+    3.times do |n|
+      ready_to_search
       result = search
-      msg "#{Room.current.id}: search after fight -> #{result}"
+      dead_stop!
+      msg "#{Room.current.id}: search#{' again' if n.positive?} -> #{result} (#{elapsed})"
       return :crate if result == :crate
+
+      if %i[ambush boss].include?(result)
+        wait_for_foes(2)
+      else
+        sleep 1
+      end
+      return result unless foes?
+
+      fight
     end
-    result
+    :gave_up
   end
 
   def self.do_trail
@@ -271,6 +473,7 @@ module FizzLocksmehr
     return true if search_here == :crate
 
     until Room.current.id.to_i == TRAIL_END
+      dead_stop!
       clear
       unless step_toward(TRAIL_END)
         msg "Could not step toward #{TRAIL_END} from #{Room.current.id}."
@@ -322,6 +525,8 @@ module FizzLocksmehr
 
   def self.run(vars)
     @started = Time.now
+    @last_grasp = nil
+    dead_stop!
     swap_bigshot_settings
     stage = quest_stage
     msg "Quest step: #{stage}"
