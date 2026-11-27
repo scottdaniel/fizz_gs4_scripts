@@ -31,6 +31,16 @@
     * Stops the moment you are dead (it used to keep running bigshot, search
       and walk while dead).
 
+  0.3 (2026-11-27):
+    * Runs Fizzleworth-prep with the scroll spell-up (`quest scrolls`) before
+      the dock, cabin or trail; not when only the turn-in is left.
+    * Reanimates the last bandit standing in a fight (;reanim: Pain, Animate
+      Dead, the minor demon hands it UserVars.reanim_weapon, the claidhmore),
+      once a run, never the boss; `;reanim die` puts the claidhmore back on
+      the demon once the crate is found, before town.
+    * A death or a stop leaves the quest In Progress (no cooldown until it is
+      completed), so just run it again.
+
   Usage:
     ;fizzlocksmehr            run or resume the quest
     ;fizzlocksmehr complete   also send QUEST COMPLETE at the end
@@ -46,7 +56,7 @@
      author: Fizzleworth (fork of Drafix's locksmehrquest)
        game: Gemstone
        tags: quests
-    version: 0.2
+    version: 0.3
 =end
 
 module FizzLocksmehr
@@ -124,8 +134,14 @@ module FizzLocksmehr
     UserVars.fizzlocksmehr_saved = nil
   end
 
+  # Same filter as fizzreim: never count your own animate or minor demon
+  # (a verlok, or one wearing the raven illusion).
+  def self.hostiles
+    GameObj.targets.to_a.select { |t| t && t.status.to_s !~ /dead|gone/ && t.name.to_s !~ /animated|verlok|minor demon|raven/i }
+  end
+
   def self.foes?
-    GameObj.targets.to_a.any?
+    hostiles.any?
   end
 
   def self.dead_stop!
@@ -157,7 +173,7 @@ module FizzLocksmehr
   end
 
   def self.standing_foes
-    GameObj.targets.to_a.reject { |t| t.status.to_s =~ /lying|prone|sitting|kneeling|dead|gone/i }
+    hostiles.reject { |t| t.status.to_s =~ /lying|prone|sitting|kneeling/i }
   end
 
   # The cast's own end line, or a refusal (all seen in Fizzleworth's logs).
@@ -220,9 +236,73 @@ module FizzLocksmehr
     false
   end
 
+  # ---- reanimate one bandit ----------------------------------------------
+  # ;reanim kills it with Pain (711), raises it with Animate Dead (730) and has
+  # the minor demon drop the spare weapon for it (UserVars.reanim_weapon:
+  # claidhmore for Fizzleworth). It blocks ~20 s, so only on the LAST bandit
+  # standing (Fizzleworth-attack-ultima's rule), never the boss, once a run.
+
+  def self.animate_here?
+    GameObj.npcs.to_a.any? { |n| n && n.name.to_s =~ /\banimate/i }
+  end
+
+  def self.reanim_wanted?
+    return false if @reanim_tried
+    return false if animate_here?
+
+    Script.exists?('reanim') && Spell[711].known? && Spell[730].known?
+  rescue StandardError
+    false
+  end
+
+  def self.reanim_target
+    left = hostiles
+    return nil unless left.size == 1
+    # gameobj-data types the ambush bandits "aggressive npc,bandit"; not a
+    # wandering boar, and not the boss
+    return nil unless left.first.type.to_s =~ /bandit/
+    return nil if left.first.name.to_s =~ /bandit boss/i
+
+    left.first
+  end
+
+  def self.reanimate(foe)
+    @reanim_tried = true
+    msg "Reanimating the #{foe.name.to_s.sub(/\A(?:an?|the) /i, '')} (weapon: #{UserVars.reanim_weapon})."
+    waitrt?
+    waitcastrt?
+    Script.run('reanim', "##{foe.id}")
+    dead_stop!
+    msg(animate_here? ? 'Animate is up.' : 'No animate raised.')
+  end
+
+  def self.dismiss_animate
+    return unless $reanim_animate_live && Script.exists?('reanim')
+
+    msg 'Dismissing the animate (claidhmore back to the demon) before town.'
+    Script.run('reanim', 'die')
+  end
+
+  # One bigshot quick. While a reanimate is still wanted, stop it as soon as
+  # only one bandit is left standing in the room, so ;reanim can have it.
+  def self.bigshot_quick
+    Script.start('bigshot', 'quick')
+    deadline = Time.now + 3
+    sleep 0.05 until Script.running?('bigshot') || Time.now > deadline
+    while Script.running?('bigshot')
+      if checkdead || (reanim_wanted? && reanim_target)
+        Script.kill('bigshot')
+        deadline = Time.now + 5
+        sleep 0.1 while Script.running?('bigshot') && Time.now < deadline
+        break
+      end
+      sleep 0.2
+    end
+  end
+
   # Grasp first whenever 2+ are standing, then bigshot quick until nothing
-  # hostile is left. Bandits hide, so look again after a short pause before
-  # calling it clear.
+  # hostile is left (reanimating the last bandit once a run). Bandits hide, so
+  # look again after a short pause before calling it clear.
   def self.fight
     runs = 0
     loop do
@@ -234,13 +314,17 @@ module FizzLocksmehr
       end
       grasp_if_crowd
       dead_stop!
+      if reanim_wanted? && (foe = reanim_target)
+        reanimate(foe)
+        next
+      end
       runs += 1
       if runs > 8
         msg 'Still hostiles after 8 bigshot runs; carrying on.'
         break
       end
       waitrt?
-      Script.run('bigshot', 'quick')
+      bigshot_quick
       sleep 0.5
     end
   end
@@ -523,20 +607,38 @@ module FizzLocksmehr
 
   # ---- main -------------------------------------------------------------
 
+  # Full prep with the scroll spell-up forced on (`scrolls`), before any
+  # fighting: spells, rubs, lifeguard, the demon told to follow (;reanim needs
+  # it there to hand over the claidhmore) and Fizzleworth-buyweapon if the
+  # demon has no spare. Any mode word but here/arena/sever is the full prep.
+  def self.prep
+    name = "#{Char.name}-prep"
+    unless Script.exists?(name)
+      msg "No #{name} script; skipping the prep."
+      return
+    end
+    msg "#{name} with the scroll spell-up first."
+    Script.run(name, 'quest scrolls')
+    dead_stop!
+  end
+
   def self.run(vars)
     @started = Time.now
     @last_grasp = nil
+    @reanim_tried = false
     dead_stop!
     swap_bigshot_settings
     stage = quest_stage
     msg "Quest step: #{stage}"
     case stage
     when :missing
-      msg "#{QUEST} is not in QUEST LIST (on cooldown, or under level 20)."
+      msg "#{QUEST} is not in QUEST LIST (under level 20, or already completed this week)."
       return
     when :complete
       msg 'Already complete: use QUEST COMPLETE to claim rewards.' unless vars.include?('complete')
     end
+
+    prep if %i[accept dock cabin trail].include?(stage)
 
     if stage == :accept
       num, = quest_number_and_status
@@ -560,6 +662,7 @@ module FizzLocksmehr
       return unless do_trail
 
       handle_crate
+      dismiss_animate
       stage = :turnin
     end
 
