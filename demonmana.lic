@@ -11,24 +11,31 @@
     ;demonmana send    send it all the mana it can hold   (mdemon_refresh does this while you rest)
     ;demonmana get     ask it for all of it back          (attack-ultima / sac4mana, once a hunt, when low)
 
+  A `get` never stands waiting while something alive is in the room (it may be your attack script
+  that is calling): a demon that isn't there is called, and asked on a later try.
+
   Which demon, and under what noun, comes from a silent TELL MDEMON RETURN (it also calls
   the demon back to the room first if it had wandered off).
 
-  The first send to a demon shows how much it accepts (its capacity). If that's under
-  MIN_STORE (20) the demon is skipped from then on -- no more sends, and no get --
-  until it's replaced by a new one, which is measured afresh.
+  Sends show how much a demon accepts (its capacity: the most any one send put in it). If
+  that's under MIN_STORE (20) the demon is skipped from then on -- no more sends, no get, and
+  no waiting for it to arrive -- until it's replaced by a new one, which is measured afresh.
 
   Silver can be held too; not done here.
 
-  OFF by default since 11/05 (Scott wears a verlok for its illusion; a verlok holds ~12 mana, under
-  MIN_STORE anyway). Every caller (mdemon_refresh, attack-ultima, fizzanim, sac4mana, ...) just
-  runs ;demonmana send / get, so this one switch silences them all, with no waiting for the demon:
+  ON unless switched off. (It was off by default from 11/05, when the demon was a verlok holding ~12
+  mana, and exited without a word, so from 11/27, with a demon that holds 40, it looked broken.)
+  Every caller (mdemon_refresh, attack-ultima, fizzanim, sac4mana, ...) just runs ;demonmana send /
+  get, so this one switch stops them all, with no waiting for the demon:
+    ;vars set demonmana=off    turn it off
     ;vars set demonmana=on     turn it back on
-    ;vars set demonmana=off    turn it off again
 =end
 
 # Read at run time, so changing it needs no reload.
-exit unless UserVars.demonmana.to_s.strip =~ /\A(?:on|1|true|yes)\z/i
+if UserVars.demonmana.to_s.strip =~ /\A(?:off|0|false|no)\z/i
+  echo "switched off: nothing sent or asked for (;vars set demonmana=on turns it back on)."
+  exit
+end
 
 SEND_OK  = /(\d+) points were succes+fully transferred to your .+? while only draining (\d+) mana points/i
 GOT_MANA = /You gain (\d+) mana points/i
@@ -75,7 +82,8 @@ def demon(wait = ARRIVE_WAIT)
     return nil
   end
   d = { id: $1, noun: $2, name: $3, here: text.include?("already here!") }
-  if text.include?("begins to travel")
+  return d if low_capacity?(d)                      # not worth waiting for
+  if text.include?("begins to travel") && wait.positive?
     echo "your #{d[:name]} wasn't here -- waiting for it to arrive."
     wait.times do |i|
       break if (d[:here] = here?(d[:id]))
@@ -89,8 +97,8 @@ def demon(wait = ARRIVE_WAIT)
   d
 end
 
-# What the first send to the current demon showed: { id:, points: } -- the points it
-# accepted are its capacity. A new demon (new id) gets one send to find out.
+# What sends to the current demon have shown: { id:, points: } -- the most points one send put in it
+# is its capacity (a demon that still held some takes less). A new demon (new id) gets one send to find out.
 def low_capacity?(d)
   c = $demonmana_cap
   !!(c && c[:id] == d[:id] && c[:points] < MIN_STORE)
@@ -105,13 +113,15 @@ end
 def send_mana
   d = demon
   return unless d
-  return echo("your #{d[:name]} isn't here -- not sending.") unless d[:here]
   return skip_note(d) if low_capacity?(d)
+  return echo("your #{d[:name]} isn't here -- not sending.") unless d[:here]
   waitrt?
   r = dothistimeout("send 50 #{d[:noun]}", 4, Regexp.union(SEND_OK, GONE, /cannot|can't|unable|already|too much/i)).to_s
   if r =~ SEND_OK
-    $demonmana_cap = { id: d[:id], points: $1.to_i }
-    echo "demon holds #{$1} mana now (#{$2} drained)."
+    points, drained = $1.to_i, $2
+    seen = $demonmana_cap && $demonmana_cap[:id] == d[:id] ? $demonmana_cap : {}
+    $demonmana_cap = { id: d[:id], points: [points, seen[:points].to_i].max, said: seen[:said] }
+    echo "demon holds #{points} mana now (#{drained} drained)."
   elsif r =~ GONE
     echo "couldn't find your #{d[:noun]} to send mana to."
   else
@@ -124,15 +134,17 @@ def get_mana
     $demonmana_taken = false   # too soon to call it again; keep the once-a-hunt latch open
     return
   end
-  d = demon(GET_WAIT)
+  # 11/27: never stall a fight (an attack script waits on us; in Reim that includes the Emperor)
+  fighting = Array(GameObj.targets).any? { |t| t && t.status.to_s !~ /dead|gone/ }
+  d = demon(fighting ? 0 : GET_WAIT)
   return unless d
+  return skip_note(d) if low_capacity?(d)
   unless d[:here]
     $demonmana_missed_at = Time.now.to_f
     $demonmana_taken = false
     return echo("your #{d[:name]} isn't here -- can't ask it for mana yet (will call it again in #{GET_RETRY_AFTER}s).")
   end
   $demonmana_missed_at = nil
-  return skip_note(d) if low_capacity?(d)
   waitrt?
   r = dothistimeout("tell mdemon send 50", 4, Regexp.union(GOT_MANA, GONE, /has no mana|any mana|nothing to send/i)).to_s
   if r =~ GOT_MANA
