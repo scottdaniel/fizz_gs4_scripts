@@ -24,6 +24,22 @@
 # 10/30 12:34: the first version feinted on EVERY pass while stamina lasted --
 # ten feints on one hobgoblin, about 30 s, before the first swing.
 #
+# Weapon techniques (11/27, Blunt Weapons): before the feint/swing rhythm, each
+# call first tries
+#   1. Dizzying Swing (weapon dizzyingswing): 7 stamina, 2 s roundtime, minor
+#      damage, and the target is confused for 15 + 5 x rank seconds.
+#   2. Pummel (weapon pummel): 15 stamina, an assault of one or more strikes,
+#      and Concussive Blows for 2 minutes. 11/26 it hit a zombie for 72, then
+#      "Pummel is still in cooldown." until "...ready to perform the Pummel
+#      technique" 22 s after it started.
+# Both have cooldowns. Lich's Weapon.available? checks rank, stamina, the
+# game's cooldown list and overexertion, so a technique is only tried when the
+# game should take it. If the game still answers "...is still in cooldown",
+# that technique is skipped for COOLDOWN_RETRY seconds and the same call goes
+# on to the next step, so no pass is wasted. The rhythm counter counts plain
+# swings only. Clobber is a reaction: bigshot already sends it on its own
+# ("weapon clobber #id", 15 times on ghoul masters 11/26), so it isn't here.
+#
 # Deliberately does NOT switch back to stance defensive -- bigshot's own
 # hunting/wander stance settings take over once this returns.
 #
@@ -52,6 +68,30 @@ def plain_attack(foe)
   return if target_dead?(foe)
   fput "attack"
   waitrt?
+end
+
+# Seconds to leave a technique alone after the game says it's still cooling
+# down (Pummel's whole cooldown was 22 s on 11/26).
+COOLDOWN_RETRY = 15 unless defined?(COOLDOWN_RETRY)
+
+# Use a weapon technique if Lich and the game both say it's ready. Weapon.use
+# waits out roundtime first and returns the answering line (for Pummel, the
+# line that ends the assault), or nil if it never sent anything.
+# @return [Boolean] true if the technique actually went off
+def try_weapon_technique(name, foe)
+  return false if target_dead?(foe)
+  cooling = ($fizzlestiks_weapon_cooldowns ||= {})
+  return false if cooling[name] && Time.now < cooling[name]
+  return false unless Weapon.available?(name, target: foe)
+
+  result = Weapon.use(name, foe, results_of_interest: /is still in cooldown\./)
+  return false if result.nil?
+  if result =~ /is still in cooldown\./
+    cooling[name] = Time.now + COOLDOWN_RETRY
+    return false
+  end
+  waitrt?
+  true
 end
 
 # Feint if Lich says it's usable right now. CMan.use waits out roundtime first
@@ -90,6 +130,14 @@ fput "stance offensive" if stance != "offensive"
 
 last_id, swings = $fizzlestiks_attack_rhythm
 swings = nil unless last_id == foe.id # new target: open with a feint
+
+# Weapon techniques first, whenever they're off cooldown (see the header).
+# They don't touch the swing count, but a new target still gets its feint.
+if try_weapon_technique("dizzying_swing", foe) || try_weapon_technique("pummel", foe)
+  $fizzlestiks_attack_rhythm = [foe.id, swings]
+  exit
+end
+
 if (swings.nil? || swings >= 5) && try_feint(foe)
   $fizzlestiks_attack_rhythm = [foe.id, 0]
 else
