@@ -76,7 +76,8 @@
 # the comparison). OVEREXERTION: every cast gated on live checkmana vs the
 # spell's real cost (Web 118 targeted = 5, Corrupt 703 = 3, Maelstrom 710 =
 # 10, Tether 706 = 6). Wound-block ("can't think clearly enough") ->
-# ;eherbs --spellcast once. MANA: this rotation keeps the attack script busy
+# ;eherbs --spellcast once (in Reim under ;fizzreim: stop, and it heals in a
+# vortex room -- see cant_cast_heal). MANA: this rotation keeps the attack script busy
 # enough that sac4mana's harvest never gets a window (same as -cat), so
 # recovery is INLINE -- at the top of any pass below SACRIFICE_AT: `sacrifice
 # mana` (~89, 1 shadow essence) then Symbol of Mana. No pray-for-mana.
@@ -137,6 +138,17 @@ ANIMATE_SPELL = 730      unless defined?(ANIMATE_SPELL)
 # --- patterns ------------------------------------------------------------
 
 CANT_CAST_WOUNDED = /can't think clearly enough to prepare a spell/i unless defined?(CANT_CAST_WOUNDED)
+
+# A head, eye or nerve wound stops casting. In the Settlement of Reim, while ;fizzreim can walk us to a vortex room
+# ($reim_retreat_ready), tell it and stop: on 11/27 we stood eating herbs beside live monsters. Anywhere else, heal
+# on the spot as always.
+def cant_cast_heal
+  if $reim_retreat_ready && Script.running?("fizzreim")
+    $reim_cant_cast = true
+    exit
+  end
+  Script.run('eherbs', '--spellcast')
+end
 
 # --- helpers -----------------------------------------------------------
 
@@ -332,7 +344,7 @@ def land_web(foe)
     waitrt?
     text = cast_collect("incant 118")
     if text =~ CANT_CAST_WOUNDED
-      Script.run("eherbs", "--spellcast")
+      cant_cast_heal
       return
     end
     tries += 1
@@ -352,7 +364,7 @@ def land_corrupt(foe)
   waitrt?
   text = cast_collect("incant 703")
   if text =~ CANT_CAST_WOUNDED
-    Script.run("eherbs", "--spellcast")
+    cant_cast_heal
     return
   end
   $ult_silenced_id = foe.id.to_i
@@ -370,7 +382,7 @@ def land_maelstrom(foe)
   drain_lines
   text = dothistimeout("prep 710", 6, /Your spell is ready|can't think clearly enough to prepare/i).to_s
   if text =~ CANT_CAST_WOUNDED
-    Script.run("eherbs", "--spellcast")
+    cant_cast_heal
     return false
   end
   return false unless text =~ /Your spell is ready/i
@@ -413,7 +425,7 @@ def land_blood_burst(foe)
   waitrt?
   text = cast_collect("incant 701")
   if text =~ CANT_CAST_WOUNDED
-    Script.run("eherbs", "--spellcast")
+    cant_cast_heal
     return
   end
   waitcastrt?
@@ -528,7 +540,7 @@ def cast_at(num, id)
   drain_lines
   t = dothistimeout("prep #{num}", 6, /Your spell is ready|can't think clearly enough to prepare/i).to_s
   if t =~ CANT_CAST_WOUNDED
-    Script.run("eherbs", "--spellcast")
+    cant_cast_heal
     return nil
   end
   return nil unless t =~ /Your spell is ready/i
@@ -544,7 +556,7 @@ def cast_grasp
   fput "release" if checkprep != "None"
   text = cast_collect("incant 709")
   if text =~ CANT_CAST_WOUNDED
-    Script.run("eherbs", "--spellcast")
+    cant_cast_heal
     return
   end
   $ult_grasp_at = Time.now.to_f

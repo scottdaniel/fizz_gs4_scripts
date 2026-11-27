@@ -1,0 +1,76 @@
+# lumdonate.lic -- pay the Temple of Lumnis for the boosted Gift of Lumnis (5x, 4x, 3x, 2x).
+#
+#   ;lumdonate
+#
+# Walks to the nearest Lumnis representative (go2 tag `lumnisdonate`; Icemule: room 2336), asks the price, walks to
+# the bank and withdraws it (the teller hands over a note), walks back and confirms. It ends at the representative.
+# Every command and reply below is from Scott's logs (08/31, 09/05, 10/30-11/16).
+#
+# The donation counts for the NEXT cycle that starts. gswiki: it can't be added to one already running, so donate
+# before the refresh time that `lumnis info` shows.
+#
+# It will NOT pay when: you are dead or in Reim, `lumnis info` already shows a recent donation (a second one only
+# pre-pays a later week) or can't be read, the price is over 250,000, or both hands are full (no hand for the note).
+
+module LumDonate
+  PLACE     = "lumnisdonate"
+  MAX_PRICE = 250_000
+  STATUS    = /have (?:not made any|made \d+) recent donations? to the Temple of Lumnis/i
+  QUOTE     = /You may donate ([\d,]+) silvers|You must find a Lumnis representative/i
+  PAID      = /May Lumnis bless you|Thank you for your donation/i
+  CONFIRMED = Regexp.union(PAID, /do not have enough silvers|must find a Lumnis representative/i)
+
+  def self.say(msg); echo "lumdonate: #{msg}"; end
+
+  def self.go2(where)
+    Script.run("go2", "#{where} --disable-confirm", { quiet: true })
+  end
+
+  # the price asked here, or nil
+  def self.quote
+    waitrt?
+    r = dothistimeout("lumnis donate", 6, QUOTE).to_s
+    return r[QUOTE, 1].delete(",").to_i if r[QUOTE, 1]
+    say "no price here (#{r.strip.empty? ? 'no answer' : r.strip[0, 120]}). Nothing paid."
+    nil
+  end
+
+  def self.run
+    return say("you're dead.") if checkdead
+    return say("you're in Reim: run this once you're out. Nothing paid.") if XMLData.room_title.to_s =~ /Reim (?:Settlement|Castle)|Pitfall Trap/i
+
+    status = dothistimeout("lumnis info", 6, STATUS).to_s
+    return say("couldn't read the donation line from `lumnis info`. Nothing paid.") if status.empty?
+    return say("already donated (\"#{status.strip}\"). Nothing paid.") unless status =~ /not made any/i
+    return say("both hands are full: empty one for the bank note, then run it again. Nothing paid.") if GameObj.right_hand.id && GameObj.left_hand.id
+
+    go2(PLACE)
+    price = quote
+    return unless price
+    return say("the price is #{price} silvers, over #{MAX_PRICE}. Nothing paid.") if price > MAX_PRICE
+    place = Room.current.id
+
+    say "the price is #{price} silvers: to the bank for it."
+    go2("bank")
+    waitrt?
+    r = dothistimeout("withdraw #{price}", 8, /teller|silvers?|note|don't|do not|not enough/i).to_s
+    say "bank: #{r.strip[0, 140]}"
+    sleep 1
+
+    go2(place)
+    return say("couldn't get back to the representative (room #{place}). Nothing donated; any note or silver is still on you.") unless Room.current.id == place
+    now = quote
+    return unless now
+    return say("the price changed to #{now}. Nothing paid.") if now > price
+    r = dothistimeout("lumnis donate confirm", 8, CONFIRMED).to_s
+    if r =~ PAID
+      sleep 1
+      after = dothistimeout("lumnis info", 6, STATUS).to_s
+      say "donated #{price} silvers. #{after.strip}"
+    else
+      say "NOT donated (#{r.strip.empty? ? 'no answer' : r.strip[0, 140]}). Anything you withdrew is still on you: deposit it at the bank."
+    end
+  end
+end
+
+LumDonate.run

@@ -50,14 +50,15 @@
 #    refill tries REIM BOOST MANA too, ahead of the sacrifice and Symbol of Mana. `;vars set
 #    reim_qboost=off`, `reim_heal_below=N`, `reim_boost_mana_below=N`.
 #  * Resting is kept to a minimum, because the quest is a two-hour clock. It only rests (a) after a
-#    Reim task has been handed in and (b) when it is out of mana, and then only until mana is full:
+#    Reim task has been handed in, if mana is then under 50% (`;vars set reim_turnin_rest=N`), and
+#    (b) when it is out of mana, and then only until mana is full:
 #      - Tasks: the Base Camp bounty board gives "slay 35 creatures" / "hunt the Emperor". The line
 #        "[You have finished your task of culling within Reim!]" sets a flag (that is the 35-kill task's
 #        wording; the Emperor task's may differ, so REIM TASK is also polled every 3 minutes when the
 #        room is quiet: finished, or an active task turning into something unrecognised, sets the
 #        flag too, and the new wording is echoed so it lands in the log). The next time the room is
-#        quiet it walks out of Reim, TURN BOARDs, GET BOARDs the next task, and rests if mana isn't
-#        already full. If TURN BOARD says there is no finished task, no more trips for 20 minutes.
+#        quiet it walks out of Reim, TURN BOARDs, GET BOARDs the next task, and goes straight back in
+#        unless mana is under 50%. If TURN BOARD says there is no finished task, no more trips for 20 minutes.
 #        A new run also visits the board first. `notask` skips all of it.
 #      - Mana: below 30 mana (`;vars set reim_rest_mana=N`) with the room quiet it first runs the
 #        attack script's refill (demon mana, sacrifice mana, Symbol of Mana); if mana is still under
@@ -103,6 +104,14 @@
 # If a wave reaches it TWICE in one rest, that room is written off for this run (said in the log) and everything falls
 # back to what it did before: the inn trip, waiting. `;vars set reim_saferest=off` = never use them.
 #
+# HURT. When you are BLEEDING, under 60% health (`;vars set reim_retreat_below=N`), or a head, eye or nerve wound stops
+# you casting, this script stops the attack, walks to the area's vortex room (the servant and visitor wings use the
+# courtyard's, back through the gates), runs `eherbs --buy=off` there and walks back. (11/27: before this you stood
+# eating herbs beside the Shopkeeper, and then bled without going anywhere.) The attack scripts report a casting wound
+# in $reim_cant_cast instead of eating on the spot; $reim_retreating keeps them from casting during the retreat. If the
+# herbs don't fix it (out of them, say) you STAY in the vortex room, nothing attacks, and it says so every minute until
+# you are better. In the pit and the vault nothing retreats. `;vars set reim_retreat=off` = never retreat.
+#
 # WHAT IT DOES NOT DO. Pitfall traps: the pit creature is fought by treim, then this script CLIMB ROPEs out
 # (unverified text). Quest energy (REIM BOOST) is spent only on health and mana. The Emperor task finishes
 # with "You have succeeded in your task of killing the Emperor within the Castle of Reim!" (11/24 log); turn
@@ -115,6 +124,7 @@
 module FizzReim
   def self.treim_attack;   "fizzleworth-attack-reim.lic"; end
   def self.attack_name;    "fizzleworth-attack-reim"; end
+  def self.ultima_name;    "fizzleworth-attack-ultima"; end
   def self.poll;           3;     end   # seconds between steps
   def self.foe_wait;       6;     end   # something alive and no attack script this long: start it (treim waits 2.5 s at most)
   def self.flag_every;     25;    end   # seconds between REIM INFO checks while idle at an area
@@ -202,6 +212,10 @@ module FizzReim
     @stage         = nil
     @was_busy      = false
     @foe_since     = nil            # when something alive was first seen with no attack script running
+    @stuck         = false          # the herbs didn't fix it: staying in the vortex room
+    $reim_cant_cast     = false     # set by the attack scripts: a wound stops casting
+    $reim_retreating    = false     # on the way to heal, or staying put: the attack script casts nothing
+    $reim_retreat_ready = false     # true while this script can do the retreat (in Reim, not the pit or vault)
     @started_here  = []             # helper scripts this run started (killed again at the end)
     @task_done     = false          # the game said a Reim task is finished and not yet handed in
     @energy        = nil            # quest energy at the last REIM INFO (REIM BOOST costs 250 a time)
@@ -305,7 +319,7 @@ module FizzReim
   # and this script stood waiting for the room to go quiet. So: something alive here and no attack script for
   # foe_wait seconds -> start it from here.
   def self.start_missed_attack
-    if hostiles.empty? || Script.running?(attack_name)
+    if $reim_cant_cast || $reim_retreating || hostiles.empty? || Script.running?(attack_name)
       @foe_since = nil
       return
     end
@@ -316,6 +330,77 @@ module FizzReim
     return unless Script.exists?("Fizzleworth-attack-reim")
     echo "something is alive here and nothing is attacking it (treim missed it): starting the attack."
     Script.start("Fizzleworth-attack-reim")
+  end
+
+  # --- getting hurt: the retreat to a vortex room ------------------------------------------------
+
+  def self.retreat_below; uv_int(:reim_retreat_below, 60); end   # health % that sends you off to heal
+
+  # head, nerves or eyes at rank 2 or worse, wound or scar: what stops a cast
+  def self.cast_wound?
+    [Wounds.head, Wounds.nsys, Wounds.leftEye, Wounds.rightEye,
+     Scars.head, Scars.nsys, Scars.leftEye, Scars.rightEye].map(&:to_i).max > 1
+  end
+
+  # why you should be healing in a vortex room, or nil
+  def self.hurt
+    why = []
+    why << "a wound that stops casting" if $reim_cant_cast
+    why << "bleeding" if checkbleeding
+    why << "health #{Char.percent_health}%" if Char.percent_health.to_i < retreat_below
+    why.empty? ? nil : why.join(", ")
+  end
+
+  def self.still_hurt?
+    cast_wound? || checkbleeding || Char.percent_health.to_i < retreat_below
+  end
+
+  # --buy=off: his saved eherbs settings have buy_missing ON, which would withdraw silver and walk to the herbalist
+  # (out of Reim) for a herb he is out of. true when nothing is left that would send you back here.
+  def self.heal_up
+    Script.run("eherbs", "--buy=off") if Script.exists?("eherbs")
+    $reim_cant_cast = false unless cast_wound?
+    !still_hurt?
+  end
+
+  # Called every step while you're hurt: walk to the area's vortex room (the servant and visitor wings use the
+  # courtyard's), heal there, walk back. $reim_retreating keeps the attack script from casting meanwhile. If the herbs
+  # don't fix it, stay there with nothing attacking, and say so, until it is fixed.
+  def self.retreat(why)
+    if @stuck
+      if still_hurt?
+        say_every(:stuck, 60, "the herbs haven't fixed it (#{why}): staying in #{title} (room #{room_id}) and nothing attacks. Heal or walk out by hand.")
+        return
+      end
+      echo "healed: carrying on."
+      @stuck = false
+      $reim_cant_cast = false
+      $reim_retreating = false
+      @last_flag = 0.0
+      return
+    end
+    from = room_id
+    room = safe_rooms.values.include?(from) ? from : (safe_rooms[stage_of(from) || @stage || 0] || safe_rooms[2])
+    $reim_retreating = true
+    [attack_name, ultima_name].each { |n| Script.kill(n) if Script.running?(n) }
+    echo "#{why}: to the vortex room #{room} to heal."
+    started = Time.now.to_f
+    sleep 0.3 while (checkstunned || checkwebbed) && !checkdead && Time.now.to_f - started < 60
+    return if checkdead
+    waitrt?
+    2.times do
+      break if room_id == room
+      go2(room)
+    end
+    echo "couldn't reach the vortex room (stopped in #{title}, room #{room_id}): healing here." unless room_id == room
+    unless heal_up
+      @stuck = true
+      return retreat(hurt || why)                 # says so, now and then every minute
+    end
+    $reim_retreating = false
+    echo "healed: back to room #{from}."
+    go2(from) unless room_id == from || checkdead
+    @last_flag = 0.0
   end
 
   # --- moving --------------------------------------------------------------------
@@ -495,6 +580,9 @@ module FizzReim
   end
 
   def self.cleanup
+    $reim_retreat_ready = false             # without us the attack scripts heal on the spot again
+    $reim_cant_cast = false
+    $reim_retreating = false
     stop_helpers
     DownstreamHook.remove("fizzreim") rescue nil
   end
@@ -666,8 +754,9 @@ module FizzReim
   end
 
   def self.get_board
-    r = dothistimeout("get board", 6, /You were tasked with|already have a task|eligib|cannot|can't/i).to_s
-    echo "GET BOARD: #{r.strip[0, 120]}"
+    # "You need to wait another 1 hour and 45 minutes before getting a new task." (11/27)
+    r = dothistimeout("get board", 6, /You were tasked with|already have a task|need to wait another|eligib|cannot|can't/i).to_s
+    echo "GET BOARD: #{r.strip.empty? ? 'no answer' : r.strip[0, 120]}"
   end
 
   # at the tavern's bounty board: hand in a finished task (or one whose wording we don't know: TURN BOARD
@@ -698,6 +787,7 @@ module FizzReim
   end
 
   def self.mana_full?; Char.percent_mana >= 99; end
+  def self.turnin_rest_below; uv_int(:reim_turnin_rest, 50); end   # after a turn-in, rest only under this mana %
   def self.low_mana?;  checkmana < uv_int(:reim_rest_mana, 30); end
 
   # Called with the room quiet. true if a trip was made (the caller stops this step).
@@ -749,7 +839,9 @@ module FizzReim
       @task_done = false                  # whatever TURN BOARD said, the trip is the answer
     end
     @trip_blocked_until = Time.now.to_f + 180   # never two trips back to back
-    if mana_full?
+    if reason == :turnin && Char.percent_mana >= turnin_rest_below
+      echo "mana is #{Char.percent_mana}%: going straight back in (after a turn-in the inn is only for under #{turnin_rest_below}%)."
+    elsif mana_full?
       echo "mana is already full: no rest needed."
     else
       rest_at_inn
@@ -844,9 +936,15 @@ module FizzReim
     was_busy = false
     waggled  = purpose != :sphere
     herbed   = false
+    mended   = false
     loop do
       break if checkdead
       now = Time.now.to_f
+      if ($reim_cant_cast || checkbleeding) && !mended   # a casting wound or a bleed: heal it before anything else
+        mended = true
+        heal_up
+        next
+      end
       if busy?
         waves += 1 unless was_busy
         was_busy = true
@@ -908,6 +1006,7 @@ module FizzReim
     helper_list.each { |n| start_helper(n) }
     boost_mind
     quest_boosts(now)
+    $reim_retreat_ready = false
 
     if in_pit?
       climb_out_of_pit
@@ -918,6 +1017,14 @@ module FizzReim
     # idles in 25142, and nothing here knows what is wanted in there, so never walk anyone out of them.
     if vault_room?
       said_once(:vault, "in #{title} (room #{room_id}): leaving you alone here, treim idles in this room. `go rhimar door` goes back to the Throne Room; waves are handled again once you are out.")
+      return
+    end
+
+    # hurt (can't cast, bleeding, low health): the vortex room comes before everything else
+    $reim_retreat_ready = uv_on?(:reim_retreat)
+    why = hurt
+    if @stuck || ($reim_retreat_ready && why)
+      retreat(why)
       return
     end
 
@@ -1114,7 +1221,8 @@ module FizzReim
       echo "free daily entry: #{premium_state(info)} (#{info[:premium_wait].inspect}); #{info[:kills]} kills, #{info[:scrip]} scrip this run, quest energy #{info[:energy].inspect}"
       ts = tasks_on? ? task_state : nil
       echo "safe rooms (vortex): #{uv_on?(:reim_saferest) ? safe_rooms.map { |a, r| "#{stage_names[a]} #{r}" }.join(', ') : 'off'}"
-      echo "task: #{ts ? "#{ts[:state]} (#{ts[:line]})" : (tasks_on? ? '?' : 'ignored (notask)')}; rest: #{uv_on?(:reim_rest) ? "inn #{rest_room} when mana < #{uv_int(:reim_rest_mana, 30)} or after a turn-in" : 'off'}; boosts: #{uv_on?(:reim_boost) ? 'on' : 'off'}; mind #{percentmind}%, mana #{Char.percent_mana}%"
+      echo "hurt: #{uv_on?(:reim_retreat) ? "when bleeding, under #{retreat_below}% health or unable to cast, retreat to the vortex room and heal" : 'no retreat (reim_retreat=off)'}"
+      echo "task: #{ts ? "#{ts[:state]} (#{ts[:line]})" : (tasks_on? ? '?' : 'ignored (notask)')}; rest: #{uv_on?(:reim_rest) ? "inn #{rest_room} when mana < #{uv_int(:reim_rest_mana, 30)}, or after a turn-in with mana < #{turnin_rest_below}" : 'off'}; boosts: #{uv_on?(:reim_boost) ? 'on' : 'off'}; mind #{percentmind}%, mana #{Char.percent_mana}%"
       s = stage_of(room_id)
       if !in_reim?
         echo(info[:time_left] ? "would: go back in (free)." : (premium_state(info) == :cooldown ? "would: start a new run with one orb charge (the free entry is used)." : "would: start a new run on the free daily entry (an orb only if the chains refuse)."))
@@ -1161,6 +1269,7 @@ module FizzReim
       if in_reim?
         reim_step
       else
+        $reim_retreat_ready = false
         info = reim_info
         unless info
           sleep poll

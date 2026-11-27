@@ -14,6 +14,10 @@
 # hitting while treim waited. So this script does what bigshot does: run ultima pass after
 # pass until no living hostile is left in the room, then give up the launch.
 #
+# WOUNDS. While ;fizzreim is running it retreats to a vortex room to heal (bleeding, low health, or a wound that stops
+# casting, which ends the launch with $reim_cant_cast set), and nothing is cast while it does ($reim_retreating).
+# Without ;fizzreim, a casting wound runs ;eherbs on the spot.
+#
 # Everything else -- the Web/Maelstrom/Tether finish, crowd control on a crowd, the mana
 # gating and recovery (demon mana, sacrifice mana, Symbol of Mana), the out-of-mana back-off --
 # is ultima's, untouched, so a fix there applies here. Nothing in ultima's Den/Rift
@@ -87,6 +91,11 @@ module FizzReimAttack
   def self.boss?(t)
     t && t.noun.to_s =~ /\A(?:#{BOSS_NOUNS.join('|')})\z/ ? true : false
   end
+
+  # ;fizzreim sets $reim_retreat_ready while it can walk us to a vortex room to heal a wound that stops casting
+  def self.retreat_ready?; $reim_retreat_ready && Script.running?("fizzreim") ? true : false; end
+  # it is taking us there (a casting wound we reported, or $reim_retreating for a bleed or low health): cast nothing
+  def self.retreating?;    ($reim_cant_cast || $reim_retreating) && Script.running?("fizzreim") ? true : false; end
 
   def self.uv_on?(name)
     v = UserVars.send(name)
@@ -239,7 +248,11 @@ module FizzReimAttack
                                            "Curse: not the Hex (#{text[/looks [a-z ]+|loses [a-z ]+|stumbles|shakes/i] || 'no curse message'}); stance was #{checkstance}.")
       end
       if text =~ WOUNDED
-        Script.run("eherbs", "--spellcast --buy=off")     # buy_missing is ON in his saved eherbs settings: never shop in Reim
+        if retreat_ready?
+          $reim_cant_cast = true                            # ;fizzreim takes us to the vortex room to heal
+        else
+          Script.run("eherbs", "--spellcast --buy=off")     # buy_missing is ON in his saved eherbs settings: never shop in Reim
+        end
         st[:casts] = cap
         break
       end
@@ -395,7 +408,10 @@ module FizzReimAttack
         echo(text =~ /very vulnerable/i ? "Curse: Hex landed on #{tgt.name.to_s.sub(/\A(?:an?|the) /i, '')} (-24 TD)." : "Curse: not the Hex (stance was #{checkstance}).")
         fput "stance defensive"
       end
-      return sphere_bail("can't think clearly enough to cast") if text =~ WOUNDED
+      if text =~ WOUNDED
+        $reim_cant_cast = true if retreat_ready?            # ;fizzreim heals it once we're out
+        return sphere_bail("can't think clearly enough to cast")
+      end
       sleep 0.5 if text =~ /still stunned/i
     end
 
@@ -424,6 +440,7 @@ module FizzReimAttack
       break unless in_reim?
       break if checkdead
       break if $bigshot_flee
+      break if retreating?
       now = Time.now.to_f
       break if now - started > MAX_SECONDS
 
