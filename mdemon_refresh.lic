@@ -4,7 +4,7 @@
         game: gemstone
         tags: sorcerer, demon, minor summoning
     requires: Lich > 5.14.2
-     version: 0.7
+     version: 0.8
         note: Written with assistance from Claude (Anthropic).
 
   Keeps a Sorcerer's Minor Summoning (725) demon refreshed.
@@ -13,6 +13,13 @@
   buffer, it stows whatever's in your left hand (if anything), rummages a vakra
   runestone out of your kit, rubs it to refresh the demon, puts the runestone
   away, then gets your original left-hand item back.
+
+  It only does that SOMEWHERE SAFE (0.8, Scott 11/27: "we should never be spelling up or buffing unless we
+  are in a safe room"): nothing alive in the room, and the room is the loaded bigshot profile's resting room,
+  or one the map tags sanctuary, supernode or town, or a Settlement of Reim vortex room. Anywhere else it
+  waits, says so once when the demon drops under the buffer, and warns in bold when under URGENT_MINUTES:
+  the demon leaves if the spell runs out before you reach a safe spot. (A town's map "location" doesn't
+  count: it takes in sewers, forests and the smuggler's tunnels.)
 
   If no vakra runestone is found in your kit, the script needs fizzfuse to make a
   new one -- which will pull you away from the hunt (bank + alchemist trip). How
@@ -71,6 +78,9 @@ module MdemonRefresh
   # === config (edit to taste) ===================================================
   MINOR_SUMMONING_SPELL   = "Minor Summoning"
   REFRESH_THRESHOLD_MINUTES = 10
+  URGENT_MINUTES           = 3    # still not somewhere safe with this little left: warn in bold
+  SAFE_TAGS                = %w[sanctuary supernode town]
+  REIM_VORTEX_ROOMS        = [24895, 25063, 25094, 25141]
   CHECK_INTERVAL_SECONDS  = 15
   SEND_MANA_AT            = 40   # resting with at least this much mana -> fill the demon (;demonmana)
   CALL_GAP_SECONDS         = 15  # demon missing from the room: order it back this often
@@ -383,6 +393,31 @@ module MdemonRefresh
     false
   end
 
+  # Where the runestone may be rubbed (see the header): nothing alive here, and a room that is safe by id or tag.
+  def self.safe_spot?
+    return false if checkdead
+    return false if Array(GameObj.targets).any? { |t| t && t.status.to_s !~ /dead|gone/ }
+    room = Room.current
+    return false unless room
+    id = room.id.to_i
+    resting = UserVars.op.is_a?(Hash) ? UserVars.op["resting_room_id"].to_s.strip.to_i : 0
+    return true if REIM_VORTEX_ROOMS.include?(id) || (resting.positive? && id == resting)
+    !(Array(room.tags) & SAFE_TAGS).empty?
+  rescue StandardError
+    false
+  end
+
+  # Under the buffer but not somewhere safe: say so once, and once more, in bold, when it is about to run out.
+  def self.warn_held(remaining)
+    unless @held_said
+      @held_said = true
+      echo "Minor Summoning has #{remaining.round(1)} minutes left: waiting for a safe spot to rub the runestone (your resting room, a sanctuary, supernode or town room, or a Reim vortex room, with nothing alive there)."
+    end
+    return if @held_urgent || remaining >= URGENT_MINUTES
+    @held_urgent = true
+    _respond "<pushBold/>[mdemon_refresh] Minor Summoning runs out in #{remaining.round(1)} minutes and this isn't a safe spot: your demon will leave unless you get to one.<popBold/>"
+  end
+
   def self.safe_to_fuse?
     return true unless FUSE_ONLY_WHEN_RESTING_IN_TOWN
     in_town? && checksitting && GameObj.targets.none? { |t| t && t.status.to_s !~ /dead|gone/ }
@@ -433,6 +468,9 @@ module MdemonRefresh
     @town_on_tried = false
     @call_blocked = false
     @blocked_room = nil
+    @waiting = false
+    @held_said = false
+    @held_urgent = false
     echo "MdemonRefresh started! Watching Minor Summoning (refresh buffer: #{REFRESH_THRESHOLD_MINUTES} min)."
     echo "Auto-fuse runestone: #{AUTO_FUSE_RUNESTONE}"
     echo "Stop with ;kill mdemon_refresh"
@@ -440,11 +478,12 @@ module MdemonRefresh
     loop do
       if Effects::Spells.active?(MINOR_SUMMONING_SPELL)
         remaining = Effects::Spells.time_left(MINOR_SUMMONING_SPELL)
-        @waiting = false if remaining >= REFRESH_THRESHOLD_MINUTES
-
-        # waiting for town: don't rummage the kit every 15s mid-hunt, just look again
-        # once it's safe to fuse
-        if remaining < REFRESH_THRESHOLD_MINUTES && (!@waiting || safe_to_fuse?)
+        if remaining >= REFRESH_THRESHOLD_MINUTES
+          @waiting = @held_said = @held_urgent = false
+        elsif !safe_spot?
+          warn_held(remaining)
+        # waiting for town: don't rummage the kit every 15s, just look again once it's safe to fuse
+        elsif !@waiting || safe_to_fuse?
           echo "Minor Summoning has #{remaining.round(1)} minutes left, refreshing demon."
           result = attempt_refresh
           was_waiting = @waiting
@@ -459,7 +498,7 @@ module MdemonRefresh
           end
         end
       else
-        @waiting = false
+        @waiting = @held_said = @held_urgent = false
       end
 
       store_mana_while_resting

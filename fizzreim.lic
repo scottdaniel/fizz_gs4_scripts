@@ -85,7 +85,9 @@
 # (the berserk one nearly killed Scott on 11/24 by stunning him and shaking the ground until he fell over)
 # and then the Emperor. It BAILS OUT under 50% health: stand and `go rhimar door` (REIM CAMP is refused
 # inside the castle). Two tries (the second needs 5 more minutes of rest), then it leaves the sphere
-# alone. A win ends the run: REIM INFO shows the Treasury and the vault, the exit and TURN BOARD are yours.
+# alone. A win (REIM INFO shows the Treasury) takes it through the golden vault door, where it types GET SCRIP
+# until "your hand is pushed back by a strange force", and ends the run there: the exit (`go vortex`, twice) and
+# TURN BOARD are yours. The same if it finds the Treasury already open while you are in the royal wing.
 #   ;vars set reim_sphere=off          never touch it (or run `;fizzreim nosphere`)
 #   ;vars set reim_sphere_bail=50      bail out under this health % (default 50)
 #   ;vars set reim_sphere_mana=85      mana % wanted before touching (default 85)
@@ -140,6 +142,7 @@ module FizzReim
   def self.tavern_room;    25173; end
   def self.throne_room;    25137; end
   def self.vault_entry;    25142; end
+  def self.treasure_vault; 25143; end
 
   # Thirsty Penguin, Parlour (Icemule Trace), a supernode: the resting_room_id in Picko's skel_troll.yaml
   def self.rest_room
@@ -1154,7 +1157,12 @@ module FizzReim
     return said_once(:noflag, "can't read the 'flagged for entry' line (#{info[:flag_text].inspect}) -- standing still.") if flag.nil?
 
     if flag >= 7
-      said_once(:treasury, "REIM INFO: the Treasury is open (#{info[:flag_text]}). The vault, the exit and TURN BOARD are yours -- stopping here.")
+      echo "REIM INFO: the Treasury is open (#{info[:flag_text]})."
+      if here == 5                                  # the royal wing or the Throne Room: the vault is next door
+        go2(throne_room) unless room_id == throne_room
+        loot_treasury
+      end
+      echo "stopping here: the exit (`go vortex`, twice, from the vault) and TURN BOARD are yours."
       @done = true
       return
     end
@@ -1290,13 +1298,65 @@ module FizzReim
     echo "the Emperor and the Empress are dead."
     info = reim_info
     if info && info[:flag] && info[:flag] >= 7
-      echo "REIM INFO: the Treasury is open (#{info[:flag_text]}). The vault, the exit and TURN BOARD are yours -- stopping here."
+      echo "REIM INFO: the Treasury is open (#{info[:flag_text]})."
+      loot_treasury
+      echo "stopping here: the exit (`go vortex`, twice, from the vault) and TURN BOARD are yours."
       echo "the Emperor task is finished (\";fizzreim turnin\" hands it in at the Base Camp)." if @task_done
       @done = true
     else
       echo "REIM INFO still says: flagged to the #{info && info[:flag_text]}. Not stopping; the sphere is not tried again."
       @sphere_tries = 99
       dothistimeout("go door", 8, /You step through/i) if vault_room? && room_id == vault_entry
+    end
+  end
+
+  # --- the Treasure Vault ----------------------------------------------------------------
+
+  # Verified 11/27 18:13 (done by hand): through the golden vault door from the Vault Entry, then GET SCRIP paid
+  # "You manage to grab 60 ethereal scrip from a pile of ethereal scrip." (then 79, 72) until "As you reach for a
+  # pile of ethereal scrip your hand is pushed back by a strange force." `go golden door` is the map's command
+  # (before the win the door answers "... rebuking your advance"); a plain `go door` in the Vault Entry once took
+  # the rhimar door back to the Throne Room, where it is the right command.
+  def self.loot_treasury
+    enter_vault
+    unless room_id == treasure_vault
+      echo "couldn't get into the Treasure Vault (room #{room_id}). By hand: `go golden door` from the Vault Entry, then `get scrip` until you're refused."
+      return
+    end
+    got = 0
+    last = ""
+    20.times do
+      break if checkdead
+      waitrt?
+      last = dothistimeout("get scrip", 6, /You manage to grab [\d,]+ ethereal scrip|pushed back by a strange force|wait \d+ sec|What were you|Get what|You can't|hands? (?:are|is) full/i).to_s
+      if last =~ /grab ([\d,]+) ethereal scrip/i
+        got += Regexp.last_match(1).delete(",").to_i
+      elsif last !~ /wait \d+ sec/i
+        break
+      end
+      sleep 1
+    end
+    why = case last
+          when /pushed back/i then "that's all it gives"
+          when "" then "no answer to `get scrip`"
+          else "stopped on #{last.strip[0, 100].inspect}"
+          end
+    echo "Treasure Vault: grabbed #{got} ethereal scrip (#{why})."
+  end
+
+  def self.enter_vault
+    if room_id == throne_room
+      waitrt?
+      dothistimeout("go door", 8, /You step through|You must be standing|rebuking|can't go|cannot/i)
+      sleep 1
+    end
+    3.times do
+      break unless room_id == vault_entry && !checkdead
+      20.times { break unless checkstunned || checkwebbed; sleep 1 }
+      waitrt?
+      fput "stand" unless checkstanding
+      dothistimeout("go golden door", 8, /You step through|rebuking your advance|You must be standing|still stunned|Where are you|can't go|cannot|wait \d+ sec/i)
+      sleep 1
     end
   end
 
