@@ -35,9 +35,14 @@
 #    ORB FROM MY BOOT, RUB MY ORB twice, PUT it back, CLIMB CHAIN confirms "This will use your paid
 #    entry"). The orb has 25 charges. Rubbing it clears any quest progress, which is why it is only
 #    rubbed when no quest is running. At most ONE new run per ;fizzreim; `noorb` never rubs.
-#  * Before a (re-)entry it runs ;Fizzleworth-prep here, then every 20 minutes while idle ;ewaggle.
-#    ;stand, ;ecleanse and ;symbolz run alongside, as in a bigshot hunt (a chain trap drops you for
-#    10 s; ;stand gets you up). `;vars set reim_helpers=stand, ecleanse, symbolz` changes the list.
+#  * Before a (re-)entry it runs ;Fizzleworth-prep here, then one pass of ;symbolz. ;stand and ;ecleanse run
+#    alongside, as in a bigshot hunt (a chain trap drops you for 10 s; ;stand gets you up).
+#    `;vars set reim_helpers=stand, ecleanse` changes the list (symbolz and ewaggle are ignored there).
+#  * NOTHING SPELLS UP OR BUFFS UNLESS IT IS SAFE: outside Reim, or standing in a vortex room with nothing alive
+#    and no attack script running. (Scott 11/27, after an old 20-minute ewaggle ran in the middle of the waves
+#    and took his mana from 129 to 8 just before a rare.) The sphere's ewaggle and prep and the symbol pass are
+#    watched while they run and killed the moment that stops being true. A ;symbolz found running while it
+#    fights is stopped.
 #
 #  * Full mind. When the mind is full (must rest or saturated) it tries `boost longterm`, then
 #    `boost absorb` once the longterm boosts run out, one boost per full mind (the same dance
@@ -99,6 +104,7 @@
 #   * after a bail-out of the sphere: rest there until health and mana are FULL, then the 5 minutes run out;
 #   * out of mana (the 30-mana floor): rest there until mana is full, instead of the walk out to the inn, when the
 #     area has one.
+# Each of these also puts the Voln symbols up before it walks back.
 # Any ;eherbs it starts here gets `--buy=off`: his saved eherbs settings have buy_missing ON, which would withdraw silver
 # and walk to the herbalist (out of Reim) for a herb he has run out of.
 # If a wave reaches it TWICE in one rest, that room is written off for this run (said in the log) and everything falls
@@ -130,7 +136,6 @@ module FizzReim
   def self.flag_every;     25;    end   # seconds between REIM INFO checks while idle at an area
   def self.report_every;   600;   end   # progress line
   def self.stuck_every;    900;   end   # nag when an area's rare hasn't shown
-  def self.waggle_every;   1200;  end
   def self.approach_room;  24876; end
   def self.tavern_room;    25173; end
   def self.throne_room;    25137; end
@@ -141,12 +146,14 @@ module FizzReim
     v = UserVars.reim_rest_room
     v.to_s =~ /\A\s*\d+\s*\z/ ? v.to_i : 3428
   end
-  # The scripts a bigshot hunt would have running (hunting_scripts: stand, ecleanse ...) plus symbolz for the
-  # Voln symbols. Started when it enters Reim, killed again when it leaves for a rest trip or ends; one you
-  # were already running yourself is left alone. `;vars set reim_helpers=stand, ecleanse, symbolz` to change.
+  # The scripts a bigshot hunt would have running (hunting_scripts: stand, ecleanse ...). Started when it enters
+  # Reim, killed again when it leaves for a rest trip or ends; one you were already running yourself is left
+  # alone. `;vars set reim_helpers=stand, ecleanse` to change. symbolz and ewaggle buff, so they are never
+  # helpers, whatever the setting says: see "buffing" below.
   def self.helper_list
     v = UserVars.reim_helpers.to_s.strip
-    v.empty? ? %w[stand ecleanse symbolz] : v.split(/[,\s]+/).reject(&:empty?)
+    list = v.empty? ? %w[stand ecleanse] : v.split(/[,\s]+/).reject(&:empty?)
+    list.reject { |n| %w[symbolz ewaggle].include?(n.downcase) }
   end
   def self.min_trip_minutes; 12; end   # no rest trip with less quest time than this left
 
@@ -207,7 +214,8 @@ module FizzReim
     @last_flag     = 0.0
     @last_report   = 0.0
     @last_stuck    = Time.now.to_f
-    @last_waggle   = Time.now.to_f
+    @buffing       = nil            # spell-up scripts running right now (killed if we stop)
+    @spellup_at    = 0.0            # when MANA SPELLUP was last cast
     @stage_since   = Time.now.to_f
     @stage         = nil
     @was_busy      = false
@@ -472,11 +480,23 @@ module FizzReim
     !stage_of(room_id).nil?
   end
 
-  # scrolls: also the scroll spell-up (Fizzleworth-prep skips it unless prep_scrollbuff=on; `here scrolls` forces it)
+  # ;Fizzleworth-prep here (the rubs, and the scroll spell-up), then the Voln symbols. All of it is buffing, so it
+  # only happens where safe_to_buff? says. scrolls: force the scroll spell-up (prep skips it unless
+  # prep_scrollbuff=on; `here scrolls` forces it). true if prep ran to the end.
   def self.prepare(scrolls: false)
-    Script.run("Fizzleworth-prep", scrolls ? "here scrolls" : "here")
+    case buff("Fizzleworth-prep", args: scrolls ? "here scrolls" : "here", children: %w[scrollbuff3 qverb ewander])
+    when :done
+      symbols_up
+      true
+    when :cut
+      rearm
+      false
+    else
+      false
+    end
   rescue StandardError => e
     echo "prep: #{e.class} #{e.message}"
+    false
   end
 
   # :ready (REIM INFO says "You are ready to quest again!"), :cooldown ("15 hours and 50 minutes") or
@@ -583,6 +603,7 @@ module FizzReim
     $reim_retreat_ready = false             # without us the attack scripts heal on the spot again
     $reim_cant_cast = false
     $reim_retreating = false
+    stop_buffs
     stop_helpers
     DownstreamHook.remove("fizzreim") rescue nil
   end
@@ -902,11 +923,76 @@ module FizzReim
   def self.full_mana?;   checkmana >= maxmana; end
   def self.full_health?; checkhealth >= maxhealth; end
 
+  # --- buffing: only where nothing can reach us -------------------------------------------------------------------
+  # Scott 11/27: "we should never be spelling up or buffing unless we are in a safe room". Safe = outside Reim, or
+  # in a vortex room with nothing alive there and no attack script running.
+  def self.safe_to_buff?
+    return false if checkdead
+    !in_reim? || (safe_rooms.values.include?(room_id) && !busy?)
+  end
+
+  # Run a spell-up script and watch it. A creature shows up, we are moved, or `deadline` passes -> it is killed
+  # along with the scripts it runs (`children`). :done = ran to the end, :cut = killed part way, :no = not started.
+  def self.buff(name, args: nil, children: [], deadline: nil)
+    return :done unless Script.exists?(name)
+    return :no unless safe_to_buff?
+    @buffing = [name, *children]
+    unless Script.running?(name)
+      args ? Script.start(name, args) : Script.start(name)
+    end
+    sleep 0.5
+    why = nil
+    while Script.running?(name)
+      why = if !safe_to_buff? then "not safe to be buffing any more"
+            elsif deadline && Time.now.to_f >= deadline then "out of time"
+            end
+      break if why
+      sleep 0.5
+    end
+    if why
+      echo "stopped ;#{name}: #{why}."
+      stop_buffs
+    end
+    @buffing = nil
+    why ? :cut : :done
+  end
+
+  def self.stop_buffs
+    Array(@buffing).each { |n| Script.kill(n) if Script.running?(n) }
+    @buffing = nil
+  end
+
+  # The Voln symbols, one pass: ;symbolz casts whatever is missing and is then stopped again -- left running, it
+  # re-casts them in the middle of a fight.
+  def self.symbols_up
+    return unless Script.exists?("symbolz") && safe_to_buff?
+    @buffing = ["symbolz"]
+    Script.start("symbolz") unless Script.running?("symbolz")
+    12.times do
+      sleep 0.5
+      break unless safe_to_buff?
+    end
+    stop_buffs
+  end
+
+  # prep was stopped part way: put away whatever it had out and ready the weapon again
+  def self.rearm
+    return if checkdead
+    waitrt?
+    waitcastrt?
+    %i[right_hand left_hand].each do |hand|
+      item = GameObj.send(hand)
+      fput "stow ##{item.id}" if item && item.id && item.name.to_s !~ /scepter/i
+    end
+    fput "ready weapon" unless %i[right_hand left_hand].any? { |hand| GameObj.send(hand)&.name.to_s =~ /scepter/i }
+  end
+
   # Rest in the safe room of the area we stand in, then walk back to the room we left.
   #   :sphere  MANA SPELLUP (free), then ewaggle for what that missed, rest until mana AND health are FULL, then
   #            ;Fizzleworth-prep here scrolls (the scroll spell-up, which prep normally skips, and the rubs)
   #   :heal    rest until mana and health are full (after a bail-out)
   #   :mana    rest until mana is full
+  # Every one of them puts the Voln symbols up before walking back.
   # `left` = quest minutes left: the rest never eats the time the sphere needs (8 min + 5 for the spell-up), or the last 2 minutes.
   # true = it rested and is back; false = nothing was done or the room proved unsafe, so the caller falls back.
   def self.safe_rest(purpose, left)
@@ -958,10 +1044,12 @@ module FizzReim
         next
       end
       was_busy = false
-      unless waggled
-        waggled = true
-        mana_spellup                                       # free, so first: ewaggle then only casts what it missed
-        Script.run("ewaggle") if Script.exists?("ewaggle")
+      unless waggled || !safe_to_buff? || now >= deadline
+        if now - @spellup_at > 600                         # a charge a time: not again if ewaggle gets cut off
+          @spellup_at = now
+          mana_spellup                                     # free, so first: ewaggle then only casts what it missed
+        end
+        waggled = buff("ewaggle", deadline: deadline) == :done
         next
       end
       hp = Char.percent_health.to_i
@@ -983,13 +1071,14 @@ module FizzReim
     end
     unless @safe_bad[room] || checkdead
       echo "done resting after #{((Time.now.to_f - t0) / 60.0).round(1)} min (mana #{Char.percent_mana}%, health #{Char.percent_health}%)."
+      until !busy? || Time.now.to_f > deadline + 120
+        start_missed_attack
+        sleep 2
+      end
       if purpose == :sphere
-        until hostiles.empty? || Time.now.to_f > deadline + 120
-          start_missed_attack
-          sleep 2
-        end
-        prepare(scrolls: true)
-        @sphere_prep_at = Time.now.to_f
+        @sphere_prep_at = Time.now.to_f if prepare(scrolls: true)
+      else
+        symbols_up
       end
     end
     go2(from) unless room_id == from || checkdead
@@ -1004,6 +1093,10 @@ module FizzReim
     @entered = true          # we have been in Reim during this run: never start a second one
     start_treim
     helper_list.each { |n| start_helper(n) }
+    if Script.running?("symbolz")                 # ours is stopped as soon as it has cast; any other buffs mid-fight
+      Script.kill("symbolz")
+      echo "stopped ;symbolz: nothing buffs outside a safe room."
+    end
     boost_mind
     quest_boosts(now)
     $reim_retreat_ready = false
@@ -1041,11 +1134,6 @@ module FizzReim
 
     task_poll(now)
     return if trip_check(now)
-
-    if now - @last_waggle >= waggle_every
-      @last_waggle = now
-      Script.run("ewaggle") if Script.exists?("ewaggle")
-    end
 
     return unless due
     @last_flag = now
@@ -1192,6 +1280,7 @@ module FizzReim
       end
       echo "out of the vault (#{result}); resting before another try: 5 minutes at least, health and mana back up first."
       @sphere_prep_at = 0.0                   # the next try spells up again
+      @spellup_at     = 0.0
       i = reim_info
       safe_rest(:heal, minutes_left(i[:time_left])) if i && i[:time_left] && !checkdead
     end
