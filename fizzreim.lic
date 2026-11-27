@@ -116,6 +116,7 @@ module FizzReim
   def self.treim_attack;   "fizzleworth-attack-reim.lic"; end
   def self.attack_name;    "fizzleworth-attack-reim"; end
   def self.poll;           3;     end   # seconds between steps
+  def self.foe_wait;       6;     end   # something alive and no attack script this long: start it (treim waits 2.5 s at most)
   def self.flag_every;     25;    end   # seconds between REIM INFO checks while idle at an area
   def self.report_every;   600;   end   # progress line
   def self.stuck_every;    900;   end   # nag when an area's rare hasn't shown
@@ -200,6 +201,7 @@ module FizzReim
     @stage_since   = Time.now.to_f
     @stage         = nil
     @was_busy      = false
+    @foe_since     = nil            # when something alive was first seen with no attack script running
     @started_here  = []             # helper scripts this run started (killed again at the end)
     @task_done     = false          # the game said a Reim task is finished and not yet handed in
     @energy        = nil            # quest energy at the last REIM INFO (REIM BOOST costs 250 a time)
@@ -296,6 +298,24 @@ module FizzReim
 
   def self.busy?
     !hostiles.empty? || Script.running?(attack_name)
+  end
+
+  # treim only starts the attack script off a creature's arrival line, and loses any line that comes in while it is
+  # still reading REIM INFO at start-up. 11/27: the first spawn arrived 1 s after treim started, nothing attacked it,
+  # and this script stood waiting for the room to go quiet. So: something alive here and no attack script for
+  # foe_wait seconds -> start it from here.
+  def self.start_missed_attack
+    if hostiles.empty? || Script.running?(attack_name)
+      @foe_since = nil
+      return
+    end
+    now = Time.now.to_f
+    @foe_since ||= now
+    return if now - @foe_since < foe_wait
+    @foe_since = nil
+    return unless Script.exists?("Fizzleworth-attack-reim")
+    echo "something is alive here and nothing is attacking it (treim missed it): starting the attack."
+    Script.start("Fizzleworth-attack-reim")
   end
 
   # --- moving --------------------------------------------------------------------
@@ -835,6 +855,7 @@ module FizzReim
           echo "a wave reached safe room #{room} twice: not safe after all -- not using it again this run."
           break
         end
+        start_missed_attack
         sleep 2
         next
       end
@@ -865,7 +886,10 @@ module FizzReim
     unless @safe_bad[room] || checkdead
       echo "done resting after #{((Time.now.to_f - t0) / 60.0).round(1)} min (mana #{Char.percent_mana}%, health #{Char.percent_health}%)."
       if purpose == :sphere
-        sleep 2 until hostiles.empty? || Time.now.to_f > deadline + 120
+        until hostiles.empty? || Time.now.to_f > deadline + 120
+          start_missed_attack
+          sleep 2
+        end
         prepare(scrolls: true)
         @sphere_prep_at = Time.now.to_f
       end
@@ -897,6 +921,7 @@ module FizzReim
       return
     end
 
+    start_missed_attack
     busy = busy?
     if busy
       @was_busy = true
