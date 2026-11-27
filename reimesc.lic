@@ -121,7 +121,8 @@ module ReimEsc
     end
     if hp < 75 && Script.exists?("eherbs") && !@herbed
       @herbed = true
-      Script.run("eherbs")
+      # --buy=off: his saved eherbs settings have buy_missing ON (it would walk to the herbalist, out of the escape)
+      Script.run("eherbs", "--buy=off")
     end
   end
 

@@ -239,7 +239,7 @@ module FizzReimAttack
                                            "Curse: not the Hex (#{text[/looks [a-z ]+|loses [a-z ]+|stumbles|shakes/i] || 'no curse message'}); stance was #{checkstance}.")
       end
       if text =~ WOUNDED
-        Script.run("eherbs", "--spellcast")
+        Script.run("eherbs", "--spellcast --buy=off")     # buy_missing is ON in his saved eherbs settings: never shop in Reim
         st[:casts] = cap
         break
       end
