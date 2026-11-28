@@ -86,8 +86,10 @@
 # and then the Emperor. It BAILS OUT under 50% health: stand and `go rhimar door` (REIM CAMP is refused
 # inside the castle). Two tries (the second needs 5 more minutes of rest), then it leaves the sphere
 # alone. A win (REIM INFO shows the Treasury) takes it through the golden vault door, where it types GET SCRIP
-# until "your hand is pushed back by a strange force", and ends the run there: the exit (`go vortex`, twice) and
-# TURN BOARD are yours. The same if it finds the Treasury already open while you are in the royal wing.
+# until "your hand is pushed back by a strange force", then out by the vault's vortex to the Village and forward
+# through the gates again: THE RUN DOES NOT END with the win (11/27: it stopped, and stopped again on every restart,
+# with 35 quest minutes left). It fights in the Throne Room until the quest time runs out. If the Treasury is
+# already open when it starts, it leaves the vault alone and goes straight to the fighting.
 #   ;vars set reim_sphere=off          never touch it (or run `;fizzreim nosphere`)
 #   ;vars set reim_sphere_bail=50      bail out under this health % (default 50)
 #   ;vars set reim_sphere_mana=85      mana % wanted before touching (default 85)
@@ -100,8 +102,9 @@
 # room 24888), Road 25063 Wind Tunnel (east of the gate room 25062), Courtyard 25094 Barbican, Royal 25141 Narrow Ledge
 # (Throne Room 25137 -> 25138 -> 25140 -> `go window`); the Treasure Vault 25143 is the fifth. The servant and visitor
 # wings have none. UNVERIFIED: that no wave spawns in them (the wiki says "generally"; nothing in the logs shows Scott
-# standing in one). It never types `go vortex` (in 24895 that asks "Are you sure you wish to leave the Settlement of
-# Reim?"). It uses them three ways, always a quiet room first and back to the same room afterwards:
+# standing in one). It types `go vortex` only in the Treasure Vault, and confirms only after "Are you sure you wish to
+# move back to the Village of Reim?" (in 24895 it asks about LEAVING the Settlement of Reim). It uses the safe rooms
+# three ways, always a quiet room first and back to the same room afterwards:
 #   * before the sphere: mana spellup + ewaggle, rest to FULL mana and health, scrolls and rubs (above);
 #   * after a bail-out of the sphere: rest there until health and mana are FULL, then the 5 minutes run out;
 #   * out of mana (the 30-mana floor): rest there until mana is full, instead of the walk out to the inn, when the
@@ -244,6 +247,8 @@ module FizzReim
     @sphere_refill_at   = 0.0
     @sphere_prep_at     = 0.0           # when the last safe-room spell-up and rest for the sphere finished
     @safe_bad           = {}            # safe room => true once a wave reached it twice in one rest
+    @open_at_start = nil            # the Treasury was already open at this run's first REIM INFO
+    @looted        = false          # this run has been to the Treasure Vault
     @told          = {}
   end
 
@@ -1156,20 +1161,22 @@ module FizzReim
     end
     return said_once(:noflag, "can't read the 'flagged for entry' line (#{info[:flag_text].inspect}) -- standing still.") if flag.nil?
 
+    # the Treasury being open does not end the run: there is still quest time, so it fights on (all gates are open)
+    @open_at_start = flag >= 7 if @open_at_start.nil?
     if flag >= 7
-      echo "REIM INFO: the Treasury is open (#{info[:flag_text]})."
-      if here == 5                                  # the royal wing or the Throne Room: the vault is next door
+      if @open_at_start
+        said_once(:treasury, "REIM INFO: the Treasury was already open when this run started, so I leave the vault alone and fight on until the quest time runs out. (Not had its scrip? `go golden door` from the Vault Entry, then `get scrip`.)")
+      elsif !@looted && here == 5                   # the Emperor fell outside sphere_won (by hand, say)
         go2(throne_room) unless room_id == throne_room
-        loot_treasury
+        take_treasury
+        return
       end
-      echo "stopping here: the exit (`go vortex`, twice, from the vault) and TURN BOARD are yours."
-      @done = true
-      return
     end
 
     if here.nil?
-      # somewhere off the area lists (the wind tunnel, a stray room): go back to the front of the open area
-      target = [flag, 5].min
+      # somewhere off the area lists (the wind tunnel, a stray room): go back to the front of the open area; from the
+      # village's wind tunnel start at the village, so each area is walked with the room quiet
+      target = room_id == safe_rooms[0] ? 0 : [flag, 5].min
       echo "not in a known area (#{title}) -- walking back to #{stage_names[target]}."
       go2(entry_rooms[target])
       return
@@ -1206,7 +1213,8 @@ module FizzReim
     elsif here == 5 && flag >= 6 && room_id != throne_room
       echo "the Throne Room is open: to #{throne_room}."
       go2(throne_room)
-      said_once(:throne, "in the Throne Room. treim fights the waves; once health and mana are up I touch the sphere (Vault Entry) and take the Empress first, then the Emperor (`;vars set reim_sphere=off` to leave that to you).")
+      said_once(:throne, flag >= 7 ? "in the Throne Room, the Emperor already beaten: treim fights the waves here until the quest time runs out." :
+        "in the Throne Room. treim fights the waves; once health and mana are up I touch the sphere (Vault Entry) and take the Empress first, then the Emperor (`;vars set reim_sphere=off` to leave that to you).")
     end
   end
 
@@ -1299,10 +1307,7 @@ module FizzReim
     info = reim_info
     if info && info[:flag] && info[:flag] >= 7
       echo "REIM INFO: the Treasury is open (#{info[:flag_text]})."
-      loot_treasury
-      echo "stopping here: the exit (`go vortex`, twice, from the vault) and TURN BOARD are yours."
-      echo "the Emperor task is finished (\";fizzreim turnin\" hands it in at the Base Camp)." if @task_done
-      @done = true
+      take_treasury
     else
       echo "REIM INFO still says: flagged to the #{info && info[:flag_text]}. Not stopping; the sphere is not tried again."
       @sphere_tries = 99
@@ -1311,6 +1316,40 @@ module FizzReim
   end
 
   # --- the Treasure Vault ----------------------------------------------------------------
+
+  # The win's reward, once, then back out to the waves for the quest time that is left.
+  def self.take_treasury
+    @looted = true
+    loot_treasury
+    leave_vault
+    if room_id == vault_entry && !checkdead        # the golden door wouldn't open: don't sit in the Vault Entry
+      dothistimeout("go rhimar door", 8, /You step through|You must be standing|still stunned/i)
+      sleep 1
+    end
+    @stage = nil
+    @last_flag = 0.0
+    echo "carrying on: the waves until the quest time runs out."
+  end
+
+  # The vault's only way out is its vortex, and it goes back to the Village, still inside Reim. Verified 11/27 18:14:
+  # GO VORTEX answers "Are you sure you wish to move back to the Village of Reim?" and the second one lands in the
+  # wind tunnel 24895. The second is only sent after exactly that question, so it can never confirm the other prompt
+  # ("... leave the Settlement of Reim?", which the village's own vortex asks).
+  def self.leave_vault
+    return unless room_id == treasure_vault && !checkdead
+    waitrt?
+    r = dothistimeout("go vortex", 8, /move back to the Village of Reim|Are you sure|still stunned|You must be standing|wait \d+ sec|can't|cannot/i).to_s
+    if r =~ /move back to the Village of Reim/i
+      sleep 1
+      dothistimeout("go vortex", 8, /You make a running jump|Wind Tunnel|still stunned|can't|cannot/i)
+      sleep 2
+    end
+    if room_id == treasure_vault
+      echo "still in the Treasure Vault (#{r.strip.empty? ? 'no answer' : r.strip[0, 100].inspect}): `go vortex` twice takes you back to the Village."
+      return
+    end
+    go2(entry_rooms[0]) if room_id == safe_rooms[0]  # `go mist` to the arrival room; the open gates from there
+  end
 
   # Verified 11/27 18:13 (done by hand): through the golden vault door from the Vault Entry, then GET SCRIP paid
   # "You manage to grab 60 ethereal scrip from a pile of ethereal scrip." (then 79, 72) until "As you reach for a
@@ -1410,7 +1449,6 @@ module FizzReim
     end
 
     loop do
-      break if @done
       if checkdead
         sleep 5
         next
