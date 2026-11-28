@@ -285,8 +285,8 @@ end
 #
 # The Hidden Plateau: no animate (Scott 11/27: "a waste of mana and I don't really need it", and the demon never
 # catches up with the claidhmore). The minotaur warrior was the target 11/04-11/27; put `minotaur warrior` back
-# in the pattern below, and take `minotaurs` out of Fizzleworth-prep's no_animate_hunt?, to bring it back. With
-# no animate up the once-a-hunt essence grind (main flow) doesn't run there either.
+# in the pattern below, and take `minotaurs` out of no_animate_hunt? (here and in Fizzleworth-prep), to bring it
+# back. The once-a-hunt essence grind (main flow) runs there without one.
 # The "animated" guard keeps the buddy itself from ever matching.
 def animate_target?(foe)
   return false unless foe
@@ -323,6 +323,13 @@ end
 # inciter / incubus / vision / Rift Plane One / minotaur magus -- the ones that cast and so get 703
 def caster?(foe)
   foe && (foe.name.to_s =~ INCITER_RE || foe.name.to_s =~ INCUBUS_RE || foe.name.to_s =~ VISION_RE || rift_silence?(foe) || minotaur_magus?(foe))
+end
+
+# No Animate Dead on the minotaurs (11/27), so the once-a-hunt essence grind can't wait for a buddy there (Scott:
+# the essence is still needed for `sacrifice mana`). Goes by the loaded bigshot profile, as Fizzleworth-prep does.
+def no_animate_hunt?
+  op = (UserVars.op rescue nil)
+  op.is_a?(Hash) && %w[minotaurs].include?(op["profile_current"].to_s.strip.downcase)
 end
 
 def have_animate?
@@ -746,11 +753,11 @@ if animate_target?(foe) && !$ult_reanim_done && !have_animate? && others_with(fo
   exit
 end
 
-# Once per hunt: buddy is up and mana's healthy but the essence pool is low
+# Once per hunt: buddy is up (or this hunt has none) and mana's healthy but the essence pool is low
 # -> grind it back to 5 with `;fizzsac` (pauses bigshot, stops the animate,
 # walks creatures to frail + sacrifices, wanders rooms, then hands back).
 # `sacrifice mana` needs that pool, so it's worth the interruption.
-if !$ult_essence_run && have_animate? &&
+if !$ult_essence_run && (have_animate? || no_animate_hunt?) &&
    (Resources.shadow_essence.to_i rescue 5) < ESSENCE_RUN_BELOW &&
    checkmana >= ESSENCE_RUN_MANA
   $ult_essence_run = true
