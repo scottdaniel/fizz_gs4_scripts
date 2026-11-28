@@ -124,6 +124,14 @@ def self.sync_ewander_boundaries
   Script.run("ewander", "add #{ids.join(' ')}") unless ids.empty?
 end
 
+# Hunts with no Animate Dead, so no spare weapon to buy (Scott 11/27: on minotaurs it wastes mana and the demon
+# never catches up with the claidhmore; Fizzleworth-attack-ultima no longer animates there). Goes by the loaded
+# bigshot profile's name. A METHOD so an edit applies on the next run.
+def self.no_animate_hunt?
+  op = (UserVars.op rescue nil)
+  op.is_a?(Hash) && %w[minotaurs].include?(op['profile_current'].to_s.strip.downcase)
+end
+
 # Encumbrance gate (Scott 11/08). bigshot refuses to start a hunt and rests mid-hunt at its own
 # "percent encumbrance >=" (33 in minotaurs.yaml; it did rest "encumbered" at 02:23 and 03:29 that
 # night), but it looks BEFORE this script runs and again only after it has walked to the hunting
@@ -291,7 +299,7 @@ sleep 0.3
 # so it runs there: 11/04 a freshly summoned verlok had no claidhmore and the animate went unarmed.
 # (Sever mode skipped it only because the old standalone prep-sever was a stale copy that predated
 # buyweapon, and the 11/01 merge kept that by treating sever as `here`.)
-Script.run("Fizzleworth-buyweapon") if !here || sever
+Script.run("Fizzleworth-buyweapon") if (!here || sever) && !no_animate_hunt?
 
 # The Rift (sever mode): make bigshot flee witches and worms through its own flee flag, whatever
 # profile is loaded (see Fizzleworth-witchguard). Any other hunt stops a guard left over from one.
